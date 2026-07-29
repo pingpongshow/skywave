@@ -167,9 +167,27 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
     selectivity gates): M4–M9 on CCIR Moderate, M10–M13 on CCIR Good,
     NARROW all modes on Good (500 Hz band sees 2-path as flat Rayleigh —
     no frequency diversity; document in WAVEFORM.md).
-  Remaining: fix fading plateaus → re-measure → set kFloors from
-  measurement → align WAVEFORM.md tables + AMC thresholds → full sweep
-  archive + CI quick profile on final numbers.
+  **Fading-plateau root cause (measured, seed 9967 trace):** mid-fade
+  the tap-relative phases rotate WITHIN the tracker's LS window and the
+  solved shape collapses ~10 dB below the true channel (est −18 dB vs
+  true −8 dB from a ground-truth impulse probe) — confidently wrong H →
+  burst LLR corruption that short codewords (WIDE fast frames) cannot
+  absorb but MID's ~2 s codewords can. Window-length A/B (4/6/10) does
+  not fix it: the window-LS architecture assumes a quasi-static shape.
+  The correct estimator is a per-tap Gauss-Markov Kalman filter (each
+  tap independently Rayleigh, known Doppler; absorbs CPE naturally).
+  First implementation is parked on branch `wip/kalman-tracker` — it
+  REGRESSES as tuned (per-tap Q from instantaneous seed powers starves
+  taps that were faded at ZC time; noise EMA double-counts posterior
+  error) — resume there with: Q from smoothed/uniform delay profile,
+  resid/posterior split, FLYWHEEL gate revisit. That branch also
+  carries two validated improvements to port back regardless: scalar
+  Kalman gauge with SNR-adaptive bandwidth (fixed NARROW M4 AWGN at
+  floor+1, all suites green at that point) and gauge-uncertainty-
+  inflated demap noise.
+  Remaining: land the dynamics fix → re-measure ladders → set kFloors
+  from measurement → align WAVEFORM.md tables + AMC thresholds → full
+  sweep archive + CI quick profile on final numbers.
 
 ## Phase 2 — Link Core (First Functional Modem)
 
