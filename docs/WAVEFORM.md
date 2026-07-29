@@ -1,0 +1,443 @@
+# Skywave Waveform Specification
+
+## Design Summary
+
+One spread-OFDM waveform covers the entire operating range. Robustness at low
+SNR comes from three composable tools — low-order constellation, LDPC coding,
+and **frequency-domain spreading** — rather than from a second waveform
+family. Acquisition uses a chirp preamble whose signature also selects the
+PHY header class.
+
+## Band Profiles
+
+All numerology below — sample-domain plan, FFT size, subcarrier spacing,
+CP set, chirp spans, family tables — constitutes the **`HF` band profile**,
+the only profile in v1. The implementation must treat these values as one
+profile table (`src/core/constants.hpp` + mode tables), not as scattered
+constants: a future profile (see *VHF-FM Band Profile* at the end of this
+document) is then a second table plus tuning, never engine surgery. Band
+profiles are a local configuration concept — stations on different bands
+never hear each other, so no wire-format field is needed.
+
+## Numerology (`HF` profile)
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| Sample rate | `48000 Hz` | universal soundcard rate |
+| FFT size | `1280` (2^8 × 5, mixed radix) | subcarrier spacing 37.5 Hz |
+| Subcarrier spacing | `37.5 Hz` | ~2× more Doppler-tolerant than a 2048 grid while keeping CP overhead moderate |
+| Waveform center | `1500 Hz` | industry-standard HF modem center; bin 40 falls exactly on it |
+| Useful symbol time | `26.667 ms` | 1280 / 48000 |
+
+### Cyclic Prefix
+
+| CP mode | Samples | Duration | Symbol rate | Use |
+|---|---:|---:|---:|---|
+| `SHORT` | 96 | 2.0 ms | 34.88 sym/s | benign single-hop paths |
+| `MEDIUM` | 192 | 4.0 ms | **32.61 sym/s** | default; covers typical multipath |
+| `LONG` | 288 | 6.0 ms | 30.61 sym/s | severe multihop / NVIS spread |
+
+All rate tables in this document assume `MEDIUM` CP. CP mode is negotiated at
+connect and may be changed with `MODE_CHANGE`.
+
+## Bandwidth Families and Carrier Plans
+
+Subcarrier `k` sits at `k × 37.5 Hz`. Bin 40 = 1500 Hz exactly.
+
+| Family | Active bins | Carriers | Carrier span | Occupied BW |
+|---|---|---:|---|---:|
+| `ULTRA` | `5..76` | 72 | 187.5 – 2850.0 Hz | ~2.7 kHz |
+| `WIDE` | `8..71` | 64 | 300.0 – 2662.5 Hz | ~2.4 kHz |
+| `MID` | `27..53` | 27 | 1012.5 – 1987.5 Hz | ~1.0 kHz |
+| `NARROW` | `34..46` | 13 | 1275.0 – 1725.0 Hz | ~0.5 kHz |
+
+`MID` and `NARROW` use odd carrier counts so the center carrier lands exactly
+on bin 40 (1500 Hz). `WIDE`, `MID`, and `NARROW` fit inside a 300–2700 Hz
+stock SSB channel.
+
+`ULTRA` is the **opt-in extended tier**: it requires a radio whose TX/RX
+audio passband reaches ~100–2900 Hz (modern DSP rigs in data mode, SDRs)
+and must be explicitly enabled in configuration on **both** stations —
+`WIDE` remains the default wideband family. ULTRA buys ~12.5% more
+throughput at every ladder rung in exchange for hardware selectivity; its
+edge guards are thinner (≈ 88 Hz low, 50 Hz high), so it leans on the
+split-correction rule of TX frequency alignment (see
+[PROTOCOL.md](PROTOCOL.md)) to stay inside real filters.
+
+### Pilots
+
+Scattered pilots, not fixed tones:
+
+- pilot carrier positions satisfy `index ≡ (symbol_number mod 8)` stepping by 8
+  across the family's active carriers
+- over any 8 consecutive symbols, every carrier is sounded once
+- pilot overhead: `1/8` of carriers per symbol (avg 8.0 / 3.375 / 1.625
+  pilots for `WIDE` / `MID` / `NARROW`)
+- pilots are boosted `+2 dB` relative to data carriers and carry a known
+  length-matched Zadoff-Chu-derived phase sequence
+
+Average data carriers per symbol: `ULTRA` 63, `WIDE` 56, `MID` 23.6,
+`NARROW` 11.4.
+
+## Frequency-Domain Spreading
+
+Robust modes repeat each modulated symbol across `S` carriers before IFFT:
+
+- spreading factors: `S ∈ {1, 2, 4, 8, 16}`
+- the `S` copies are placed on maximally separated carriers **among that
+  symbol's data carriers** (stride = data_carriers / S) — the scattered
+  pilot positions rotate every symbol, so the spreading map is computed per
+  symbol over the remaining data carriers, identically at TX and RX
+- each copy is rotated by a per-copy pseudorandom phase (whitening the PAPR
+  and decorrelating narrowband interference)
+- the receiver maximum-ratio-combines the `S` copies **after** equalization,
+  producing one soft symbol with up to `10·log10(S)` dB of SNR gain on flat
+  noise and large diversity gain on selective fading
+
+Spreading multiplies robustness and divides throughput by `S`. It changes no
+other part of the chain — same FFT, same pilots, same LDPC.
+
+## FEC and Bit Pipeline
+
+TX bit pipeline per frame:
+
+```text
+payload bytes -> CRC-32 -> whitener (LFSR x^17+x^12+1) -> LDPC encode
+  -> bit interleave (frequency + time) -> constellation map (Gray)
+  -> spread (xS) -> pilot insertion -> IFFT -> CP -> window/overlap -> samples
+```
+
+### LDPC
+
+IEEE 802.11n LDPC matrices (public, well-tested, table-driven):
+
+| Codeword | Rates | Use |
+|---|---|---|
+| `N=1944` | 1/2, 2/3, 3/4, 5/6 | data frames (payload ≥ ~100 bytes) |
+| `N=648` | 1/2, 2/3, 3/4 | control frames, PHY header, short data |
+
+Decoder: normalized min-sum, 5-bit soft LLRs, ≤ 30 iterations with early
+termination on parity check. Codeword shortening (zero-pad info bits) and
+puncturing (for HARQ-IR) follow standard 802.11n procedure.
+
+### Interleaving
+
+- **bit interleaver**: within a codeword, a row/column block interleaver maps
+  adjacent code bits onto non-adjacent carriers and symbols
+- **time span**: one codeword spans at most ~1.2 s of symbols in robust
+  spread modes (S8/S16); deep multi-second interleaving is deliberately
+  avoided to keep half-duplex ARQ turnaround interactive — time diversity at
+  low SNR comes from HARQ retransmission combining instead
+- **whitener**: LFSR scrambler breaks payload periodicity before coding
+
+## Mode Ladder
+
+One ladder shape for all families; only the rate numbers differ. `M0–M3` are
+**reserved** for a future non-coherent CSS tier (see final section) and are
+inactive in v1. The ladder is ordered strictly by robustness.
+
+### Common Mode Definitions
+
+| Mode | Waveform | Constellation | LDPC rate | Spread | Notes |
+|---|---|---|---|---:|---|
+| `M0` | *(reserved: CSS)* | — | — | — | future, ~−14 dB |
+| `M1` | *(reserved: CSS)* | — | — | — | future |
+| `M2` | *(reserved: CSS)* | — | — | — | future |
+| `M3` | *(reserved: CSS)* | — | — | — | future |
+| `M4` | OFDM | QPSK | 1/2 | 16 | robust floor; handshake transport |
+| `M5` | OFDM | QPSK | 1/2 | 8 | |
+| `M6` | OFDM | QPSK | 1/2 | 4 | |
+| `M7` | OFDM | QPSK | 1/2 | 2 | |
+| `M8` | OFDM | QPSK | 1/2 | 1 | first unspread mode |
+| `M9` | OFDM | QPSK | 3/4 | 1 | |
+| `M10` | OFDM | 16QAM | 1/2 | 1 | |
+| `M11` | OFDM | 16QAM | 3/4 | 1 | |
+| `M12` | OFDM | 64QAM | 2/3 | 1 | |
+| `M13` | OFDM | 64QAM | 5/6 | 1 | top mode |
+
+### ULTRA Rates and Floors (opt-in tier)
+
+| Mode | GROSS bps | NET bps | Floor |
+|---|---:|---:|---:|
+| `M4` | 257 | 128 | −8.0 dB |
+| `M5` | 514 | 257 | −5.5 dB |
+| `M6` | 1027 | 514 | −3.0 dB |
+| `M7` | 2054 | 1027 | −0.5 dB |
+| `M8` | 4109 | 2054 | +2.5 dB |
+| `M9` | 4109 | 3082 | +5.5 dB |
+| `M10` | 8218 | 4109 | +8.5 dB |
+| `M11` | 8218 | 6163 | +12.5 dB |
+| `M12` | 12326 | 8218 | +16.5 dB |
+| `M13` | 12326 | 10272 | +20.5 dB |
+
+(ULTRA floors sit 0.5 dB above WIDE's at each rung — same Eb/N0, more bits
+per second in the 3 kHz reference bandwidth.)
+
+### WIDE Rates and Floors
+
+NET = post-FEC payload rate; GROSS = uncoded rate. Floors are the design
+entry SNR (3 kHz noise reference, CCIR Moderate channel, ≤10% FER target);
+AMC adds hysteresis margins on top ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).
+
+| Mode | GROSS bps | NET bps | Floor |
+|---|---:|---:|---:|
+| `M4` | 228 | 114 | −8.5 dB |
+| `M5` | 457 | 228 | −6.0 dB |
+| `M6` | 913 | 457 | −3.5 dB |
+| `M7` | 1826 | 913 | −1.0 dB |
+| `M8` | 3652 | 1826 | +2.0 dB |
+| `M9` | 3652 | 2739 | +5.0 dB |
+| `M10` | 7305 | 3652 | +8.0 dB |
+| `M11` | 7305 | 5478 | +12.0 dB |
+| `M12` | 10957 | 7305 | +16.0 dB |
+| `M13` | 10957 | 9131 | +20.0 dB |
+
+### MID Rates and Floors
+
+| Mode | GROSS bps | NET bps | Floor |
+|---|---:|---:|---:|
+| `M4` | 96 | 48 | −12.0 dB |
+| `M5` | 193 | 96 | −9.5 dB |
+| `M6` | 385 | 193 | −7.0 dB |
+| `M7` | 770 | 385 | −4.5 dB |
+| `M8` | 1540 | 770 | −1.5 dB |
+| `M9` | 1540 | 1155 | +1.5 dB |
+| `M10` | 3079 | 1540 | +4.5 dB |
+| `M11` | 3079 | 2309 | +8.5 dB |
+| `M12` | 4619 | 3079 | +12.5 dB |
+| `M13` | 4619 | 3849 | +16.5 dB |
+
+### NARROW Rates and Floors
+
+| Mode | GROSS bps | NET bps | Floor |
+|---|---:|---:|---:|
+| `M4` | 46 | 23 | −15.0 dB * |
+| `M5` | 93 | 46 | −12.5 dB * |
+| `M6` | 186 | 93 | −10.0 dB |
+| `M7` | 371 | 186 | −7.5 dB |
+| `M8` | 742 | 371 | −4.5 dB |
+| `M9` | 742 | 557 | −1.5 dB |
+| `M10` | 1484 | 742 | +1.5 dB |
+| `M11` | 1484 | 1113 | +5.5 dB |
+| `M12` | 2226 | 1484 | +9.5 dB |
+| `M13` | 2226 | 1855 | +13.5 dB |
+
+`*` Narrow-family decode floors below ~−12 dB exceed the chirp acquisition
+floor; in practice connection establishment limits `NARROW` to ~−12 dB, with
+`M4/M5` retaining their full depth for an already-synchronized session.
+
+Note: narrower families reach deeper 3 kHz-referenced floors because the same
+transmit power concentrates into less bandwidth — this replaces (part of) the
+role the reference design's NB ladder played.
+
+## Acquisition and Synchronization
+
+### Chirp Preamble
+
+Linear chirps spanning the family's carrier band:
+
+| Family | Sweep | Duration per rep |
+|---|---|---:|
+| `ULTRA` | 200 → 2850 Hz | 160 ms |
+| `WIDE` | 300 → 2700 Hz | 160 ms |
+| `MID` | 1000 → 2000 Hz | 160 ms |
+| `NARROW` | 1275 → 1725 Hz | 160 ms |
+
+Preamble signatures (chirp direction pattern) carry one bit of blind
+information — the **header class**:
+
+| Signature | Meaning | Reps |
+|---|---|---:|
+| up–up | fast header follows | 2 |
+| up–down–up–down | robust header follows | 4 |
+| up–up–up–up | calling/beacon (robust header) | 4 |
+
+The robust class uses 4 reps so preamble detection always retains ≥ 3 dB of
+margin over the deepest payload floor it announces (a 2-rep preamble would
+sit within 0.5 dB of the `WIDE M4` floor — too thin). The fast class (`M8+`
+sessions, floors ≥ +2 dB) keeps the cheap 2-rep form.
+
+Detection: matched filter (complex correlator against the analytic chirp),
+normalized by local energy; threshold set for < 1 false alarm / 10 min in
+noise. 4-rep acquisition floors (3 kHz ref): `ULTRA`/`WIDE` ~−12 dB,
+`MID` ~−14 dB, `NARROW` ~−15 dB (narrow families concentrate preamble power exactly as they
+do payload power). The correlation peak gives coarse timing (±1 ms) and the
+inter-rep phase slope gives coarse CFO. CFO capture: ±5 Hz for connected
+preambles; **±50 Hz stepped search for calling preambles** (real SSB stations
+mistune by tens of Hz). Alternating up/down chirps in the robust signature
+resolve the LFM delay–Doppler ambiguity during the wide search; the up–up
+fast signature does not need to (fast-class sessions are already
+frequency-locked).
+
+### Fine Sync Symbols
+
+Immediately after the chirp:
+
+- **fast class — 2 identical ZC symbols**: a Zadoff-Chu sequence (length =
+  family carrier count, root chosen per family) mapped onto the active
+  carriers, transmitted twice back-to-back. Schmidl–Cox-style
+  autocorrelation refines timing to ±2 samples and CFO to < 0.5 Hz; the
+  second symbol seeds the channel estimate.
+- **robust class — 4 ZC symbols (2 pairs)**: a single ZC symbol is far too
+  noisy for a per-carrier channel estimate at the robust floor (−8 dB
+  in-band means the single-shot estimate is dominated by noise, which
+  directly erodes MRC despreading gain). The doubled block lets the receiver
+  average two independent estimates (+3 dB) and cross-check the timing
+  metric. Cost: ~61 ms against a multi-second robust header — negligible.
+
+### PHY Header
+
+A self-describing header follows the sync symbols so the payload can be
+decoded without prior negotiation (enables monitoring and simplifies
+handshake):
+
+| Field | Bits | Meaning |
+|---|---:|---|
+| `magic` | 8 | `0x5C` |
+| `version` | 4 | wire version, v1 = `1` |
+| `waveform` | 4 | `0=OFDM`, `1=CSS (reserved)` |
+| `family` | 2 | `0=WIDE, 1=MID, 2=NARROW, 3=ULTRA` |
+| `mode` | 4 | ladder index of the **payload** |
+| `cp_mode` | 2 | payload CP |
+| `frame_type` | 6 | link frame type ([PROTOCOL.md](PROTOCOL.md)) |
+| `length` | 12 | payload bytes |
+| `seq_low` | 8 | low 8 bits of link sequence (dedup aid) |
+| `crc16` | 16 | header CRC |
+
+Header transport (fixed, family-wide, never negotiated):
+
+- **fast header**: QPSK, LDPC `N=648 r1/2`, spread ×2 — ~0.35 s (`WIDE`),
+  decodes to ~−1 dB; used when the session mode is `M8+`
+- **robust header**: QPSK, LDPC `N=648 r1/2`, spread ×16 — decodes to the
+  family floor; used for handshake, beacons, and sessions in `M4–M7`.
+  Durations: ~2.5 s `ULTRA`, ~2.8 s `WIDE`, ~6.8 s `MID`, ~14 s `NARROW`
+  (the price of the narrow families' very low coded rates; see the NARROW
+  acquisition caveat)
+
+The chirp signature announces which header class follows, so the receiver
+never trial-decodes both.
+
+### Header Codeword Payload Piggyback
+
+The `N=648 r1/2` header codeword carries 324 info bits and the header needs
+only ~66 + CRC. The remaining **~30 bytes carry the leading link-payload
+bytes**, transported at the header's own robust parameters. Consequences:
+
+- ACKs, keepalives, probes, and most control frames fit **entirely inside
+  the header codeword** — one codeword after sync, no separate payload
+  section. At `M4` this halves control-frame airtime (an ACK is ~3.5 s
+  instead of ~5.6 s including preamble and sync).
+- `length` still states the total link payload; payload codewords at the
+  mode's own parameters follow only for the bytes beyond the piggyback
+  capacity.
+- The piggyback region is part of the link payload for CRC and crypto
+  purposes; the split is purely a transport detail.
+
+### Frame-on-Air Layout
+
+```text
+[chirp preamble][ZC block][header codeword(s)][payload codewords][tail pad]
+```
+
+Payload symbols continue the scattered-pilot pattern; the equalizer tracks
+from the ZC estimate through the frame (see [DSP.md](DSP.md)).
+
+### Burst Container (Aggregated Transmissions)
+
+A TX burst carrying multiple link frames (MAC aggregation,
+[PROTOCOL.md](PROTOCOL.md)) pays the preamble + ZC + header cost **once**:
+the PHY payload is a container of back-to-back link frames, each delimited
+by its own envelope and CRC, and the PHY header `length` covers the total.
+Without this, per-frame acquisition overhead is ~17% at `M13` with 4-frame
+bursts; with it, ~5%. Rules:
+
+- all frames in a container share the burst's mode/CP (they already must —
+  one transmission, one waveform)
+- a container is still one acquisition event: if the header fails, the
+  whole burst is lost (acceptable — the fast header decodes ≥ 3 dB below
+  any mode that uses aggregation)
+- receivers parse greedily: envelope `length` fields walk the container;
+  a CRC failure skips to the next envelope boundary candidate only via the
+  known length chain (no resync heuristics mid-container)
+- voice talkspurt streaming ([VOICE.md](VOICE.md)) is the degenerate case:
+  an open-ended container
+
+### Sideband-Inversion Tolerance
+
+If one station operates LSB against USB, the spectrum flips around the
+center: every up-chirp is received as a down-chirp. All three preamble
+signatures remain **unambiguous under inversion** (up–up ↔ down–down,
+up–down–up–down ↔ down–up–down–up, 4×up ↔ 4×down — none collide with a
+valid signature). The sync engine therefore detects inversion for free and
+**auto-corrects** by conjugating the complex baseband before demodulation,
+logging the condition and flagging it in telemetry so the operator can fix
+the radio setting. Auto-correction is RX-only; the modem never transmits
+inverted.
+
+## PAPR and TX Shaping
+
+- per-copy pseudorandom spreading phases and the whitener keep PAPR near the
+  Gaussian baseline
+- a soft clipper at 8 dB PAPR ceiling followed by the occupied-band filter
+  bounds out-of-band regrowth
+- TX level normalization targets consistent RMS across frame types
+  ([DSP.md](DSP.md))
+
+## Reserved CSS Tier (`M0–M3`) — Forward Specification
+
+Not built in v1. Reserved so the wire format never changes when added:
+
+- `waveform=1` in the PHY header selects CSS payload transport
+- planned shape: LoRa-style CSS, SF5–SF8 over the family band, non-coherent
+  dechirp-FFT demodulation, Hamming-style light FEC, ~30–300 bps,
+  floors −9 → −14 dB
+- handshake would move to CSS `M0` when both peers advertise the capability
+  bit (`CAP_CSS_TIER`), restoring deep-weak-signal connect below the OFDM
+  pilot floor
+- ladder, AMC, ARQ, and framing already treat modes as opaque table entries,
+  so the tier lands as: new mode-table rows + one new modulator/demodulator
+  pair + arbitration in the sync engine
+
+## VHF-FM Band Profile — Forward Specification
+
+Not built in v1; reserved so it lands as a profile table, not a redesign.
+
+**Works today, no profile needed:** Skywave over a VHF/UHF FM rig's voice
+audio path (mic/speaker, ~300–3000 Hz) is just the `HF` profile on a
+benign channel — it connects and rides the ladder to `M13`. The dedicated
+profile targets the *wideband* FM path instead.
+
+Planned shape (targets, not commitments):
+
+- **channel**: the flat ~300–6900 Hz audio of a 9600-capable FM rig's data
+  port (discriminator/flat path), or SDR audio of similar width; still
+  48 kHz soundcard I/O and the 12 kHz complex internal domain
+- **numerology**: ~150 Hz subcarrier spacing (VHF multipath is microseconds,
+  not milliseconds — short symbols win), CP ≈ 0.25–0.5 ms, ~45 carriers,
+  ~6.75 kHz occupied, center ~3.6 kHz
+- **ladder**: no deep-spread tier (the channel is SNR-rich or dead); ladder
+  emphasis shifts to the top — including a possible 256QAM extension rung —
+  targeting ~25–35 kbps net at the top
+- **CCA**: carrier-detect / RSSI-style busy logic replaces the HF spectral
+  busy fusion
+- **sync**: same chirp + ZC machinery, retuned spans and thresholds
+- **everything above the PHY** — link, ARQ, AMC shape, services, crypto,
+  voice, interfaces — is unchanged and shared
+
+Config surface: `[modem] band = hf` (reserved key, `hf` is the only v1
+value; `vhf-fm` arrives with the profile).
+
+## Conformance Targets
+
+Each active mode must demonstrate, in the Watterson simulator
+([TESTING.md](TESTING.md)):
+
+- ≤ 10% FER at its documented floor on CCIR Moderate
+- ≤ 1% FER at floor + 3 dB
+- NET throughput within 5% of table values at floor + 10 dB
+
+The documented floors are **end-to-end targets including implementation
+losses** (imperfect channel estimation, sync jitter, quantized LLRs —
+budget ~1 dB total). If a mode misses its floor in bertool, first suspect
+the robust-tier channel estimator, then LLR scaling — do not silently
+re-table the floors.

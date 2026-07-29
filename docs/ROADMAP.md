@@ -1,0 +1,317 @@
+# Skywave Construction Roadmap (Execution Tracker)
+
+This is the **living work-breakdown** for building Skywave. Strategy,
+dependency policy, and milestone definitions live in
+[BUILD_PLAN.md](BUILD_PLAN.md); this document decomposes each phase into
+ordered, session-sized steps with individual test gates.
+
+**How to use this document (instructions to the builder):**
+
+1. At session start: read this file, run the full test suite, find the
+   first unchecked step whose prerequisites are checked.
+2. Implement that step *with its tests in the same change*. A step is done
+   only when its listed gate passes and the whole suite is green.
+3. Check the box (edit this file), note deviations in the *Deviations Log*
+   at the bottom, and commit before moving on.
+4. Never start a step out of order unless its listed prerequisites are all
+   checked. Steps marked `[P]` may be done in parallel with their siblings.
+5. If a step forces a design change, update the affected design doc in the
+   same change — the docs are the source of truth, and drift is a bug.
+
+Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
+[WAVEFORM.md](WAVEFORM.md) (PHY), [PROTOCOL.md](PROTOCOL.md) (link),
+[DSP.md](DSP.md) (signal chains), [TESTING.md](TESTING.md) (test layers).
+
+---
+
+## Phase 0 — Scaffold
+
+*Goal: an empty-but-running program with the project's bones.*
+*Exit gate: **Milestone M0** (BUILD_PLAN.md).*
+
+- [x] **0.1 Repository skeleton** — directory tree per ARCHITECTURE.md;
+  top-level `CMakeLists.txt` with all options (`ENABLE_GUI/CRYPTO/VOICE`,
+  `BUILD_TESTS/TOOLS`, sanitizers); vendor KissFFT, Dear ImGui, GoogleTest;
+  find-package for PortAudio, zstd, optional libsodium/Codec2/SDL2.
+  *Gate: all option combinations configure; empty `skywave` binary builds
+  on macOS + Linux.*
+- [x] **0.2 Core utilities** — `core/constants.hpp` holding the **HF band
+  profile table** (numerology, CP set, family carrier plans, chirp spans,
+  PRN seeds — every number from WAVEFORM.md in one place); leveled logger;
+  monotonic + injectable clock; byte/bit packers.
+  *Gate: `test_core` (config round-trip comes in 0.3; here: packers, clock
+  injection, profile-table static asserts — e.g., bin ranges, carrier
+  counts, center-bin invariants).*
+- [x] **0.3 INI configuration** — full schema from CONFIGURATION.md,
+  defaults, load/save/preserve-unknown-keys, validation rules (callsign,
+  state-dependent rejections stubbed).
+  *Gate: `test_config` round-trips every key; unknown keys preserved.*
+- [x] **0.4 Audio I/O layer** — PortAudio duplex wrapper, device listing,
+  SPSC sample rings, WAV reader/writer, `--replay`/`--record` paths.
+  *Gate: `test_audio_rings` (SPSC correctness under threads); WAV
+  round-trip bit-exact.*
+- [x] **0.5 Thread scaffold** — modem-worker loop consuming RX ring /
+  feeding TX ring (pass-through for now), versioned telemetry snapshot,
+  serialized command queue, clean startup/shutdown ordering.
+  *Gate: TSan-clean pass-through run; commands round-trip worker.*
+- [x] **0.6 CLI + main wiring** — argument parsing per CONFIGURATION.md,
+  headless loop, `--list-audio`, `--version`, `--help`.
+  *Gate: **M0** — `skywave --replay in.wav --record out.wav` copies audio
+  through the full thread model; CI matrix green with sanitizers.*
+  *(M0 verified 2026-07-28: 96000-sample tone replay→record with zero
+  sample error; 4/4 test suites pass in Release and UBSan builds. ASan is
+  blocked by a host toolchain fault — see Deviations Log.)*
+
+## Phase 1 — PHY Core
+
+*Goal: every active mode closes its documented floor over the simulator.*
+*Exit gate: **Milestone M1** — the project's hardest gate.*
+
+- [ ] **1.1 FFT + windows** `[P]` — KissFFT wrapper (320-pt @ 12 kHz
+  domain), window functions, overlap helpers.
+  *Gate: `test_dsp` FFT known-answers, Parseval, round-trip.*
+- [ ] **1.2 Rate/domain converters** — Hilbert FIR, ±1500 Hz mixers,
+  polyphase 4:1 decimator/interpolator (48 k real ↔ 12 k complex).
+  *Gate: chain SNR > 60 dB across 300–2900 Hz; image rejection > 60 dB.*
+- [ ] **1.3 AGC + DC block** `[P]` — per DSP.md dynamics, freeze hook.
+  *Gate: `test_dsp` AGC attack/release/freeze cases.*
+- [ ] **1.4 CRC + whitener** `[P]` — CRC-16/32 (header/link), LFSR
+  whitener. *Gate: published CRC vectors; whitener period/balance.*
+- [ ] **1.5 LDPC codec** — 802.11n tables N=648/1944 all rates; encoder;
+  normalized min-sum decoder (5-bit LLR, ≤30 iter, early-exit);
+  shortening; IR puncture handling.
+  *Gate: `test_ldpc` bit-exact encode vectors; AWGN decode thresholds
+  within 0.5 dB of reference curves per rate.*
+- [ ] **1.6 Chirp engine** — generator + matched-filter detector, all four
+  family spans, signature patterns, inversion detection, ±50 Hz stepped
+  calling search, delay–Doppler resolution from up/down pairs.
+  *Gate: `test_chirp` Pd ≥ 99% at family acquisition floors; false-alarm
+  < 1/10 min in noise; CFO estimate error < 1 Hz; inverted-spectrum
+  detection correct.*
+- [ ] **1.7 ZC sync symbols** `[P]` — per-family sequences, S&C metric,
+  robust-class doubled block, timing/CFO refinement.
+  *Gate: `test_zc` timing ±2 samples, CFO < 0.5 Hz at floor SNR.*
+- [ ] **1.8 TX chain** — bit pipeline (map → spread → pilots → IFFT → CP →
+  window), PHY framer (preamble + ZC + header codeword with payload
+  piggyback + payload codewords + burst container), PAPR clipper, band
+  filter, TX level normalizer.
+  *Gate: `test_phy_tx` — spectral mask (occupied band per family), PAPR
+  ceiling honored, pilot positions verified, golden-frame regression.*
+- [ ] **1.9 Channel simulator (`chansim`)** — Watterson 2-tap Rayleigh,
+  Gaussian Doppler, AWGN, CFO, sample-clock offset; CCIR Good/Moderate/
+  Poor presets; deterministic seeding; library + CLI.
+  *Gate: `test_chansim` — measured Doppler spectrum and delay spread match
+  configuration; unit-energy calibration verified.*
+- [ ] **1.10 RX sync engine** — SEARCH→COARSE→FINE→TRACK→FLYWHEEL state
+  machine wired to 1.6/1.7, inversion auto-correct, CFO rotator.
+  *Gate: acquisition probability curves vs SNR reproduce 1.6/1.7 figures
+  end-to-end through the 48 k front end.*
+- [ ] **1.11 RX demod chain** — scattered-pilot channel estimator
+  (mode-dependent α), delay-spread estimator, MMSE equalizer, MRC
+  despreader, soft demapper with per-carrier weighting.
+  *Gate: `test_phy_rx` — equalizer MSE vs known channels; despreader gain
+  within 0.5 dB of theoretical MRC on flat noise.*
+- [ ] **1.12 Full-frame decode loopback** — header class dispatch, header
+  decode, payload decode, CRC verify; clean-channel loopback TX→RX in
+  process.
+  *Gate: 0 errors for every family × mode × CP at high SNR; header floors
+  verified.*
+- [ ] **1.13 `bertool` + conformance tuning** — sweep driver (family ×
+  mode × preset × SNR → FER/throughput CSV); then iterate on LLR scaling,
+  estimator constants, sync thresholds until targets hold. Budget multiple
+  sessions; record tuning outcomes in the Deviations Log.
+  *Gate: **M1** — all WAVEFORM.md conformance targets, quick profile in
+  CI, full sweep archived.*
+
+## Phase 2 — Link Core (First Functional Modem)
+
+*Exit gate: **Milestone M2**.*
+
+- [ ] **2.1 Link envelope + frame types** — pack/parse for every
+  PROTOCOL.md frame type, flags, piggybacked `ack_base`, voice-vs-ARQ
+  sequence spaces.
+  *Gate: `test_frame` round-trips + malformed-input fuzz (no crashes,
+  clean rejects).*
+- [ ] **2.2 Session FSM + timers** — states, airtime-aware timeout
+  computation (PHY airtime query), retry budgets, idle disconnect.
+  *Gate: `test_fsm` table-driven transition coverage incl. timeout paths.*
+- [ ] **2.3 Handshake** — CALL/CALL_ACK/START/START_ACK(NAK) bodies,
+  capability intersection, quality-seeded initial mode, ULTRA fallback.
+  *Gate: `test_handshake` — happy path, every NAK reason, fallback.*
+- [ ] **2.4 ARQ engine** — SR window, gap bitmaps, compact ACK (7-byte
+  body incl. CFO report), adaptive timeout, retransmit priority,
+  max-retries teardown.
+  *Gate: `test_arq` — loss/reorder/duplicate matrices, window stalls.*
+- [ ] **2.5 TX/RX arbiter + PTT + safety** — priority queue
+  (control-urgent > retransmit > data > keepalive > beacon), CCA gate with
+  bypass list, PTT sequencing for all methods, TX watchdog, `TXTEST`.
+  *Gate: `test_arbiter` priority/bypass cases; watchdog fires in fault
+  injection.*
+- [ ] **2.6 TCP data + control servers** — single-client ports, line
+  protocol, Phase-2 command subset, `EVT:` notifications.
+  *Gate: `test_tcp` scripted command/response/notification session.*
+- [ ] **2.7 Two-modem integration harness** — two in-process instances ×
+  two chansim directions (asymmetric channels); scenario runner + failure
+  artifacts (seeds, event CSV, baseband WAV).
+  *Gate: **M2** — `connect_floor`, `bulk_transfer`, `disconnect_paths`
+  scenarios pass per TESTING.md.*
+
+## Phase 3 — Adaptation
+
+*Exit gate: **Milestone M3**.*
+
+- [ ] **3.1 AMC controller** — inputs aggregation, promote/demote rules,
+  hysteresis, dwell, high-mode gates, fast-demote paths, `DEGRADED` flag.
+  *Gate: `test_amc` table-driven rule coverage.*
+- [ ] **3.2 `MODE_CHANGE` protocol + mode commands** — in-band
+  coordination (demotion at target mode), `MODE/MAXMODE/CPMODE`, pinning
+  with fast-demote safety.
+  *Gate: two-modem `mode_pin` scenario.*
+- [ ] **3.3 HARQ chase** — soft-buffer management, combining.
+  *Gate: `test_harq` — combined-decode gain ≥ 2 dB at 2 transmissions.*
+- [ ] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR
+  priors; AUTO negotiation.
+  *Gate: IR outperforms chase for rate > 1/2 modes in bertool A/B.*
+- [ ] **3.5 Channel memory** `[P]` — keying, EMA store, persistence,
+  aging, recommendation clamps, START seeding (lower-of-two rule).
+  *Gate: `test_chanmem`.*
+- [ ] **3.6 Probe-before-promote** `[P]` — PROBE/PROBE_ACK, eligibility,
+  cooldown. *Gate: `test_probe` + two-modem promotion scenario.*
+- [ ] **3.7 Carrier masking** `[P]` — weight tracking, MASK_UPDATE/ACK,
+  RLE, pilot-skip interpolation, demote-on-ratio.
+  *Gate: two-modem `mask_excision` scenario (injected tone → recovery).*
+- [ ] **3.8 MAC burst container + profiles** — multi-frame PHY container,
+  window/aggregate tiers, keepalive, greedy container parsing.
+  *Gate: throughput at M13 within 10% of NET × (1 − container overhead).*
+- [ ] **3.9 CP auto + TX frequency alignment** — delay-spread-driven
+  CPMODE AUTO; split-correction TX pre-shift with slew/clamp and
+  `EVT:CFO_WARN`.
+  *Gate: two-modem run with ±40 Hz mistuning converges centered; CP steps
+  under injected long multipath.*
+- [ ] **3.10 Monitor mode** — control-port `MON:` lines, data-port binary
+  records with connected-state suppression.
+  *Gate: third passive instance decodes both directions in harness.*
+- [ ] **3.11 Ramp validation** — scripted −10→+22→−10 dB SNR ramp.
+  *Gate: **M3** — zero session drops; ≥ 75% of oracle throughput.*
+
+## Phase 4 — Services
+
+*Exit gate: **Milestone M4**.*
+
+- [ ] **4.1 Compression** — zstd with marker byte, coalesce window,
+  negotiation, 8 MiB cap. *Gate: `test_proto` compression cases.*
+- [ ] **4.2 Fragmentation/reassembly** — more-fragments chain, codeword-
+  budget-sized segmentation. *Gate: large-message round-trips under loss.*
+- [ ] **4.3 File transfer** — metadata, service tags, 32 KiB checkpoints,
+  `EVT:FILE_*`. *Gate: `test_file` + two-modem transfer scenario.*
+- [ ] **4.4 Session resume** — tokens, window, sequence continuation,
+  file-checkpoint continuation, invalidation rules.
+  *Gate: two-modem `resume` scenario (mid-transfer kill → CRC-clean
+  completion).*
+- [ ] **4.5 Broadcast + CW ID** `[P]` — CQ/BEACON/BCAST_DATA with
+  fragmenting, CW renderer as lowest-priority burst.
+  *Gate: monitor instance receives/reassembles; CW timing verified.*
+- [ ] **4.6 Observability completion** — `STATUS JSON`, `NOISEFLOOR`,
+  `AUDIOLEVEL`, `FREQINFO`, remaining commands.
+  *Gate: **M4** — command surface complete vs INTERFACES.md checklist;
+  conformance matrix (`tests/conformance.yaml`) fully evidenced.*
+
+## Phase 5 — Voice, Crypto, GUI
+
+*Exit gate: **Milestone M5**. Three independent tracks; 5.1–5.3 ordered,
+others `[P]` across tracks.*
+
+- [ ] **5.1 Crypto: KEX + KDF** — X25519 ephemeral + PSK-HMAC transcript
+  auth in START/START_ACK; directional key derivation.
+  *Gate: `test_crypto` KEX vectors; tampered-transcript rejection.*
+- [ ] **5.2 Crypto: AEAD framing** — AES-256-GCM, implicit nonces with
+  stream id, AAD binding, replay window.
+  *Gate: replay/tamper/nonce-uniqueness property tests.*
+- [ ] **5.3 Crypto: epochs + surface** — KEY_UPDATE rotation with grace
+  window, auto-rotation triggers, `SECURITY/ENCRYPTION/ENCRYPTKEY/
+  KEYROTATE`, zeroization.
+  *Gate: two-modem `crypto_session` scenario incl. mid-transfer rotation.*
+- [ ] **5.4 Voice: codec + streaming** — Codec2 wrapper, talkspurt
+  streaming (open-ended container), VOICE_DATA packing, PLC, voice
+  sequence space.
+  *Gate: `test_voice`; A→chansim→B PCM round-trip intelligible artifacts
+  archived; concealment at 5/10% loss.*
+- [ ] **5.5 Voice: session control + port** — OPEN/PTT-arbitration/CLOSE
+  flows, broadcast voice, jitter buffer, voice TCP port records, codec
+  auto-mapping with demotion stepdown.
+  *Gate: two-modem `voice_loop` scenario + command surface.*
+- [ ] **5.6 GUI: shell + telemetry** — SDL2/ImGui on main thread (service
+  thread takeover), snapshot consumption, theming.
+  *Gate: runs on macOS + Linux; clean headless fallback.*
+- [ ] **5.7 GUI: instruments** — waterfall (band + mask overlays),
+  constellation/despread view, ladder panel with AMC inputs, session
+  panel. *Gate: live render during harness session (screenshot artifacts).*
+- [ ] **5.8 GUI: settings + dialogs** — settings pages mirroring INI via
+  the command dispatcher, calibration helper (TXTEST flow), crypto page
+  (crypto builds).
+  *Gate: **M5** — every GUI mutation routes through the dispatcher; all
+  M2–M4 scenarios pass with crypto enabled.*
+
+## Phase 6 — Extensions
+
+*Exit gate: **Milestone M6**.*
+
+- [ ] **6.1 CSS modulator/demodulator** — SF5–SF8 per WAVEFORM.md forward
+  spec, non-coherent dechirp-FFT, light FEC.
+  *Gate: CSS FER curves vs SNR down to −14 dB in bertool.*
+- [ ] **6.2 CSS integration** — `waveform=1` PHY header path, sync
+  arbitration, `M0–M3` ladder rows, `CAP_CSS_TIER` negotiation,
+  handshake-on-CSS.
+  *Gate: two-modem connect + transfer at −13 dB (WIDE, CCIR Moderate).*
+- [ ] **6.3 Advisor layer** — bounded framework, AMC/CFO/mask domains,
+  off/shadow/assist modes, env controls.
+  *Gate: shadow non-degradation on the Phase-3 ramp; assist bounded-step
+  property tests.*
+- [ ] **6.4 Packaging + release** — install targets, third-party notices,
+  versioning, release checklist, docs refresh pass.
+  *Gate: **M6** — clean-machine install; full nightly suite green.*
+
+## Phase 7 — VHF-FM Band Profile
+
+*Exit gate: **Milestone M7**.*
+
+- [ ] **7.1 Profile table + flat-channel preset** — `vhf-fm` numerology
+  per WAVEFORM.md forward spec; Rician/near-AWGN chansim preset.
+- [ ] **7.2 Ladder + CCA + sync tuning** — top-heavy ladder (evaluate
+  256QAM rung), carrier-detect busy logic, retuned chirp/thresholds.
+- [ ] **7.3 Validation** — bertool conformance for the profile; all
+  Phase-2/3/4 scenarios under `band = vhf-fm`.
+  *Gate: **M7** — ≥ 25 kbps net sustained over the flat-channel sim.*
+
+---
+
+## Standing Gates (every phase)
+
+- full unit suite + quick bertool profile green in CI before any check-off
+- ASan/UBSan green from Phase 0; TSan on thread-touching steps
+- no allocations in the modem worker after startup (debug hook, Phase 0.5+)
+- doc drift fixed in the same change that causes it
+
+## Deviations Log
+
+*(append-only; note step, date, what changed vs the design docs, and which
+doc was updated)*
+
+- **0.1 / 2026-07-28** — Using a lightweight built-in test harness
+  (`tests/skytest.hpp`) instead of vendored GoogleTest: avoids a network
+  fetch during scaffold, same CTest integration and macro surface
+  (CHECK/CHECK_EQ/CHECK_NEAR). Revisit only if a phase genuinely needs
+  GTest features (death tests, parametrized suites). BUILD_PLAN.md
+  dependency table note applies.
+- **0.1 / 2026-07-28** — KissFFT and Dear ImGui not yet vendored (not
+  needed until steps 1.1 / 5.6); will vendor when their steps start.
+- **0.3 / 2026-07-28** — Config::save() bug found by
+  `config_unknown_keys_preserved`: unknown keys in unknown sections were
+  dropped on save; fixed by appending foreign sections after known ones.
+  No doc change needed (CONFIGURATION.md already required preservation).
+- **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
+  Apple clang 17: the ASan runtime spins in `__malloc_init` /
+  `wrap_malloc_default_zone` before `main`, with or without
+  `MallocNanoZone=0`). Local sanitizer gate downgraded to **UBSan**
+  (clean, 4/4 pass); ASan remains in the standing gates via Linux CI when
+  that exists. Revisit after the next Xcode/CLT update.
