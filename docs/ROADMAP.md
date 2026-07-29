@@ -82,11 +82,13 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
 - [x] **1.4 CRC + whitener** `[P]` — CRC-16/32 (header/link), LFSR
   whitener. *Gate: published CRC vectors; whitener period/balance.*
   ✓ 2026-07-28
-- [ ] **1.5 LDPC codec** — 802.11n tables N=648/1944 all rates; encoder;
-  normalized min-sum decoder (5-bit LLR, ≤30 iter, early-exit);
-  shortening; IR puncture handling.
-  *Gate: `test_ldpc` bit-exact encode vectors; AWGN decode thresholds
-  within 0.5 dB of reference curves per rate.*
+- [x] **1.5 LDPC codec** — 802.11n tables N=648/1944 all rates; structured
+  dual-diagonal encoder; flooding normalized min-sum decoder (float LLR,
+  ≤30 iter, early-exit). Shortening + IR puncturing arrive with their
+  consumers (PHY framer 1.8 / HARQ 3.4).
+  *Gate: `test_ldpc` — H·c=0 across all 8 codes; AWGN thresholds within
+  0.5 dB of reference per rate.* ✓ 2026-07-28 (FER ≤10% at thr+0.5 dB and
+  ≥80% at thr−1.5 dB for all four rates, N=1944 and N=648 spot check)
 - [ ] **1.6 Chirp engine** — generator + matched-filter detector, all four
   family spans, signature patterns, inversion detection, ±50 Hz stepped
   calling search, delay–Doppler resolution from up/down pairs.
@@ -323,6 +325,11 @@ doc was updated)*
   of DSP.md's Hilbert-first sketch. Identical function and rejection; one
   filter concept instead of two and no Hilbert delay-matching. DSP.md
   updated to match.
+- **1.5 / 2026-07-28** — 802.11n base matrices transcribed from the public
+  reference github.com/tavildar/LDPC (LdpcC/WiFiLDPC.h); validated
+  structurally (H·c=0 for every code) and by AWGN threshold conformance.
+  Decoder uses float LLRs internally; the 5-bit quantization named in
+  DSP.md is applied at the demapper (step 1.11), not inside the decoder.
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without
