@@ -192,9 +192,11 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
             s * spreadPhase(i, k, symIdx);
       }
     }
+    const float ts = ofdmTimeScale(family);
     for (int g = 0; g < G; ++g) {
       std::vector<cfloat> core(static_cast<size_t>(kFftBaseband));
       fft.inverse(freq[size_t(g)].data(), core.data());
+      for (auto& v : core) v *= ts;
       out.insert(out.end(), core.end() - cpLen, core.end());
       out.insert(out.end(), core.begin(), core.end());
     }
@@ -264,17 +266,12 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
   auto pre = makeChirpPreamble(p.family, p.sig);
   frame.insert(frame.end(), pre.begin(), pre.end());
 
+  // ZC block and chirp are unit-RMS; OFDM symbols are scaled to unit RMS
+  // in appendOfdmSymbols (ofdmTimeScale), so the frame is level-uniform
+  // and the ZC-seeded channel estimate matches the pilot convention.
   const int zcCount = robust ? kZcSymbolsRobust : kZcSymbolsFast;
   auto zc = makeZcBlock(p.family, zcCount);
-  // ZC block is generated at unit RMS; OFDM symbols below come out of the
-  // raw IFFT (~sqrt(n)/N RMS), so bring ZC down to match before the final
-  // frame normalization equalizes everything.
-  const float ofdmRms =
-      std::sqrt(float(plan(p.family).carriers())) / float(kFftBaseband);
-  for (auto& v : zc) v *= ofdmRms;
   frame.insert(frame.end(), zc.begin(), zc.end());
-  // Chirp preamble likewise unit-amplitude: scale to the same RMS.
-  for (size_t i = 0; i < pre.size(); ++i) frame[i] *= ofdmRms;
 
   int sym = appendOfdmSymbols(p.family, Constellation::Qpsk,
                               headerSpread(robust), CpMode::Medium,

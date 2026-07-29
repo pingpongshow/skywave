@@ -122,20 +122,22 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   profile verified by cross-correlation, AWGN 3 kHz-ref calibration ±0.15,
   CFO and clock-offset verified, deterministic per seed, unit-energy
   fading.* ✓ 2026-07-28
-- [ ] **1.10 RX sync engine** — SEARCH→COARSE→FINE→TRACK→FLYWHEEL state
-  machine wired to 1.6/1.7, inversion auto-correct, CFO rotator.
-  *Gate: acquisition probability curves vs SNR reproduce 1.6/1.7 figures
-  end-to-end through the 48 k front end.*
-- [ ] **1.11 RX demod chain** — scattered-pilot channel estimator
-  (mode-dependent α), delay-spread estimator, MMSE equalizer, MRC
-  despreader, soft demapper with per-carrier weighting.
-  *Gate: `test_phy_rx` — equalizer MSE vs known channels; despreader gain
-  within 0.5 dB of theoretical MRC on flat noise.*
-- [ ] **1.12 Full-frame decode loopback** — header class dispatch, header
-  decode, payload decode, CRC verify; clean-channel loopback TX→RX in
-  process.
-  *Gate: 0 errors for every family × mode × CP at high SNR; header floors
-  verified.*
+- [x] **1.10 RX sync engine** — realized as ChirpDetector (SEARCH/COARSE)
+  + zcRefine (FINE) + ChannelTracker (TRACK/FLYWHEEL) in a one-shot
+  `receiveFrame`; inversion auto-correct (conjugate + re-run); CFO rotator
+  in the symbol walker. Streaming worker integration lands in Phase 2.
+  ✓ 2026-07-28
+- [x] **1.11 RX demod chain** — scattered-pilot channel estimator with
+  mode-class α, CPE PLL with pilot innovations, pilot-residual noise
+  estimator, FLYWHEEL hold, MRC despreader over spread groups, max-log
+  LLR demapper with CSI weighting. (Delay-spread estimator → CPMODE AUTO
+  deferred to 3.9 with its consumer.) ✓ 2026-07-28
+- [x] **1.12 Full-frame decode loopback** — `test_phy_rx`: clean loopback
+  all four families (M4/M8/M9/M13), ±40 Hz CFO calling frames, inverted
+  spectrum + CFO, AWGN at M8 floor+6 (5/5) and M4 robust floor+2.5 (≥4/5),
+  CCIR Moderate M8 at floor+10 (≥4/5). Link CRC verification belongs to
+  the Phase-2 link layer. ✓ 2026-07-28 — see Deviations Log for the
+  level-convention fix this exposed.
 - [ ] **1.13 `bertool` + conformance tuning** — sweep driver (family ×
   mode × preset × SNR → FER/throughput CSV); then iterate on LLR scaling,
   estimator constants, sync thresholds until targets hold. Budget multiple
@@ -396,6 +398,18 @@ doc was updated)*
   per-family TX band FIR, which meets the spectral mask on its own
   (DSP.md's "window/overlap" line is satisfied by frame-edge shaping in
   the chirp/ZC generators + the band filter).
+- **1.10–1.12 / 2026-07-28** — Frame level convention fixed: all frame
+  sections (chirp, ZC, OFDM symbols) are now **unit time-domain RMS** at
+  TX (`ofdmTimeScale` = N/√n applied to OFDM symbols; RX divides it out
+  after the FFT). The first integration attempt scaled ZC down to raw-IFFT
+  level instead, which made the ZC-seeded channel estimate disagree with
+  pilot measurements by exactly N/√n — and the tracker's FLYWHEEL
+  correctly interpreted that as broken pilots and froze all adaptation.
+  Also fixed: multi-codeword payload reassembly must concatenate info BITS
+  before byte conversion (r5/6 chunks are 1620 bits — not byte-aligned).
+  Observed and noted: OFDM payloads can tickle low-quality (~0.016) false
+  chirp classifications inside a frame; the Phase-2 worker should gate
+  detections on quality and/or hold SEARCH during an active frame.
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without

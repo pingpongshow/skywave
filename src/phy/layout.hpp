@@ -100,4 +100,14 @@ inline int carrierToBasebandBin(Family f, int carrierIdx) {
   return b >= 0 ? b : kFftBaseband + b;
 }
 
+// TX time-domain scale for OFDM symbols: raw ifft of n unit carriers has
+// RMS sqrt(n)/N; scaling by N/sqrt(n) gives unit RMS, matching the unit-RMS
+// ZC sync symbols and chirp so the whole frame is level-uniform. The RX
+// divides FFT bins by this constant so pilot-measured H agrees with the
+// ZC-seeded estimate (both then equal the physical channel gain times the
+// frame normalization).
+inline float ofdmTimeScale(Family f) {
+  return float(kFftBaseband) / std::sqrt(float(plan(f).carriers()));
+}
+
 }  // namespace skw

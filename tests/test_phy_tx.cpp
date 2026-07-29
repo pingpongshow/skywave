@@ -43,6 +43,8 @@ std::vector<uint8_t> readSymbols(Family fam, Constellation c, int spread,
       std::vector<cfloat> in(base, base + kFftBaseband);
       std::vector<cfloat> out(static_cast<size_t>(kFftBaseband));
       fft.forward(in.data(), out.data());
+      const float invTs = 1.0f / ofdmTimeScale(fam);
+      for (auto& b : out) b *= invTs;
       freq.push_back(std::move(out));
       auto lay = symbolLayout(fam, symIdx0 + s + g);
       for (int carrier : lay.dataCarriers) pool.push_back({g, carrier});

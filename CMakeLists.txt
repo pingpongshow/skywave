@@ -66,6 +66,8 @@ add_library(skywave_core STATIC
   src/dsp/chirp.cpp
   src/dsp/zc.cpp
   src/phy/framer.cpp
+  src/phy/equalizer.cpp
+  src/phy/receiver.cpp
   src/sim/chansim.cpp
   src/fec/crc.cpp
   src/fec/ldpc.cpp
@@ -109,4 +111,5 @@ if(BUILD_TESTS)
   skw_test(test_zc)
   skw_test(test_phy_tx)
   skw_test(test_chansim)
+  skw_test(test_phy_rx)
 endif()
