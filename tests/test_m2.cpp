@@ -193,4 +193,53 @@ TEST_CASE(m2_disconnect_paths) {
   }
 }
 
+TEST_CASE(m3_mode_pin_scenario) {
+  // Pin M6 on A: coordinated MODE_CHANGE lands on both sides; no
+  // promotion happens afterward despite rich SNR; unpin + traffic lets
+  // AMC promote again.
+  Pair p(30.0, 55);
+  CHECK(p.connect());
+  const int before = p.a.sessionMode();
+  CHECK(p.a.pinMode(6, p.now));
+  for (int i = 0; i < 40 && (p.a.sessionMode() != 6 ||
+                             p.b.sessionMode() != 6);
+       ++i) {
+    p.step();
+  }
+  CHECK_EQ(p.a.sessionMode(), 6);
+  CHECK_EQ(p.b.sessionMode(), 6);
+  CHECK(p.a.modePinned());
+  // Traffic at high SNR: pinned mode must hold.
+  std::vector<uint8_t> blob(2048);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 1500 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == blob);
+  CHECK_EQ(p.a.sessionMode(), 6);
+  CHECK_EQ(p.b.sessionMode(), 6);
+  (void)before;
+  // Unpin: AMC may now promote (dwell + consecutive evals + more data).
+  p.a.unpinMode();
+  CHECK(!p.a.modePinned());
+  std::vector<uint8_t> blob2(4096);
+  p.a.sendData(blob2);
+  std::vector<uint8_t> got2;
+  for (int i = 0; i < 3000 && got2.size() < blob2.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got2.insert(got2.end(), d.begin(), d.end());
+  }
+  CHECK_EQ(int(got2.size()), int(blob2.size()));
+  CHECK(p.a.sessionMode() >= 6);
+  // Let any in-flight MODE_CHANGE/MODE_ACK exchange settle, then the
+  // committed modes must agree.
+  for (int i = 0; i < 12; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), p.b.sessionMode());
+}
+
 SKYTEST_MAIN

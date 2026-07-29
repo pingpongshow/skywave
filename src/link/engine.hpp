@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "link/amc.hpp"
 #include "link/arq.hpp"
 #include "link/frame.hpp"
 #include "link/fsm.hpp"
@@ -46,6 +47,13 @@ class LinkEngine {
   size_t txBacklog() const { return txBuffer_.size(); }
   bool idleClean() const;  // nothing pending anywhere
 
+  // --- mode control (3.2) ---------------------------------------------
+  // Manual pin/unpin (MODE Mx / MODE AUTO). Pinning coordinates a
+  // MODE_CHANGE to the pinned mode; fast-demote safety stays active.
+  bool pinMode(int mode, double now);
+  void unpinMode();
+  bool modePinned() const;
+
   // --- scheduling ------------------------------------------------------
   // Advance timers and, if a burst is due, return its baseband samples.
   std::optional<std::vector<cfloat>> tick(double now);
@@ -67,12 +75,27 @@ class LinkEngine {
   void onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                double now);
 
+  void applyMode(int mode, double now);
+  void requestModeChange(int target, double now);
+
   EngineConfig cfg_;
   SessionFsm fsm_;
   ArqTx arqTx_;
   ArqRx arqRx_;
+  std::optional<Amc> amc_;
+  // Mode-control ownership: the session INITIATOR drives AMC decisions
+  // and MODE_CHANGE; the responder's channel view reaches it via ACK SNR
+  // reports. Two independent controllers would collide mid-air (observed:
+  // mode oscillation and pin override). Responder-side manual pinning is
+  // a v1 limitation, noted in ROADMAP.
+  bool isInitiator_ = false;
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
+  // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK).
+  int pendingMode_ = -1;
+  uint8_t modeEpoch_ = 0;
+  double modeChangeDeadline_ = 0.0;
+  int modeChangeTries_ = 0;
   uint16_t sessionId_ = 0;
   bool ackPending_ = false;       // send an ACK on the next tick
   QualityMeasurement lastRxQuality_{};

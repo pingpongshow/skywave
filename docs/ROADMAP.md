@@ -281,10 +281,15 @@ disconnects over the simulated ionosphere end to end.**
   (WIDE/NARROW M13) require clean probe + AWGN-floor margin, aligning
   AMC with the M1 conformance restructure. Fast demote applies while
   pinned (safety rule); probe clearance is consumed by one promotion.
-- [ ] **3.2 `MODE_CHANGE` protocol + mode commands** — in-band
+- [x] **3.2 `MODE_CHANGE` protocol + mode commands** — in-band
   coordination (demotion at target mode), `MODE/MAXMODE/CPMODE`, pinning
   with fast-demote safety.
-  *Gate: two-modem `mode_pin` scenario.*
+  *Gate: two-modem `mode_pin` scenario.* ✓ 2026-07-29 — AMC wired into
+  LinkEngine; MODE_CHANGE/MODE_ACK with epochs, demotions at the target
+  mode, 3-try retry then hold. DESIGN DECISION (added to PROTOCOL.md):
+  the session initiator owns mode control - dual controllers collided
+  mid-air in the harness (mode oscillation, pin override). CPMODE AUTO
+  arrives with 3.9.
 - [ ] **3.3 HARQ chase** — soft-buffer management, combining.
   *Gate: `test_harq` — combined-decode gain ≥ 2 dB at 2 transmissions.*
 - [ ] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR

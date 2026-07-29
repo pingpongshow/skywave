@@ -171,6 +171,11 @@ no per-frame-type transport exceptions except:
 - `ACK`/`NAK` for a session in `M4–M6` may be sent at `M4` regardless of the
   session mode (feedback must be at least as robust as forward traffic)
 - `MODE_CHANGE` executing a demotion is sent at the **target** (lower) mode
+- **mode-control ownership**: the session *initiator* runs the AMC and is
+  the only sender of `MODE_CHANGE`; the responder's channel view reaches
+  the initiator through ACK/keepalive SNR reports. Two independent
+  controllers would collide mid-air (crossing MODE_CHANGEs diverge the
+  committed mode). Responder-side `MODE` pinning is a v1 limitation.
 
 ### ARQ
 

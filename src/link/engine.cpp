@@ -54,6 +54,7 @@ bool LinkEngine::idleClean() const {
 
 void LinkEngine::connectTo(const std::string& call, double now) {
   remoteCall_ = call;
+  isInitiator_ = true;
   fsm_.cmdConnect(now);
   drainFsmActions(now);
 }
@@ -129,6 +130,11 @@ void LinkEngine::drainFsmActions(double /*now*/) {
                      ChirpSig::Fast, std::max(mode_, 8));
         break;
       case FsmAction::IndicateConnected: {
+        AmcConfig ac;
+        ac.family = cfg_.policy.family;
+        ac.maxMode = cfg_.policy.maxMode;
+        amc_.emplace(ac, uint8_t(mode_), 0.0);
+        pendingMode_ = -1;
         const int w = macWindow(mode_);
         arqTx_ = ArqTx(w, cfg_.arqMaxRetries);
         arqRx_ = ArqRx(w);
@@ -208,6 +214,43 @@ std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
   return buildFrameBaseband(tp);
 }
 
+void LinkEngine::applyMode(int mode, double now) {
+  mode_ = mode;
+  if (amc_) amc_->onModeApplied(uint8_t(mode), now);
+}
+
+void LinkEngine::requestModeChange(int target, double now) {
+  if (pendingMode_ >= 0 || target == mode_) return;
+  pendingMode_ = target;
+  ++modeEpoch_;
+  modeChangeTries_ = 0;
+  // Demotions transmit at the TARGET (lower) mode so a degraded peer can
+  // still decode them; promotions ride the current committed mode.
+  const int txMode = std::min(target, mode_);
+  queueControl(LinkType::ModeChange,
+               ModeChangeBody{uint8_t(target), uint8_t(kCpDefault),
+                              modeEpoch_}
+                   .pack(),
+               txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast, txMode);
+  modeChangeDeadline_ = now + arqTx_.timeoutSec();
+}
+
+bool LinkEngine::pinMode(int mode, double now) {
+  if (fsm_.state() != FsmState::Connected || !amc_ || !isInitiator_) {
+    return false;
+  }
+  if (mode < kFirstMode || mode >= kNumModes) return false;
+  amc_->pin(uint8_t(mode), now);
+  requestModeChange(mode, now);
+  return true;
+}
+
+void LinkEngine::unpinMode() {
+  if (amc_) amc_->unpin();
+}
+
+bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
+
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   fsm_.tick(now);
   drainFsmActions(now);
@@ -215,6 +258,29 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (arqTx_.failed() && fsm_.state() == FsmState::Connected) {
     fsm_.cmdDisconnect(now);
     drainFsmActions(now);
+  }
+  // Mode-change retry / expiry, then AMC evaluation.
+  if (fsm_.state() == FsmState::Connected) {
+    if (pendingMode_ >= 0 && now >= modeChangeDeadline_) {
+      if (++modeChangeTries_ >= 3) {
+        pendingMode_ = -1;  // give up; stay at the committed mode
+      } else {
+        const int txMode = std::min(pendingMode_, mode_);
+        queueControl(LinkType::ModeChange,
+                     ModeChangeBody{uint8_t(pendingMode_),
+                                    uint8_t(kCpDefault), modeEpoch_}
+                         .pack(),
+                     txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                     txMode);
+        modeChangeDeadline_ = now + arqTx_.timeoutSec();
+      }
+    }
+    if (amc_ && isInitiator_ && pendingMode_ < 0) {
+      auto d = amc_->evaluate(now);
+      if (d.kind != AmcDecision::Kind::None) {
+        requestModeChange(d.targetMode, now);
+      }
+    }
   }
   if (ackPending_ && fsm_.state() == FsmState::Connected) {
     ackPending_ = false;
@@ -250,12 +316,16 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                          double now) {
   lastRxQuality_ = q;
   fsm_.rxTraffic(now);
+  if (amc_ && fsm_.state() == FsmState::Connected) {
+    amc_->onLocalSnr(q.snrDb);
+  }
   switch (f.env.type) {
     case LinkType::Call: {
       auto call = CallBody::parse(f.body);
       if (!call || call->dstCall != cfg_.policy.ownCall) return;
       lastCall_ = *call;
       remoteCall_ = call->srcCall;
+      isInitiator_ = false;
       fsm_.rxCall(now);
       break;
     }
@@ -288,6 +358,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Data: {
       auto d = DataBody::parse(f.body);
       if (!d || fsm_.state() != FsmState::Connected) return;
+      if (amc_) amc_->onFrameResult(d->rv > 0, true);
       arqRx_.onData(f.env.sequence, std::move(d->payload));
       for (auto& p : arqRx_.takeDelivered()) {
         rxData_.insert(rxData_.end(), p.begin(), p.end());
@@ -298,7 +369,27 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Ack: {
       auto a = AckBody::parse(f.body);
       if (!a) return;
+      if (amc_) amc_->onRemoteSnr(a->snrHalfDb * 0.5, now);
       arqTx_.onAck(*a, now);
+      break;
+    }
+    case LinkType::ModeChange: {
+      auto mc = ModeChangeBody::parse(f.body);
+      if (!mc || fsm_.state() != FsmState::Connected) return;
+      if (isInitiator_) return;  // only the initiator drives mode control
+      // Echo the epoch at the TARGET mode (the initiator may already have
+      // committed it), then apply.
+      queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
+                   mc->targetMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   std::min(int(mc->targetMode), mode_));
+      applyMode(mc->targetMode, now);
+      break;
+    }
+    case LinkType::ModeAck: {
+      auto ma = ModeAckBody::parse(f.body);
+      if (!ma || pendingMode_ < 0 || ma->epoch != modeEpoch_) return;
+      applyMode(pendingMode_, now);
+      pendingMode_ = -1;
       break;
     }
     case LinkType::Disc:
