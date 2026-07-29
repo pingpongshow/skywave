@@ -274,9 +274,13 @@ disconnects over the simulated ionosphere end to end.**
 
 *Exit gate: **Milestone M3**.*
 
-- [ ] **3.1 AMC controller** — inputs aggregation, promote/demote rules,
+- [x] **3.1 AMC controller** — inputs aggregation, promote/demote rules,
   hysteresis, dwell, high-mode gates, fast-demote paths, `DEGRADED` flag.
-  *Gate: `test_amc` table-driven rule coverage.*
+  *Gate: `test_amc` table-driven rule coverage.* ✓ 2026-07-29 —
+  link/amc.{hpp,cpp}. Operating floors = kFadingFloors; kFadingNA modes
+  (WIDE/NARROW M13) require clean probe + AWGN-floor margin, aligning
+  AMC with the M1 conformance restructure. Fast demote applies while
+  pinned (safety rule); probe clearance is consumed by one promotion.
 - [ ] **3.2 `MODE_CHANGE` protocol + mode commands** — in-band
   coordination (demotion at target mode), `MODE/MAXMODE/CPMODE`, pinning
   with fast-demote safety.
