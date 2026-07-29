@@ -113,11 +113,15 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   land with their consumers (3.8 / Phase-2 worker); golden regression is
   the decode-back suite (bit-exact by construction). See Deviations Log
   for the spread-group design fix.
-- [ ] **1.9 Channel simulator (`chansim`)** — Watterson 2-tap Rayleigh,
+- [x] **1.9 Channel simulator (`chansim`)** — Watterson 2-tap Rayleigh,
   Gaussian Doppler, AWGN, CFO, sample-clock offset; CCIR Good/Moderate/
-  Poor presets; deterministic seeding; library + CLI.
-  *Gate: `test_chansim` — measured Doppler spectrum and delay spread match
-  configuration; unit-energy calibration verified.*
+  Poor presets; deterministic seeding; library (CLI wrapper deferred to
+  bertool, which is the real consumer).
+  *Gate: `test_chansim` — Doppler PSD sigma within ±15% of spread/2 (CCIR
+  two-sigma convention, measured by autocorrelation), two-tap delay
+  profile verified by cross-correlation, AWGN 3 kHz-ref calibration ±0.15,
+  CFO and clock-offset verified, deterministic per seed, unit-energy
+  fading.* ✓ 2026-07-28
 - [ ] **1.10 RX sync engine** — SEARCH→COARSE→FINE→TRACK→FLYWHEEL state
   machine wired to 1.6/1.7, inversion auto-correct, CFO rotator.
   *Gate: acquisition probability curves vs SNR reproduce 1.6/1.7 figures
