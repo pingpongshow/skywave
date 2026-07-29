@@ -106,9 +106,28 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
 
 }  // namespace
 
+int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
+  if (store_.size() > 64) {
+    // Bounded store: drop the oldest half on overflow.
+    uint64_t median = stampCtr_ - 32;
+    for (auto it = store_.begin(); it != store_.end();) {
+      it = it->second.stamp < median ? store_.erase(it) : std::next(it);
+    }
+  }
+  auto it = store_.find(key);
+  if (it != store_.end() && it->second.llr.size() == llr.size()) {
+    for (size_t i = 0; i < llr.size(); ++i) llr[i] += it->second.llr[i];
+    it->second.llr = llr;
+    it->second.stamp = ++stampCtr_;
+    return ++it->second.count;
+  }
+  store_[key] = Entry{llr, 1, ++stampCtr_};
+  return 1;
+}
+
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
-                                          RxStage* stageOut) {
+                                          RxStage* stageOut, HarqChase* harq) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -220,6 +239,20 @@ std::optional<RxFrameResult> receiveFrame(Family family,
       }
       std::vector<uint8_t> info;
       bool dec = decodeCodeword(pcode, llr, info);
+      if (harq) {
+        const uint64_t key = HarqChase::frameKey(
+            hdr->frameType, hdr->seqLow, hdr->mode, hdr->length,
+            uint32_t(cw));
+        if (!dec) {
+          // Chase: add earlier receptions' LLRs and retry once.
+          if (harq->combine(key, llr) > 1) {
+            dec = decodeCodeword(pcode, llr, info);
+          }
+          if (dec) harq->onDecodeSuccess(key);
+        } else {
+          harq->onDecodeSuccess(key);
+        }
+      }
       if (getenv("SKW_RX_DEBUG")) {
         fprintf(stderr, "skw-rx: cw=%zu n=%d dec=%d nvar=%.3g snr=%.1f\n",
                 cw, pcode.n(), int(dec), tracker.noiseVar(),

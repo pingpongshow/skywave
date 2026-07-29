@@ -83,6 +83,7 @@ class LinkEngine {
   ArqTx arqTx_;
   ArqRx arqRx_;
   std::optional<Amc> amc_;
+  HarqChase harq_;  // chase soft-combining across retransmissions
   // Mode-control ownership: the session INITIATOR drives AMC decisions
   // and MODE_CHANGE; the responder's channel view reaches it via ACK SNR
   // reports. Two independent controllers would collide mid-air (observed:

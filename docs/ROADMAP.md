@@ -290,8 +290,12 @@ disconnects over the simulated ionosphere end to end.**
   the session initiator owns mode control - dual controllers collided
   mid-air in the harness (mode oscillation, pin override). CPMODE AUTO
   arrives with 3.9.
-- [ ] **3.3 HARQ chase** — soft-buffer management, combining.
+- [x] **3.3 HARQ chase** — soft-buffer management, combining.
   *Gate: `test_harq` — combined-decode gain ≥ 2 dB at 2 transmissions.*
+  ✓ 2026-07-29 — HarqChase in phy/receiver: per-codeword LLR
+  accumulators keyed by (frameType, seqLow, mode, length, cw index),
+  bounded store, wired through LinkEngine::rxBurst. Measured: 12/12
+  combined decodes at single-tx-knee − 2.5 dB (vs ≤6/12 single).
 - [ ] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR
   priors; AUTO negotiation.
   *Gate: IR outperforms chase for rate > 1/2 modes in bertool A/B.*

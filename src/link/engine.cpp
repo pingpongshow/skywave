@@ -130,6 +130,7 @@ void LinkEngine::drainFsmActions(double /*now*/) {
                      ChirpSig::Fast, std::max(mode_, 8));
         break;
       case FsmAction::IndicateConnected: {
+        harq_.clear();
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
@@ -301,8 +302,11 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
 
 void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   RxStage stage;
-  auto res = receiveFrame(cfg_.policy.family, samples, &stage);
-  if (!res || !res->payloadOk) return;
+  auto res = receiveFrame(cfg_.policy.family, samples, &stage, &harq_);
+  if (!res || !res->payloadOk) {
+    if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
+    return;
+  }
   auto parsed = parseFrame(res->payload);
   if (!parsed) return;
   QualityMeasurement q;
