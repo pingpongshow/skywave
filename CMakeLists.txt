@@ -70,6 +70,7 @@ add_library(skywave_core STATIC
   src/phy/receiver.cpp
   src/sim/chansim.cpp
   src/link/frame.cpp
+  src/link/fsm.cpp
   src/fec/crc.cpp
   src/fec/ldpc.cpp
   src/fec/ldpc_tables.cpp
@@ -121,4 +122,5 @@ if(BUILD_TESTS)
   skw_test(test_phy_rx)
   skw_test(test_conformance)
   skw_test(test_frame)
+  skw_test(test_fsm)
 endif()

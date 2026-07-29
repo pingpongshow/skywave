@@ -209,9 +209,13 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   + CRC-32, 22 body types, callsign validation + FNV-1a-24 hash,
   reserved-mode clamp (M0–M3→M4), reserved caps/flag bits rejected;
   8000-iteration fuzz clean.
-- [ ] **2.2 Session FSM + timers** — states, airtime-aware timeout
+- [x] **2.2 Session FSM + timers** — states, airtime-aware timeout
   computation (PHY airtime query), retry budgets, idle disconnect.
   *Gate: `test_fsm` table-driven transition coverage incl. timeout paths.*
+  ✓ 2026-07-29 — link/fsm.{hpp,cpp}: pure-logic FSM (injected time,
+  queued actions), 6 states, PROTOCOL.md retry budgets (CALL/START 4,
+  DISC 3), clamped airtime timeouts (frameAirtimeSec added to
+  phy/framer), idle disconnect 120 s + keepalive 20 s (flag-gated).
 - [ ] **2.3 Handshake** — CALL/CALL_ACK/START/START_ACK(NAK) bodies,
   capability intersection, quality-seeded initial mode, ULTRA fallback.
   *Gate: `test_handshake` — happy path, every NAK reason, fallback.*

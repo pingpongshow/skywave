@@ -73,6 +73,11 @@ struct FrameGeometry {
 };
 FrameGeometry computeGeometry(const TxFrameParams& p);
 
+// On-air duration of a frame (PROTOCOL.md timers are airtime-derived).
+inline double frameAirtimeSec(const TxFrameParams& p) {
+  return double(computeGeometry(p).totalSamples) / kFsBaseband;
+}
+
 // Build the complete frame at 12 kHz complex baseband, unit RMS, after
 // PAPR soft-clipping and per-family band filtering.
 std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p);
