@@ -84,10 +84,14 @@ Average data carriers per symbol: `ULTRA` 63, `WIDE` 56, `MID` 23.6,
 Robust modes repeat each modulated symbol across `S` carriers before IFFT:
 
 - spreading factors: `S ∈ {1, 2, 4, 8, 16}`
-- the `S` copies are placed on maximally separated carriers **among that
-  symbol's data carriers** (stride = data_carriers / S) — the scattered
-  pilot positions rotate every symbol, so the spreading map is computed per
-  symbol over the remaining data carriers, identically at TX and RX
+- the `S` copies are placed on maximally separated positions **within a
+  spread group's pooled data carriers** (stride = pooled_carriers / S). A
+  group is the smallest run of consecutive OFDM symbols whose pooled data
+  carriers can hold at least one spread-S source symbol — one symbol for
+  almost every family/S combination, but `NARROW` at `S16` (11–12 data
+  carriers per symbol) pools **two consecutive symbols**, making its
+  deepest mode frequency+time spread. The scattered pilot positions rotate
+  every symbol, so the pool is computed per group, identically at TX and RX
 - each copy is rotated by a per-copy pseudorandom phase (whitening the PAPR
   and decorrelating narrowband interference)
 - the receiver maximum-ratio-combines the `S` copies **after** equalization,

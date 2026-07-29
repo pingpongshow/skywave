@@ -1,0 +1,103 @@
+// Shared TX/RX symbol layout: pilot/data carrier assignment and pilot
+// values (WAVEFORM.md "Pilots"). Everything here must be bit-identical
+// between transmitter and receiver.
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <cstdint>
+#include <vector>
+
+#include "core/constants.hpp"
+
+namespace skw {
+
+using cfloat = std::complex<float>;
+
+// Deterministic 64-bit mix (splitmix64 finalizer) for PRN phases.
+inline uint64_t skwHash(uint64_t x) {
+  x += 0x9E3779B97F4A7C15ull;
+  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+  x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+  return x ^ (x >> 31);
+}
+
+// Quarter-turn phase from a hash value.
+inline cfloat prnPhase(uint64_t h) {
+  switch (h & 3u) {
+    case 0: return {1.0f, 0.0f};
+    case 1: return {0.0f, 1.0f};
+    case 2: return {-1.0f, 0.0f};
+    default: return {0.0f, -1.0f};
+  }
+}
+
+inline bool isPilotCarrier(int carrierIdx, int symIdx) {
+  return (carrierIdx % kPilotSpacing) == (symIdx % kPilotSpacing);
+}
+
+// Pilot value for (carrier, symbol): +2 dB boost, PRN quarter-turn phase.
+inline cfloat pilotValue(int carrierIdx, int symIdx) {
+  const float boost = std::pow(10.0f, float(kPilotBoostDb) / 20.0f);
+  uint64_t h = skwHash(kSeedPilotPhase ^ (uint64_t(carrierIdx) << 20) ^
+                       uint64_t(symIdx));
+  return boost * prnPhase(h);
+}
+
+// Spread-copy PRN phase for (source symbol index, copy k, OFDM symbol).
+inline cfloat spreadPhase(int srcIdx, int copy, int symIdx) {
+  uint64_t h = skwHash(kSeedSpreadPhase ^ (uint64_t(srcIdx) << 24) ^
+                       (uint64_t(copy) << 16) ^ uint64_t(symIdx));
+  return prnPhase(h);
+}
+
+struct SymbolLayout {
+  std::vector<int> pilotCarriers;  // carrier indices (0-based in family)
+  std::vector<int> dataCarriers;
+};
+
+inline SymbolLayout symbolLayout(Family f, int symIdx) {
+  SymbolLayout out;
+  const int n = plan(f).carriers();
+  for (int c = 0; c < n; ++c) {
+    if (isPilotCarrier(c, symIdx)) out.pilotCarriers.push_back(c);
+    else out.dataCarriers.push_back(c);
+  }
+  return out;
+}
+
+// Spreading operates on a GROUP of consecutive OFDM symbols whose pooled
+// data carriers can hold at least one spread-S source symbol. For most
+// family/spread combinations the group is a single symbol; NARROW at S16
+// (11-12 data carriers) needs 2 symbols - frequency+time spreading.
+inline int spreadGroupSymbols(Family f, int spread) {
+  // Minimum data carriers over the 8-symbol pilot cycle.
+  int minNd = 1 << 30;
+  for (int s = 0; s < kPilotSpacing; ++s) {
+    minNd = std::min(minNd,
+                     int(symbolLayout(f, s).dataCarriers.size()));
+  }
+  int g = 1;
+  while (g * minNd < spread) ++g;
+  return g;
+}
+
+// Source (pre-spreading) constellation symbols carried by one spread group
+// starting at symIdx.
+inline int sourceSymbolsPerGroup(Family f, int symIdx, int spread) {
+  const int g = spreadGroupSymbols(f, spread);
+  int pool = 0;
+  for (int s = 0; s < g; ++s) {
+    pool += int(symbolLayout(f, symIdx + s).dataCarriers.size());
+  }
+  return pool / spread;
+}
+
+// Map a family carrier index to a baseband FFT bin (0..319).
+inline int carrierToBasebandBin(Family f, int carrierIdx) {
+  int b = plan(f).firstBin + carrierIdx - kCenterBin;
+  return b >= 0 ? b : kFftBaseband + b;
+}
+
+}  // namespace skw

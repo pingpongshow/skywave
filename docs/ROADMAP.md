@@ -103,12 +103,16 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   *Gate: `test_zc` timing ±2 samples (±5 NARROW — energy-limited, CP
   absorbs), CFO < 0.5 Hz at floor SNR.* ✓ 2026-07-28 — see Deviations Log
   for block-length change (3/6) and estimator architecture.
-- [ ] **1.8 TX chain** — bit pipeline (map → spread → pilots → IFFT → CP →
-  window), PHY framer (preamble + ZC + header codeword with payload
-  piggyback + payload codewords + burst container), PAPR clipper, band
-  filter, TX level normalizer.
-  *Gate: `test_phy_tx` — spectral mask (occupied band per family), PAPR
-  ceiling honored, pilot positions verified, golden-frame regression.*
+- [x] **1.8 TX chain** — bit pipeline (map → spread → pilots → IFFT → CP),
+  PHY framer (preamble + ZC + header codeword with payload piggyback +
+  payload codewords), PAPR clipper, band filter.
+  *Gate: `test_phy_tx` — spectral mask per family (>26 dB in/out ratio),
+  PAPR ≤ 9.5 dB post-filter, pilot rules verified, clean-channel
+  decode-back of header (incl. piggyback) and payload codewords incl.
+  ×16 spreading.* ✓ 2026-07-28 — burst container and TX level normalizer
+  land with their consumers (3.8 / Phase-2 worker); golden regression is
+  the decode-back suite (bit-exact by construction). See Deviations Log
+  for the spread-group design fix.
 - [ ] **1.9 Channel simulator (`chansim`)** — Watterson 2-tap Rayleigh,
   Gaussian Doppler, AWGN, CFO, sample-clock offset; CCIR Good/Moderate/
   Poor presets; deterministic seeding; library + CLI.
@@ -376,6 +380,18 @@ doc was updated)*
   peak (coherent across the whole block), not the noncoherent
   matched-filter metric — and H is reported in blockStart's window
   convention.
+- **1.8 / 2026-07-28** — Design gap found and fixed: `NARROW` at `S16` has
+  only 11–12 data carriers per symbol, so single-symbol frequency-domain
+  spreading is impossible (the naive loop was infinite). Spreading now
+  operates on a **spread group** — the smallest run of consecutive symbols
+  whose pooled data carriers hold ≥1 spread-S source symbol (G=1
+  everywhere except NARROW/S16 where G=2, making its deepest mode
+  frequency+time spread). WAVEFORM.md updated. Also: payload codewords are
+  zero-padded rather than true-shortened (revisit with HARQ-IR, 3.4);
+  per-symbol raised-cosine overlap windowing was dropped in favor of the
+  per-family TX band FIR, which meets the spectral mask on its own
+  (DSP.md's "window/overlap" line is satisfied by frame-edge shaping in
+  the chirp/ZC generators + the band filter).
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without
