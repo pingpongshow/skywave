@@ -243,9 +243,13 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   TXTEST idle-only + 30 s cap. Physical PTT drivers (RTS/DTR/VOX/TCP)
   land with the worker integration (2.7/Phase-2 wiring) - the arbiter
   emits Key/Unkey events they consume.
-- [ ] **2.6 TCP data + control servers** — single-client ports, line
+- [x] **2.6 TCP data + control servers** — single-client ports, line
   protocol, Phase-2 command subset, `EVT:` notifications.
   *Gate: `test_tcp` scripted command/response/notification session.*
+  ✓ 2026-07-29 — tcp/server (non-blocking single-client localhost TCP +
+  LineBuffer) and tcp/control (pure-logic dispatcher over an abstract
+  ControlBackend; EVT/MON formatters). Real-socket loopback tests cover
+  the one-client policy, drop detection, and raw data-port bytes.
 - [ ] **2.7 Two-modem integration harness** — two in-process instances ×
   two chansim directions (asymmetric channels); scenario runner + failure
   artifacts (seeds, event CSV, baseband WAV).
