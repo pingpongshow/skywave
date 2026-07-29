@@ -72,6 +72,7 @@ add_library(skywave_core STATIC
   src/link/frame.cpp
   src/link/fsm.cpp
   src/link/handshake.cpp
+  src/link/arq.cpp
   src/fec/crc.cpp
   src/fec/ldpc.cpp
   src/fec/ldpc_tables.cpp
@@ -125,4 +126,5 @@ if(BUILD_TESTS)
   skw_test(test_frame)
   skw_test(test_fsm)
   skw_test(test_handshake)
+  skw_test(test_arq)
 endif()

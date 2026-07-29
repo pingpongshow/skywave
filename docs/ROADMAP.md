@@ -225,10 +225,14 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   traffic); responder silence vs START_NAK split; ULTRA fallback =
   first half of attempts ULTRA then WIDE; ULTRA-configured responders
   also accept WIDE (fallback must land).
-- [ ] **2.4 ARQ engine** — SR window, gap bitmaps, compact ACK (7-byte
+- [x] **2.4 ARQ engine** — SR window, gap bitmaps, compact ACK (7-byte
   body incl. CFO report), adaptive timeout, retransmit priority,
   max-retries teardown.
   *Gate: `test_arq` — loss/reorder/duplicate matrices, window stalls.*
+  ✓ 2026-07-29 — link/arq.{hpp,cpp}: ArqTx/ArqRx, serial-number
+  arithmetic, ackBase = next-expected + received-bitmap convention,
+  retransmits drain before new data with rv increments, full 4-frame
+  loss-pattern matrix + wraparound covered.
 - [ ] **2.5 TX/RX arbiter + PTT + safety** — priority queue
   (control-urgent > retransmit > data > keepalive > beacon), CCA gate with
   bypass list, PTT sequencing for all methods, TX watchdog, `TXTEST`.
