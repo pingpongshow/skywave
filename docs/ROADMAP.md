@@ -233,11 +233,16 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   arithmetic, ackBase = next-expected + received-bitmap convention,
   retransmits drain before new data with rv increments, full 4-frame
   loss-pattern matrix + wraparound covered.
-- [ ] **2.5 TX/RX arbiter + PTT + safety** — priority queue
+- [x] **2.5 TX/RX arbiter + PTT + safety** — priority queue
   (control-urgent > retransmit > data > keepalive > beacon), CCA gate with
   bypass list, PTT sequencing for all methods, TX watchdog, `TXTEST`.
   *Gate: `test_arbiter` priority/bypass cases; watchdog fires in fault
-  injection.*
+  injection.* ✓ 2026-07-29 — link/arbiter.{hpp,cpp}: pure-logic
+  sequencer (Rx/CcaWait/Lead/Audio/Tail), 250 ms CCA polls with 5 s
+  proceed-anyway cap, per-burst bypass flag, watchdog abort path,
+  TXTEST idle-only + 30 s cap. Physical PTT drivers (RTS/DTR/VOX/TCP)
+  land with the worker integration (2.7/Phase-2 wiring) - the arbiter
+  emits Key/Unkey events they consume.
 - [ ] **2.6 TCP data + control servers** — single-client ports, line
   protocol, Phase-2 command subset, `EVT:` notifications.
   *Gate: `test_tcp` scripted command/response/notification session.*

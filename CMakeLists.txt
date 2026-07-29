@@ -73,6 +73,7 @@ add_library(skywave_core STATIC
   src/link/fsm.cpp
   src/link/handshake.cpp
   src/link/arq.cpp
+  src/link/arbiter.cpp
   src/fec/crc.cpp
   src/fec/ldpc.cpp
   src/fec/ldpc_tables.cpp
@@ -127,4 +128,5 @@ if(BUILD_TESTS)
   skw_test(test_fsm)
   skw_test(test_handshake)
   skw_test(test_arq)
+  skw_test(test_arbiter)
 endif()
