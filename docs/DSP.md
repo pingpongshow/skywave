@@ -9,9 +9,13 @@ assessment. Waveform parameters are in [WAVEFORM.md](WAVEFORM.md).
 ## Sample Domain Overview
 
 - external interface: `48 kHz` mono float32 (PortAudio), real passband
-- internal PHY domain: complex baseband at `12 kHz`, produced by an
-  analytic-signal converter (Hilbert FIR) + mixer at 1500 Hz + polyphase 4:1
-  decimator; TX runs the mirror chain (interpolate, mix up, take real part)
+- internal PHY domain: complex baseband at `12 kHz`, produced by a −1500 Hz
+  complex mixer followed by 2-stage polyphase decimation (×2 then ×2); the
+  sharp stage-2 lowpass (at 24 kHz: pass ±1400 Hz, stop ±1650 Hz, 70 dB)
+  simultaneously rejects the real input's negative-frequency image (whose
+  modem content begins at −1687 Hz for ULTRA) and anti-aliases the final
+  decimation. TX runs the mirror chain (2-stage interpolation with short
+  image filters, mix +1500 Hz, take real part)
 - rationale: 4× less work in every downstream block (FFT becomes 320-point
   at 12 kHz — implemented as the 1280-point equivalent grid: FFT size 320,
   spacing 37.5 Hz), and the complex domain simplifies CFO handling
@@ -24,7 +28,7 @@ assessment. Waveform parameters are in [WAVEFORM.md](WAVEFORM.md).
 audio in (48k real)
   -> DC block -> input gain trim
   -> AGC (slow, headroom-targeting)
-  -> analytic + mix(-1500 Hz) + decimate 4:1  ->  12k complex baseband
+  -> mix(-1500 Hz) + 2-stage decimate (x2,x2)  ->  12k complex baseband
   -> impulse blanker            [optional, config]
   -> adaptive multi-notch       [optional, config]
   -> sync engine (chirp detector | tracking)

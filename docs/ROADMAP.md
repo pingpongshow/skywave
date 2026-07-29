@@ -67,16 +67,21 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
 *Goal: every active mode closes its documented floor over the simulator.*
 *Exit gate: **Milestone M1** — the project's hardest gate.*
 
-- [ ] **1.1 FFT + windows** `[P]` — KissFFT wrapper (320-pt @ 12 kHz
-  domain), window functions, overlap helpers.
-  *Gate: `test_dsp` FFT known-answers, Parseval, round-trip.*
-- [ ] **1.2 Rate/domain converters** — Hilbert FIR, ±1500 Hz mixers,
-  polyphase 4:1 decimator/interpolator (48 k real ↔ 12 k complex).
+- [x] **1.1 FFT + windows** `[P]` — in-tree mixed-radix FFT (320-pt @ 12 kHz
+  domain; deviation from KissFFT, see log), window functions, overlap
+  helpers.
+  *Gate: `test_dsp` FFT known-answers, Parseval, round-trip.* ✓ 2026-07-28
+- [x] **1.2 Rate/domain converters** — ±1500 Hz NCO mixers + 2-stage
+  polyphase decimation (mix-then-complex-LPF replaces the Hilbert design —
+  see log), Kaiser FIR designer (48 k real ↔ 12 k complex).
   *Gate: chain SNR > 60 dB across 300–2900 Hz; image rejection > 60 dB.*
-- [ ] **1.3 AGC + DC block** `[P]` — per DSP.md dynamics, freeze hook.
-  *Gate: `test_dsp` AGC attack/release/freeze cases.*
-- [ ] **1.4 CRC + whitener** `[P]` — CRC-16/32 (header/link), LFSR
+  ✓ 2026-07-28 (tone SNR >60 dB at 300/1000/1500/2500/2850 Hz; round trip
+  >60 dB at ±1300 Hz offsets)
+- [x] **1.3 AGC + DC block** `[P]` — per DSP.md dynamics, freeze hook.
+  *Gate: `test_dsp` AGC attack/release/freeze cases.* ✓ 2026-07-28
+- [x] **1.4 CRC + whitener** `[P]` — CRC-16/32 (header/link), LFSR
   whitener. *Gate: published CRC vectors; whitener period/balance.*
+  ✓ 2026-07-28
 - [ ] **1.5 LDPC codec** — 802.11n tables N=648/1944 all rates; encoder;
   normalized min-sum decoder (5-bit LLR, ≤30 iter, early-exit);
   shortening; IR puncture handling.
@@ -309,6 +314,15 @@ doc was updated)*
   `config_unknown_keys_preserved`: unknown keys in unknown sections were
   dropped on save; fixed by appending foreign sections after known ones.
   No doc change needed (CONFIGURATION.md already required preservation).
+- **1.1 / 2026-07-28** — In-tree mixed-radix FFT (factors 2/3/5) replaces
+  vendored KissFFT: our sizes are smooth and the CPU budget is trivial;
+  verified against a naive double-precision DFT to <2e-6 relative error.
+  Zero vendored dependencies remains true.
+- **1.2 / 2026-07-28** — RX front end uses mix-then-complex-LPF (2-stage
+  polyphase, sharp stage at 24 kHz: pass 1400 / stop 1650 / 70 dB) instead
+  of DSP.md's Hilbert-first sketch. Identical function and rejection; one
+  filter concept instead of two and no Hilbert delay-matching. DSP.md
+  updated to match.
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without

@@ -60,6 +60,10 @@ endif()
 add_library(skywave_core STATIC
   src/core/log.cpp
   src/core/config.cpp
+  src/dsp/fft.cpp
+  src/dsp/fir.cpp
+  src/dsp/updown.cpp
+  src/fec/crc.cpp
   src/io/wav.cpp
   src/io/audio.cpp
   src/worker.cpp
@@ -92,4 +96,6 @@ if(BUILD_TESTS)
   skw_test(test_config)
   skw_test(test_audio_rings)
   skw_test(test_wav)
+  skw_test(test_dsp)
+  skw_test(test_crc_whiten)
 endif()
