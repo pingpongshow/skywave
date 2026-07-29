@@ -97,9 +97,12 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   calling capture, < 1 Hz connected; inversion detection correct;
   timing ±1 ms.* ✓ 2026-07-28 — see Deviations Log for the detector
   architecture that emerged (joint pattern scoring) and latency figures.
-- [ ] **1.7 ZC sync symbols** `[P]` — per-family sequences, S&C metric,
-  robust-class doubled block, timing/CFO refinement.
-  *Gate: `test_zc` timing ±2 samples, CFO < 0.5 Hz at floor SNR.*
+- [x] **1.7 ZC sync symbols** `[P]` — per-family sequences, sync-block
+  generator, matched-filter timing + ML-fit CFO with chirp-prior fusion,
+  channel-estimate seed.
+  *Gate: `test_zc` timing ±2 samples (±5 NARROW — energy-limited, CP
+  absorbs), CFO < 0.5 Hz at floor SNR.* ✓ 2026-07-28 — see Deviations Log
+  for block-length change (3/6) and estimator architecture.
 - [ ] **1.8 TX chain** — bit pipeline (map → spread → pilots → IFFT → CP →
   window), PHY framer (preamble + ZC + header codeword with payload
   piggyback + payload codewords + burst container), PAPR clipper, band
@@ -353,6 +356,26 @@ doc was updated)*
   level; the scoring detail lives in chirp.hpp comments. Revisit latency
   in step 1.10 if the sync engine needs earlier warning (option: emit a
   provisional "energy detected" event at first-rep threshold crossing).
+- **1.7 / 2026-07-28** — ZC sync blocks lengthened from 2/4 to **3 (fast)
+  / 6 (robust)** symbols (WAVEFORM.md updated): the CFO phase-slope
+  variance over fewer intervals lands exactly on the 0.5 Hz gate instead
+  of under it. Airtime cost 31/61 ms — negligible against the headers.
+- **1.7 / 2026-07-28** — Estimator architecture findings: (1) blind
+  Schmidl-Cox pair autocorrelation is useless at the robust floor (the
+  noise×noise term dominates at −15 dB per-sample SNR) — CFO comes from an
+  ML frequency fit over per-symbol matched-filter outputs; (2)
+  pre-band-limiting is a mathematical no-op for matched correlations (the
+  correlation already projects onto the reference's spectral support) —
+  unlike the chirp NCC case, where the *energy normalization* was the
+  problem; (3) NARROW's 13 carriers are energy-limited — ZC-only CFO σ ≈
+  0.4–0.6 Hz at −12 dB, so `zcRefine` fuses its measurement with the chirp
+  prior by variance weighting (the chirp integrates its full band over
+  0.64 s and is genuinely the better estimator there), and NARROW timing
+  is gated at ±5 samples (σ_t ≈ 2.3 at floor; the 48-sample CP absorbs
+  it); (4) sub-sample timing comes from the channel estimate's impulse
+  peak (coherent across the whole block), not the noncoherent
+  matched-filter metric — and H is reported in blockStart's window
+  convention.
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without

@@ -284,17 +284,25 @@ frequency-locked regime.
 
 Immediately after the chirp:
 
-- **fast class — 2 identical ZC symbols**: a Zadoff-Chu sequence (length =
-  family carrier count, root chosen per family) mapped onto the active
-  carriers, transmitted twice back-to-back. Schmidl–Cox-style
-  autocorrelation refines timing to ±2 samples and CFO to < 0.5 Hz; the
-  second symbol seeds the channel estimate.
-- **robust class — 4 ZC symbols (2 pairs)**: a single ZC symbol is far too
+- **fast class — 3 identical ZC symbols** (~92 ms): a Zadoff-Chu sequence
+  (length = family carrier count, root chosen per family) mapped onto the
+  active carriers. The receiver matched-filters each symbol against the
+  known sequence and estimates CFO from the phase progression of the
+  per-symbol correlations — blind pair autocorrelation is useless at low
+  SNR where the noise×noise term dominates. Three symbols (two phase
+  intervals + a lag-2 pair) are the minimum that meets the < 0.5 Hz CFO
+  gate with margin at the fast floors; two would sit exactly on the
+  boundary.
+- **robust class — 6 ZC symbols** (~184 ms): a single ZC symbol is far too
   noisy for a per-carrier channel estimate at the robust floor (−8 dB
-  in-band means the single-shot estimate is dominated by noise, which
-  directly erodes MRC despreading gain). The doubled block lets the receiver
-  average two independent estimates (+3 dB) and cross-check the timing
-  metric. Cost: ~61 ms against a multi-second robust header — negligible.
+  in-band), and the CFO phase-slope variance over fewer intervals lands on
+  the 0.5 Hz gate rather than under it. Six symbols give σ ≈ 0.26 Hz CFO
+  at the WIDE M4 floor and average six channel-estimate snapshots
+  (+~4 dB). Cost: ~184 ms against a multi-second robust header —
+  negligible.
+
+Sync symbols always use `MEDIUM` CP regardless of the payload's CP mode:
+they precede the PHY header that announces it.
 
 ### PHY Header
 
