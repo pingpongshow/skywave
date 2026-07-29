@@ -76,6 +76,7 @@ add_library(skywave_core STATIC
   src/link/arbiter.cpp
   src/link/engine.cpp
   src/link/amc.cpp
+  src/link/chanmem.cpp
   src/tcp/server.cpp
   src/tcp/control.cpp
   src/fec/crc.cpp
@@ -137,4 +138,5 @@ if(BUILD_TESTS)
   skw_test(test_m2)
   skw_test(test_amc)
   skw_test(test_harq)
+  skw_test(test_chanmem)
 endif()

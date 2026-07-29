@@ -299,9 +299,13 @@ disconnects over the simulated ionosphere end to end.**
 - [ ] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR
   priors; AUTO negotiation.
   *Gate: IR outperforms chase for rate > 1/2 modes in bertool A/B.*
-- [ ] **3.5 Channel memory** `[P]` — keying, EMA store, persistence,
+- [x] **3.5 Channel memory** `[P]` — keying, EMA store, persistence,
   aging, recommendation clamps, START seeding (lower-of-two rule).
-  *Gate: `test_chanmem`.*
+  *Gate: `test_chanmem`.* ✓ 2026-07-29 — link/chanmem.{hpp,cpp}: 64-entry
+  LRU keyed by (call hashes, 1 kHz freq bucket, family), α=0.2 EMA,
+  versioned binary cache, retry/age penalties per spec. Engine/worker
+  wiring (feeding stats + applying the seed at CONNECT) lands with the
+  worker integration.
 - [ ] **3.6 Probe-before-promote** `[P]` — PROBE/PROBE_ACK, eligibility,
   cooldown. *Gate: `test_probe` + two-modem promotion scenario.*
 - [ ] **3.7 Carrier masking** `[P]` — weight tracking, MASK_UPDATE/ACK,
