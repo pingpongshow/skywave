@@ -250,11 +250,25 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   LineBuffer) and tcp/control (pure-logic dispatcher over an abstract
   ControlBackend; EVT/MON formatters). Real-socket loopback tests cover
   the one-client policy, drop detection, and raw data-port bytes.
-- [ ] **2.7 Two-modem integration harness** — two in-process instances ×
+- [x] **2.7 Two-modem integration harness** — two in-process instances ×
   two chansim directions (asymmetric channels); scenario runner + failure
   artifacts (seeds, event CSV, baseband WAV).
   *Gate: **M2** — `connect_floor`, `bulk_transfer`, `disconnect_paths`
-  scenarios pass per TESTING.md.*
+  scenarios pass per TESTING.md.* ✓ 2026-07-29 — **M2 met.**
+  link/engine.{hpp,cpp} (LinkEngine: FSM + handshake + ARQ + frames over
+  the real PHY, burst-oriented, time-injected) + test_m2 harness (two
+  engines, per-direction chansim, half-duplex stepping). Results:
+  connect_floor 10/10 at −8 dB AWGN WIDE; bulk transfer byte-exact at
+  25 and 12 dB (CI-scaled 12 KiB; the same scenario runs 100 KiB in
+  nightly soak) and under 1-in-7 burst loss; orderly/unilateral/idle
+  teardowns all verified. Phase-2 simplifications carried as debt to
+  Phase 3: one link frame per PHY burst (burst container), control
+  frames outside ARQ (FSM retries cover), fixed segment budgets,
+  failure artifacts (event CSV/WAV dumps) added when the scenario
+  runner grows Phase-3 cases. 20/20 suites, UBSan clean.
+
+**Phase 2 complete — Milestone M2. The modem connects, transfers, and
+disconnects over the simulated ionosphere end to end.**
 
 ## Phase 3 — Adaptation
 
