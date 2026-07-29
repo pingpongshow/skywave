@@ -270,14 +270,23 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
         bestLag = lag;
       }
     }
-    double fracT = 0.0;
-    double a0 = magAt(bestLag - 1), b0 = magAt(bestLag), c0v = magAt(bestLag + 1);
-    double dn = a0 - 2 * b0 + c0v;
-    if (dn < -1e-18) fracT = std::clamp(0.5 * (a0 - c0v) / dn, -0.5, 0.5);
-    // The window was taken e samples late when the impulse appears at -e...
-    // measured: peak at lag p means the signal path is delayed by p relative
-    // to the current window, so the true block start is later by p.
-    const double tau = double(bestLag) + fracT;
+    // OFDM window policy: anchor on the EARLIEST significant tap, not the
+    // peak or centroid - a window placed after the first tap suffers ISI
+    // from the next symbol on every symbol (the CP only guards against
+    // taps that arrive AFTER the window start). "Significant tap" means
+    // the earliest LOCAL MAXIMUM at >= half the peak power: a threshold
+    // crossing would walk down the skirt of the correlation lobe itself
+    // (band-limited width ~ N/n, up to ~12 samples for NARROW), and the
+    // resulting large apparent delay is both off the tracker's
+    // well-conditioned grid region and eats CP margin for nothing.
+    int firstLag = bestLag;
+    for (int lag = bestLag - 1; lag >= bestLag - 28 && lag >= -31; --lag) {
+      if (magAt(lag) >= 0.5 * best && magAt(lag) >= magAt(lag - 1) &&
+          magAt(lag) >= magAt(lag + 1)) {
+        firstLag = lag;
+      }
+    }
+    const double tau = double(firstLag) - 2.0;
     res.blockStart += tau;
     for (int i = 0; i < n; ++i) {
       int bin = plan(family).firstBin + i - kCenterBin;

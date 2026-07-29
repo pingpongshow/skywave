@@ -107,7 +107,12 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
 }  // namespace
 
 std::optional<RxFrameResult> receiveFrame(Family family,
-                                          std::span<const cfloat> rx) {
+                                          std::span<const cfloat> rx,
+                                          RxStage* stageOut) {
+  auto stage = [&](RxStage s) {
+    if (stageOut) *stageOut = s;
+  };
+  stage(RxStage::NoDetect);
   // 1) Chirp acquisition.
   ChirpDetector det(family);
   std::vector<ChirpDetection> hits;
@@ -117,6 +122,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   }
   if (hits.empty()) return std::nullopt;
   const ChirpDetection& hit = hits.front();
+  stage(RxStage::ZcFail);
 
   // Spectrum inversion auto-correct: conjugate and re-run the whole
   // receive path on the corrected signal.
@@ -137,6 +143,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
       hit.startSample + double(reps) * chirpRepSamples();
   auto zc = zcRefine(family, sig, zcCoarse, cfoSign, 0.7, zcCount);
   if (!zc.ok) return std::nullopt;
+  stage(RxStage::HeaderFail);
 
   // Integer symbol grid; fold the fractional remainder into H.
   const double firstSym = zc.blockStart + double(zcCount) * kZcSymbolSamples;
@@ -171,6 +178,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   auto hdrBytes = bitsToBytes({hInfo.data(), size_t(kPhyHeaderBytes) * 8});
   auto hdr = parsePhyHeader(hdrBytes);
   if (!hdr) return std::nullopt;
+  stage(RxStage::Ok);
 
   RxFrameResult res;
   res.header = *hdr;
@@ -193,15 +201,17 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   if (size_t(hdr->length) > piggy) {
     const ModeDef& md = kModes[size_t(hdr->mode)];
     if (md.waveform != Waveform::Ofdm || !md.active) return std::nullopt;
-    const LdpcCode& pcode = LdpcCode::get(kLdpcNLong, md.rate);
     size_t restBits = (size_t(hdr->length) - piggy) * 8;
-    size_t ncw = (restBits + size_t(pcode.k()) - 1) / size_t(pcode.k());
     // Info chunks are k bits each, which is not byte-aligned for every
     // rate (r5/6: 1620 bits): concatenate BITS across codewords, convert
-    // to bytes once.
+    // to bytes once. Codeword sizing mirrors the TX rule.
     std::vector<uint8_t> restInfoBits;
     restInfoBits.reserve(restBits);
-    for (size_t cw = 0; cw < ncw && ok; ++cw) {
+    size_t remaining = restBits;
+    size_t cw = 0;
+    while (remaining > 0 && ok) {
+      const LdpcCode& pcode =
+          LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
       std::vector<float> llr;
       if (!walker.collect(md.constellation, md.spread, hdr->cpMode,
                           pcode.n(), llr)) {
@@ -211,14 +221,16 @@ std::optional<RxFrameResult> receiveFrame(Family family,
       std::vector<uint8_t> info;
       bool dec = decodeCodeword(pcode, llr, info);
       if (getenv("SKW_RX_DEBUG")) {
-        fprintf(stderr, "skw-rx: cw=%zu/%zu dec=%d nvar=%.3g snr=%.1f\n",
-                cw + 1, ncw, int(dec), tracker.noiseVar(), tracker.snrDb());
+        fprintf(stderr, "skw-rx: cw=%zu n=%d dec=%d nvar=%.3g snr=%.1f\n",
+                cw, pcode.n(), int(dec), tracker.noiseVar(),
+                tracker.snrDb());
       }
       if (!dec) ok = false;
-      size_t want = std::min(restBits - cw * size_t(pcode.k()),
-                             size_t(pcode.k()));
+      size_t want = std::min(remaining, size_t(pcode.k()));
       restInfoBits.insert(restInfoBits.end(), info.begin(),
                           info.begin() + long(want));
+      remaining -= want;
+      ++cw;
     }
     if (ok) {
       auto bytes = bitsToBytes(restInfoBits);

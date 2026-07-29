@@ -36,17 +36,44 @@ class ChannelTracker {
   const std::vector<cfloat>& h() const { return h_; }
   double noiseVar() const { return noiseVar_; }
   double snrDb() const;             // mean per-carrier SNR estimate
-  double cpePhase() const { return phase_; }
+  double cpePhase() const {
+    return std::atan2(lastGain_.imag(), lastGain_.real());
+  }
 
  private:
   Family family_;
   bool robust_;
-  std::vector<cfloat> h_;           // per active carrier
+  std::vector<cfloat> h_;           // per active carrier (= gain * shape)
+  std::vector<cfloat> shape_;       // slow structural estimate
+  cfloat lastGain_{1.0f, 0.0f};     // fast per-symbol common gain
   double noiseVar_;
-  double phase_ = 0.0;              // CPE PLL state
-  double freq_ = 0.0;               // rad/symbol
+  double phase_ = 0.0;              // PLL-smoothed common phase (gauge)
+  double freq_ = 0.0;               // PLL phase step per symbol
+  double gainAmp_ = 1.0;            // smoothed common-gain amplitude
   double alphaH_;
   double g1_, g2_;                  // PLL gains
+
+  // Joint pilot least-squares estimator: the channel is modeled as T taps
+  // on a physical delay grid; each symbol's pilot measurements (positions
+  // rotate per symbol) are solved JOINTLY over a sliding window of recent
+  // symbols - no frequency interpolation, no edge extrapolation.
+  int numTaps_ = 0;
+  int histSymbols_ = 0;             // sliding window length
+  int nvarUpdates_ = 0;             // symbols folded into noiseVar_
+  std::vector<std::complex<double>> gPrior_;  // ZC seed in tap domain
+
+  static void solveHermitian(std::vector<std::complex<double>>& M,
+                             std::vector<std::complex<double>>& b, int T);
+  std::vector<cfloat> basis_;       // (n x T): row c = e^{-j2pi c d_t / N}
+  struct PilotMeas {
+    int carrier;
+    cfloat h;
+  };
+  struct SymbolMeas {
+    std::vector<PilotMeas> pilots;
+    cfloat gain;                    // PLL-smoothed gain at capture time
+  };
+  std::vector<SymbolMeas> hist_;    // newest last
 };
 
 // Max-log LLRs for one despread source symbol.

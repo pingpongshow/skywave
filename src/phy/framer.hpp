@@ -42,6 +42,16 @@ inline bool robustHeaderForSig(ChirpSig sig) {
   return sig != ChirpSig::Fast;
 }
 
+// Payload codeword sizing, deterministic from the remaining info bits and
+// the mode's rate (TX and RX must agree): short frames use N=648 so robust
+// modes don't pay a 1944-bit codeword for a few dozen payload bytes. r5/6
+// has no N=648 matrix.
+inline int payloadCodewordN(size_t remainingInfoBits, CodeRate r) {
+  if (r.num == 5) return kLdpcNLong;
+  size_t k648 = size_t(kLdpcNShort) * r.num / r.den;
+  return remainingInfoBits <= k648 ? kLdpcNShort : kLdpcNLong;
+}
+
 struct TxFrameParams {
   Family family = Family::Wide;
   ChirpSig sig = ChirpSig::Fast;   // preamble signature / header class

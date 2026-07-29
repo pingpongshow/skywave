@@ -15,6 +15,8 @@
 
 namespace skw {
 
+enum class RxStage : uint8_t { NoDetect, ZcFail, HeaderFail, Ok };
+
 struct RxFrameResult {
   PhyHeader header;
   bool payloadOk = false;          // all payload codewords decoded
@@ -26,8 +28,10 @@ struct RxFrameResult {
 };
 
 // Detect and decode the first frame of the given family in rx.
-// Returns nullopt when no preamble is detected or the header fails.
+// Returns nullopt when no preamble is detected or the header fails;
+// stageOut (optional) reports how far the receiver got.
 std::optional<RxFrameResult> receiveFrame(Family family,
-                                          std::span<const cfloat> rx);
+                                          std::span<const cfloat> rx,
+                                          RxStage* stageOut = nullptr);
 
 }  // namespace skw

@@ -131,22 +131,26 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
   hcode.encode(hinfo, coded);
   interleaveBits(coded, fb.headerCoded);
 
-  // Remaining payload -> N=1944 codewords at the payload mode's rate,
-  // zero-padded (not true-shortened; simplicity over the last few % of
-  // efficiency - revisit with HARQ-IR in 3.4).
+  // Remaining payload -> codewords at the payload mode's rate, sized by
+  // payloadCodewordN, zero-padded (not true-shortened; simplicity over the
+  // last few % of efficiency - revisit with HARQ-IR in 3.4).
   const ModeDef& md = kModes[size_t(p.mode)];
-  const LdpcCode& pcode = LdpcCode::get(kLdpcNLong, md.rate);
   std::vector<uint8_t> rest(white.begin() + long(piggy), white.end());
   auto restBits = bytesToBits(rest);
-  for (size_t off = 0; off < restBits.size(); off += size_t(pcode.k())) {
+  size_t off = 0;
+  while (off < restBits.size()) {
+    const size_t remaining = restBits.size() - off;
+    const LdpcCode& pcode =
+        LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
     std::vector<uint8_t> info(size_t(pcode.k()), 0);
-    size_t nCopy = std::min(restBits.size() - off, size_t(pcode.k()));
+    size_t nCopy = std::min(remaining, size_t(pcode.k()));
     std::copy(restBits.begin() + long(off),
               restBits.begin() + long(off + nCopy), info.begin());
     std::vector<uint8_t> cw, il;
     pcode.encode(info, cw);
     interleaveBits(cw, il);
     fb.payloadCoded.push_back(std::move(il));
+    off += nCopy;
   }
   return fb;
 }
@@ -228,15 +232,16 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
   const ModeDef& md = kModes[size_t(p.mode)];
   const size_t piggy =
       std::min(p.payload.size(), size_t(kHeaderPiggybackBytes));
-  const LdpcCode& pcode = LdpcCode::get(kLdpcNLong, md.rate);
-  size_t restBits = (p.payload.size() - piggy) * 8;
-  g.payloadCodewords =
-      int((restBits + size_t(pcode.k()) - 1) / size_t(pcode.k()));
+  size_t remaining = (p.payload.size() - piggy) * 8;
   // Payload symbols: each codeword is emitted as its own group-aligned
   // run (mirrors buildFrameBaseband's per-codeword appendOfdmSymbols).
   const int pG = spreadGroupSymbols(p.family, md.spread);
   int psym = 0;
-  for (int cw = 0; cw < g.payloadCodewords; ++cw) {
+  while (remaining > 0) {
+    const LdpcCode& pcode =
+        LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
+    ++g.payloadCodewords;
+    remaining -= std::min(remaining, size_t(pcode.k()));
     int pbits = pcode.n();
     while (pbits > 0) {
       pbits -= sourceSymbolsPerGroup(p.family, g.headerSymbols + psym,

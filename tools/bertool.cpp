@@ -1,0 +1,209 @@
+// bertool: FER/throughput conformance sweeps (BUILD_PLAN 1.13, TESTING.md).
+//
+// TX -> Watterson chansim -> receiveFrame, per (family, mode, SNR), CCIR
+// Moderate by default. FER counts acquisition, header, and payload
+// failures alike - the documented floors are end-to-end.
+//
+// Usage:
+//   bertool [--trials N] [--offsets "0,3,10"] [--families wide,narrow]
+//           [--modes 4,8,13] [--preset good|moderate|poor|awgn]
+//           [--csv path] [--seed S]
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "core/config.hpp"
+#include "core/constants.hpp"
+#include "phy/framer.hpp"
+#include "phy/receiver.hpp"
+#include "sim/chansim.hpp"
+
+using namespace skw;
+
+namespace {
+
+struct Args {
+  int trials = 25;
+  std::vector<double> offsets = {0.0, 3.0, 10.0};
+  std::vector<Family> families = {Family::Wide, Family::Mid, Family::Narrow,
+                                  Family::Ultra};
+  std::vector<int> modes = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+  std::string preset = "moderate";
+  std::string csv;
+  uint64_t seed = 1000;
+};
+
+std::vector<std::string> split(const std::string& s, char d) {
+  std::vector<std::string> out;
+  size_t p = 0;
+  while (p <= s.size()) {
+    size_t q = s.find(d, p);
+    if (q == std::string::npos) q = s.size();
+    out.push_back(s.substr(p, q - p));
+    p = q + 1;
+  }
+  return out;
+}
+
+ChansimParams presetParams(const std::string& name) {
+  if (name == "good") return ccirGood();
+  if (name == "poor") return ccirPoor();
+  if (name == "awgn") {
+    ChansimParams p;
+    p.fading = false;
+    return p;
+  }
+  return ccirModerate();
+}
+
+struct ConfigResult {
+  Family fam;
+  int mode;
+  double snrDb;
+  int trials;
+  int noDetect = 0;
+  int zcFail = 0;
+  int hdrFail = 0;
+  int payFail = 0;
+  double fer() const {
+    return double(noDetect + zcFail + hdrFail + payFail) / trials;
+  }
+};
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Args a;
+  for (int i = 1; i < argc; ++i) {
+    auto need = [&](const char* opt) -> std::string {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "missing arg for %s\n", opt);
+        exit(2);
+      }
+      return argv[++i];
+    };
+    if (!strcmp(argv[i], "--trials")) a.trials = atoi(need("--trials").c_str());
+    else if (!strcmp(argv[i], "--offsets")) {
+      a.offsets.clear();
+      for (auto& t : split(need("--offsets"), ',')) {
+        a.offsets.push_back(atof(t.c_str()));
+      }
+    } else if (!strcmp(argv[i], "--families")) {
+      a.families.clear();
+      for (auto& t : split(need("--families"), ',')) {
+        if (auto f = familyFromString(t)) a.families.push_back(*f);
+      }
+    } else if (!strcmp(argv[i], "--modes")) {
+      a.modes.clear();
+      for (auto& t : split(need("--modes"), ',')) {
+        a.modes.push_back(atoi(t.c_str()));
+      }
+    } else if (!strcmp(argv[i], "--preset")) a.preset = need("--preset");
+    else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
+    else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
+    else {
+      fprintf(stderr, "unknown arg %s\n", argv[i]);
+      return 2;
+    }
+  }
+
+  FILE* csv = a.csv.empty() ? nullptr : fopen(a.csv.c_str(), "w");
+  if (csv) {
+    fprintf(csv,
+            "family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer\n");
+  }
+
+  printf("%-7s %-4s %7s %7s | %5s %5s %5s %5s %7s | %8s\n", "family",
+         "mode", "floor", "snr", "noDet", "zcF", "hdrF", "payF", "FER",
+         "netEff");
+  std::vector<ConfigResult> all;
+
+  for (Family fam : a.families) {
+    for (int mode : a.modes) {
+      const ModeDef& md = kModes[size_t(mode)];
+      if (!md.active) continue;
+      const double floor = floorDb(fam, mode);
+      const bool robust = mode <= 7;
+      const size_t payloadLen = robust ? 60 : 300;
+
+      // Build the frame once per config; the channel varies per trial.
+      std::vector<uint8_t> payload(payloadLen);
+      for (size_t i = 0; i < payloadLen; ++i) payload[i] = uint8_t(i * 41 + 3);
+      TxFrameParams tp;
+      tp.family = fam;
+      tp.sig = robust ? ChirpSig::Robust : ChirpSig::Fast;
+      tp.mode = mode;
+      tp.payload = payload;
+      auto frame = buildFrameBaseband(tp);
+      auto geo = computeGeometry(tp);
+      const double paySec =
+          double(geo.payloadSymbols) *
+          double(kFftBaseband +
+                 kCpSamplesAudio[size_t(tp.cpMode)] / kDecimation) /
+          double(kFsBaseband);
+      const double netEff =
+          paySec > 0 ? (payloadLen - 30) * 8.0 / paySec : 0.0;
+
+      std::vector<cfloat> x(2000, cfloat(0, 0));
+      x.insert(x.end(), frame.begin(), frame.end());
+      x.insert(x.end(), 2500, cfloat(0, 0));
+
+      for (double off : a.offsets) {
+        ConfigResult r;
+        r.fam = fam;
+        r.mode = mode;
+        r.snrDb = floor + off;
+        r.trials = a.trials;
+        for (int t = 0; t < a.trials; ++t) {
+          ChansimParams cp = presetParams(a.preset);
+          cp.snr3kDb = r.snrDb;
+          cp.seed = a.seed + uint64_t(t) * 7919 +
+                    uint64_t(mode) * 131 + uint64_t(fam) * 100003;
+          auto y = Chansim::run(cp, x);
+          RxStage st = RxStage::NoDetect;
+          auto res = receiveFrame(fam, y, &st);
+          if (!res) {
+            if (st == RxStage::NoDetect) ++r.noDetect;
+            else if (st == RxStage::ZcFail) ++r.zcFail;
+            else ++r.hdrFail;
+          } else if (res->header.mode != mode ||
+                     res->header.length != payloadLen) {
+            ++r.hdrFail;
+          } else if (!res->payloadOk || res->payload != payload) {
+            ++r.payFail;
+          }
+        }
+        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f\n",
+               plan(fam).name, mode, floor, r.snrDb, r.noDetect, r.zcFail,
+               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff);
+        fflush(stdout);
+        if (csv) {
+          fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,
+                  mode, r.snrDb, r.trials, r.noDetect, r.zcFail, r.hdrFail,
+                  r.payFail, r.fer());
+          fflush(csv);
+        }
+        all.push_back(r);
+      }
+    }
+  }
+  if (csv) fclose(csv);
+
+  // Summary: floor-point pass/fail (FER <= 10% at offset 0, <= 1%-ish at
+  // +3 given trial count).
+  int fail = 0;
+  for (const auto& r : all) {
+    double off = r.snrDb - floorDb(r.fam, r.mode);
+    bool bad = (off < 0.5 && r.fer() > 0.10) ||
+               (off >= 2.5 && off < 5.0 && r.fer() > 0.04 + 1.0 / r.trials);
+    if (bad) {
+      printf("FAIL: %s M%d @ %.1f dB FER=%.1f%%\n", plan(r.fam).name, r.mode,
+             r.snrDb, 100 * r.fer());
+      ++fail;
+    }
+  }
+  printf(fail ? "== %d conformance failures ==\n" : "== all points pass ==\n",
+         fail);
+  return fail ? 1 : 0;
+}

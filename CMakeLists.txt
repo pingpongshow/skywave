@@ -92,6 +92,12 @@ target_link_libraries(skywave PRIVATE skywave_core)
 install(TARGETS skywave RUNTIME DESTINATION bin)
 install(DIRECTORY docs/ DESTINATION share/doc/skywave)
 
+# --- tools --------------------------------------------------------------------
+if(BUILD_TOOLS)
+  add_executable(bertool tools/bertool.cpp)
+  target_link_libraries(bertool PRIVATE skywave_core)
+endif()
+
 # --- tests --------------------------------------------------------------------
 if(BUILD_TESTS)
   enable_testing()
@@ -112,4 +118,5 @@ if(BUILD_TESTS)
   skw_test(test_phy_tx)
   skw_test(test_chansim)
   skw_test(test_phy_rx)
+  skw_test(test_conformance)
 endif()

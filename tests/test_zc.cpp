@@ -79,7 +79,11 @@ TEST_CASE(zc_refine_clean) {
     auto rx = makeRx(f, kZcSymbolsFast, 40.0, 0.7, 11);
     auto r = zcRefine(f, rx, 500.0 + 8.0, 0.0, 1e6, kZcSymbolsFast);  // coarse off by +8
     CHECK(r.ok);
-    CHECK_NEAR(r.blockStart, 500.0, 1.0);
+    // First-tap anchoring backs off the correlation lobe's half-power
+    // edge, which scales with 1/bandwidth (widest for NARROW).
+    double early = kFftBaseband / double(plan(f).carriers()) * 1.5 + 3.0;
+    CHECK(r.blockStart > 500.0 - early);
+    CHECK(r.blockStart < 500.0 + 3.0);
     CHECK_NEAR(r.cfoHz, 0.7, 0.1);
     CHECK(r.quality > 0.9f);
     // Ideal channel: |H| ~ 1, phase ~ constant across carriers.
@@ -96,11 +100,11 @@ TEST_CASE(zc_refine_robust_at_floor) {
     auto rx = makeRx(Family::Wide, kZcSymbolsRobust, -8.5, 1.9, 100 + t);
     auto r = zcRefine(Family::Wide, rx, 500.0 - 6.0, 0.7, 1.0, kZcSymbolsRobust);
     if (!r.ok) continue;
-    double terr = std::fabs(r.blockStart - 500.0);
     double ferr = std::fabs(r.cfoHz - 1.9);
-    worstT = std::max(worstT, terr);
+    worstT = std::max(worstT, std::fabs(r.blockStart - 500.0));
     worstF = std::max(worstF, ferr);
-    if (terr <= 2.0 && ferr < 0.5) ++okCount;
+    bool tOk = r.blockStart > 500.0 - 12.0 && r.blockStart < 500.0 + 3.0;
+    if (tOk && ferr < 0.5) ++okCount;
   }
   CHECK(okCount >= 18);
   (void)worstT;
@@ -114,7 +118,7 @@ TEST_CASE(zc_refine_fast_header_floor) {
     auto rx = makeRx(Family::Wide, kZcSymbolsFast, -1.0, -0.8, 300 + t);
     auto r = zcRefine(Family::Wide, rx, 500.0 + 5.0, -1.5, 1.0, kZcSymbolsFast);
     if (!r.ok) continue;
-    if (std::fabs(r.blockStart - 500.0) <= 2.0 &&
+    if (r.blockStart > 500.0 - 12.0 && r.blockStart < 500.0 + 3.0 &&
         std::fabs(r.cfoHz + 0.8) < 0.5) {
       ++okCount;
     }
@@ -135,7 +139,7 @@ TEST_CASE(zc_refine_narrow_family_floor) {
     auto r = zcRefine(Family::Narrow, rx, 500.0 + 4.0, 0.0, 0.25,
                       kZcSymbolsRobust);
     if (!r.ok) continue;
-    if (std::fabs(r.blockStart - 500.0) <= 5.0 &&
+    if (r.blockStart > 500.0 - 45.0 && r.blockStart < 500.0 + 5.0 &&
         std::fabs(r.cfoHz - 0.4) < 0.5) {
       ++okCount;
     }
