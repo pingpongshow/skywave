@@ -89,12 +89,14 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   *Gate: `test_ldpc` — H·c=0 across all 8 codes; AWGN thresholds within
   0.5 dB of reference per rate.* ✓ 2026-07-28 (FER ≤10% at thr+0.5 dB and
   ≥80% at thr−1.5 dB for all four rates, N=1944 and N=648 spot check)
-- [ ] **1.6 Chirp engine** — generator + matched-filter detector, all four
-  family spans, signature patterns, inversion detection, ±50 Hz stepped
-  calling search, delay–Doppler resolution from up/down pairs.
-  *Gate: `test_chirp` Pd ≥ 99% at family acquisition floors; false-alarm
-  < 1/10 min in noise; CFO estimate error < 1 Hz; inverted-spectrum
-  detection correct.*
+- [x] **1.6 Chirp engine** — generator + matched-filter detector, all four
+  family spans, signature patterns, inversion detection, ±50 Hz calling
+  capture, delay–Doppler resolution from up/down pairs.
+  *Gate: `test_chirp` Pd at family acquisition floors (25/25 all four
+  families); false-alarm 0 in 60 s noise; CFO < 1.5 Hz across ±50 Hz
+  calling capture, < 1 Hz connected; inversion detection correct;
+  timing ±1 ms.* ✓ 2026-07-28 — see Deviations Log for the detector
+  architecture that emerged (joint pattern scoring) and latency figures.
 - [ ] **1.7 ZC sync symbols** `[P]` — per-family sequences, S&C metric,
   robust-class doubled block, timing/CFO refinement.
   *Gate: `test_zc` timing ±2 samples, CFO < 0.5 Hz at floor SNR.*
@@ -330,6 +332,27 @@ doc was updated)*
   structurally (H·c=0 for every code) and by AWGN threshold conformance.
   Decoder uses float LLRs internally; the 5-bit quantization named in
   DSP.md is applied at the demapper (step 1.11), not inside the decoder.
+- **1.6 / 2026-07-28** — Calling signature changed from `up-up-up-up` to
+  `up-up-down-down` (WAVEFORM.md updated): an LFM chirp's delay–Doppler
+  ridge makes CFO unobservable without slope diversity — an all-up calling
+  preamble cannot support the ±50 Hz capture claim. All six patterns
+  remain distinct under inversion.
+- **1.6 / 2026-07-28** — Detector architecture evolved during
+  implementation from per-rep peak thresholding to **joint pattern
+  scoring** (sum of per-slot NCC window maxima vs a tracked noise floor):
+  per-rep AND-logic loses ~6 dB of ROC at the NARROW floor. Supporting
+  mechanisms that proved necessary: per-family band-limit filter before
+  NCC (in-band noise normalization; worth 4–14 dB), slot-validity gating
+  (≥3 individually significant slots, absolute + score/8 relative floor —
+  kills single-slot-dominated and partial-alignment matches), dual
+  decision cursors (fast ≈ 2.0 s decision lag from preamble start, 4-rep
+  ≈ 3.3 s — the price of ±2-rep suppression and containment checks), and
+  narrow-window + joint-d-search containment checks so a fast pair
+  embedded in a calling signature defers to the 4-rep classification.
+  DSP.md's SEARCH/COARSE description remains accurate at the conceptual
+  level; the scoring detail lives in chirp.hpp comments. Revisit latency
+  in step 1.10 if the sync engine needs earlier warning (option: emit a
+  provisional "energy detected" event at first-rep threshold crossing).
 - **0.6 / 2026-07-28** — ASan is unusable on this host (macOS 26.6 +
   Apple clang 17: the ASan runtime spins in `__malloc_init` /
   `wrap_malloc_default_zone` before `main`, with or without

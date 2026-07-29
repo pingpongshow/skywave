@@ -63,6 +63,7 @@ add_library(skywave_core STATIC
   src/dsp/fft.cpp
   src/dsp/fir.cpp
   src/dsp/updown.cpp
+  src/dsp/chirp.cpp
   src/fec/crc.cpp
   src/fec/ldpc.cpp
   src/fec/ldpc_tables.cpp
@@ -101,4 +102,5 @@ if(BUILD_TESTS)
   skw_test(test_dsp)
   skw_test(test_crc_whiten)
   skw_test(test_ldpc)
+  skw_test(test_chirp)
 endif()

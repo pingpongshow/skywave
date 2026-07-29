@@ -61,13 +61,14 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   inversion** ([WAVEFORM.md](WAVEFORM.md)): the engine conjugates the
   baseband, re-runs the match, and proceeds normally with an
   `inverted-spectrum` telemetry flag set
-- `COARSE`: correlation peak → timing ±1 ms; inter-rep phase slope → CFO to
-  <1 Hz. Capture range: ±5 Hz for connected preambles; **±50 Hz stepped
-  search (12.5 Hz steps) for calling preambles** — real SSB stations
-  mistune by tens of Hz. The robust signature's alternating up/down chirps
-  resolve the LFM delay–Doppler ambiguity during the wide search (an LFM
-  frequency offset masquerades as a timing shift; opposite slopes shift in
-  opposite directions, so the pair separates the two)
+- `COARSE`: correlation peak → timing ±1 ms; CFO from slope diversity plus
+  inter-rep phase → <1 Hz. Capture range: ±5 Hz for connected preambles;
+  **±50 Hz for calling preambles** — real SSB stations mistune by tens of
+  Hz. An LFM frequency offset masquerades as a timing shift (Δt = Δf·T/B);
+  up-reps and down-reps shift in opposite directions, so the peak-time
+  difference between slopes yields coarse CFO and the mean yields true
+  timing (this is why the robust and calling signatures both contain both
+  slopes); inter-rep correlation phase refines within its ±3.1 Hz ambiguity
 - `FINE`: ZC autocorrelation (Schmidl–Cox metric) refines timing to
   ±2 samples @ 12 k and CFO residual < 0.5 Hz. Fast header class: one ZC
   pair, second symbol seeds the channel estimate. Robust class: two ZC

@@ -250,7 +250,15 @@ information — the **header class**:
 |---|---|---:|
 | up–up | fast header follows | 2 |
 | up–down–up–down | robust header follows | 4 |
-| up–up–up–up | calling/beacon (robust header) | 4 |
+| up–up–down–down | calling/beacon (robust header) | 4 |
+
+Every multi-rep signature that must support CFO measurement contains both
+chirp slopes: an LFM chirp's ambiguity function is a delay–Doppler ridge,
+so frequency offset is observable only as the *opposing* peak-time shifts
+of up-reps versus down-reps. All six patterns (three signatures × normal /
+spectrum-inverted) remain mutually distinct; `up–up` is a prefix of the
+calling signature, so a detector that has seen two up-reps waits up to two
+further rep periods before classifying fast vs calling.
 
 The robust class uses 4 reps so preamble detection always retains ≥ 3 dB of
 margin over the deepest payload floor it announces (a 2-rep preamble would
@@ -263,11 +271,14 @@ noise. 4-rep acquisition floors (3 kHz ref): `ULTRA`/`WIDE` ~−12 dB,
 `MID` ~−14 dB, `NARROW` ~−15 dB (narrow families concentrate preamble power exactly as they
 do payload power). The correlation peak gives coarse timing (±1 ms) and the
 inter-rep phase slope gives coarse CFO. CFO capture: ±5 Hz for connected
-preambles; **±50 Hz stepped search for calling preambles** (real SSB stations
-mistune by tens of Hz). Alternating up/down chirps in the robust signature
-resolve the LFM delay–Doppler ambiguity during the wide search; the up–up
-fast signature does not need to (fast-class sessions are already
-frequency-locked).
+preambles; **±50 Hz for calling preambles** (real SSB stations mistune by
+tens of Hz). CFO is measured from slope diversity — up-rep and down-rep
+correlation peaks shift oppositely under CFO (Δt = ±Δf·T/B), so their
+difference yields coarse CFO and their mean yields true timing; inter-rep
+correlation phase then refines to <1 Hz within its ±3.1 Hz ambiguity. The
+up–up fast signature has no slope diversity and relies on inter-rep phase
+plus small peak-shift disambiguation, sufficient for its ±5 Hz
+frequency-locked regime.
 
 ### Fine Sync Symbols
 

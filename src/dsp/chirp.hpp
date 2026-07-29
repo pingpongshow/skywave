@@ -1,0 +1,136 @@
+// Chirp preamble generation and matched-filter detection (WAVEFORM.md
+// acquisition, DSP.md sync engine SEARCH/COARSE stages).
+//
+// Everything operates in the 12 kHz complex baseband. A family's chirp
+// sweeps its audio band shifted by -kCenterHz.
+//
+// Detection strategy: per-slope normalized correlation (NCC) on a decimated
+// grid, then JOINT pattern scoring - for each candidate start, the score of
+// a signature is the sum of per-rep-slot NCC window maxima. Thresholding
+// the sum (relative to a tracked noise floor) integrates all reps into one
+// statistic, which is what makes the deep-floor families detectable;
+// per-rep thresholding loses ~6 dB of ROC at the NARROW floor.
+#pragma once
+
+#include <complex>
+#include <span>
+#include <vector>
+
+#include "core/constants.hpp"
+#include "dsp/fir.hpp"
+
+namespace skw {
+
+using cfloat = std::complex<float>;
+
+enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2 };
+
+// Slope pattern for a signature (true = up). Index = rep number.
+// fast: U U     robust: U D U D     calling: U U D D
+std::vector<bool> chirpPattern(ChirpSig sig);
+
+inline int chirpRepSamples() {
+  return int(kChirpRepSec * kFsBaseband);  // 1920
+}
+
+// Baseband preamble for a family/signature: reps back-to-back, raised-cosine
+// edges (2 ms) per rep, unit RMS per rep.
+std::vector<cfloat> makeChirpPreamble(Family family, ChirpSig sig);
+
+struct ChirpDetection {
+  Family family;
+  ChirpSig sig;
+  bool inverted;       // spectrum-inverted signal detected
+  double startSample;  // preamble start in the detector's sample count
+  double cfoHz;        // estimated carrier frequency offset
+  float quality;       // mean per-rep NCC of the winning pattern
+};
+
+// Streaming matched-filter detector for one family (both slopes).
+class ChirpDetector {
+ public:
+  static constexpr int kGridStep = 4;  // 0.33 ms timing quantization
+
+  explicit ChirpDetector(Family family);
+
+  // Feed baseband samples; completed detections are appended to out.
+  // Decision latency: a signature is classified roughly one rep period
+  // plus the CFO slot window after its last rep (fast additionally waits
+  // out the calling-continuation window, since U-U prefixes U-U-D-D).
+  void process(std::span<const cfloat> in, std::vector<ChirpDetection>& out);
+
+  void reset();
+  uint64_t samplesConsumed() const { return consumed_; }
+  double noiseFloorNcc() const { return emaNoiseNcc_; }
+
+  struct SlotHit {
+    double gridF;   // interpolated peak position within the slot window
+    float ncc;
+    cfloat corr;
+    bool up;
+  };
+  struct PatternScore {
+    float score;                 // sum of slot NCC maxima
+    std::vector<SlotHit> slots;  // per-rep best hits
+  };
+
+  // Diagnostics hook (test/tooling support).
+  void debugScore(int64_t g0) const;
+
+ private:
+  struct GridVal {
+    float nccUp, nccDown;
+    cfloat corrUp, corrDown;
+  };
+
+  void evaluateGridPoint(int64_t grid);
+  void finalizeStarts(std::vector<ChirpDetection>& out);
+  PatternScore scorePattern(int64_t g0, ChirpSig sig, bool inverted) const;
+  float nccAt(int64_t grid, bool up) const;
+  const GridVal* gridAt(int64_t grid) const;
+  void emitDetection(int64_t g0, ChirpSig sig, bool inverted,
+                     const PatternScore& ps, std::vector<ChirpDetection>& out);
+
+  Family family_;
+  std::vector<cfloat> refUp_;    // conj already applied
+  std::vector<cfloat> refDown_;
+  float refEnergy_;
+  int crossTolGrid_;             // CFO-induced cross-slope slot shift bound
+  FirDecimator bandFilter_;      // band-limit so NCC sees in-band noise only
+  int filterDelay_;              // group delay (12 kHz samples)
+  std::vector<cfloat> filtered_;
+
+  std::vector<cfloat> buf_;      // rolling sample buffer
+  int64_t bufStart_ = 0;         // absolute index of buf_[0]
+  uint64_t consumed_ = 0;
+
+  std::vector<GridVal> grid_;    // rolling NCC history
+  int64_t gridStartIdx_ = 0;     // grid index of grid_[0]
+
+  // Rolling per-start scores, on two timelines: fast decisions use a short
+  // horizon (latency matters for connected frames); 4-rep decisions use
+  // the full pattern horizon with suppression spanning +-2 reps so partial
+  // alignments are vetoed by comparison against the true start's score.
+  struct ScoreRing {
+    std::vector<float> v;
+    int64_t base = 0;
+    float at(int64_t s) const {
+      int64_t i = s - base;
+      return (i >= 0 && i < int64_t(v.size())) ? v[size_t(i)] : 0.0f;
+    }
+  };
+  ScoreRing fastScores_;
+  ScoreRing best4Scores_;
+  int64_t nextFast_ = 0;         // next start to decide on the fast timeline
+  int64_t next4_ = 0;            // next start to decide on the 4-rep timeline
+  int suppress4_ = 0;
+  int suppressFast_ = 0;
+  int64_t lastEmitStart_ = -1'000'000'000;
+
+  void finalizeFast(std::vector<ChirpDetection>& out);
+  void finalize4(std::vector<ChirpDetection>& out);
+
+  double emaNoiseNcc_;           // tracked noise NCC floor
+};
+
+}  // namespace skw
