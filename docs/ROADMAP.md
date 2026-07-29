@@ -144,6 +144,32 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   sessions; record tuning outcomes in the Deviations Log.
   *Gate: **M1** — all WAVEFORM.md conformance targets, quick profile in
   CI, full sweep archived.*
+  **Status 2026-07-29 (in progress, commit 30126ee):** channel tracker
+  rebuilt (joint pilot LS on oversampled delay basis, PLL-anchored gauge,
+  ZC tap-domain prior — see Deviations Log). All 13 CI suites green.
+  AWGN: whole ladder clean (WIDE M4 floor+1 and NARROW M4 floor+4 at 0%
+  FER; clean-channel M13 EVM 34–49 dB all families). Fading campaign
+  measured (ladders in /tmp/skw_lad_{mod,good,nar}.csv):
+  - MID follows Rayleigh outage physics — measured 10%-FER points sit
+    ~4–6 dB above the table floors and converge to 0% (M4 −8.0, M5 −5.5,
+    M6 −3.0, M7 ≤−4.5 on Moderate; M10 8.5 … M13 24.5 on Good). Table
+    floors were AWGN-derived and never included the diversity-2 outage
+    margin; kFloors re-spec pending completion of the items below.
+  - WIDE/ULTRA and several NARROW modes PLATEAU at 13–47% FER
+    independent of SNR — an estimator-dynamics failure, not noise:
+    suspected shape smearing across the LS window as tap-relative phases
+    rotate at the Doppler rate, plus occasional chirp-preamble fade
+    outages (noDetect at high SNR). Fix before setting floors.
+  - ULTRA is anomalously worse than WIDE at equal margin on Moderate
+    (headers ~2× failures) — unexplained, investigate (band FIR checked
+    and fine).
+  - Conformance channel per mode class (aligns with LINK_ADAPTATION
+    selectivity gates): M4–M9 on CCIR Moderate, M10–M13 on CCIR Good,
+    NARROW all modes on Good (500 Hz band sees 2-path as flat Rayleigh —
+    no frequency diversity; document in WAVEFORM.md).
+  Remaining: fix fading plateaus → re-measure → set kFloors from
+  measurement → align WAVEFORM.md tables + AMC thresholds → full sweep
+  archive + CI quick profile on final numbers.
 
 ## Phase 2 — Link Core (First Functional Modem)
 
