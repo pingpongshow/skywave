@@ -34,7 +34,11 @@ class ChannelTracker {
   void processSymbol(std::span<cfloat> bins, int symIdx);
 
   const std::vector<cfloat>& h() const { return h_; }
-  double noiseVar() const { return noiseVar_; }
+  // Effective noise for LLR scaling: measurement noise plus the filter's
+  // mean per-carrier posterior variance. When the estimate is genuinely
+  // uncertain (mid-fade, sparse pilots) the demapper must not emit
+  // confidently wrong LLRs from a mis-rotated H.
+  double noiseVar() const { return noiseVar_ + hVar_; }
   double snrDb() const;             // mean per-carrier SNR estimate
   double cpePhase() const {
     return std::atan2(lastGain_.imag(), lastGain_.real());
@@ -43,37 +47,28 @@ class ChannelTracker {
  private:
   Family family_;
   bool robust_;
-  std::vector<cfloat> h_;           // per active carrier (= gain * shape)
-  std::vector<cfloat> shape_;       // slow structural estimate
-  cfloat lastGain_{1.0f, 0.0f};     // fast per-symbol common gain
+  std::vector<cfloat> h_;           // per active carrier (= basis * taps)
+  cfloat lastGain_{1.0f, 0.0f};     // raw per-symbol common-gain fit (diag)
   double noiseVar_;
-  double phase_ = 0.0;              // PLL-smoothed common phase (gauge)
-  double freq_ = 0.0;               // PLL phase step per symbol
-  double gainAmp_ = 1.0;            // smoothed common-gain amplitude
-  double alphaH_;
-  double g1_, g2_;                  // PLL gains
-
-  // Joint pilot least-squares estimator: the channel is modeled as T taps
-  // on a physical delay grid; each symbol's pilot measurements (positions
-  // rotate per symbol) are solved JOINTLY over a sliding window of recent
-  // symbols - no frequency interpolation, no edge extrapolation.
-  int numTaps_ = 0;
-  int histSymbols_ = 0;             // sliding window length
+  double phase_ = 0.0;              // retained for the cpePhase() accessor
   int nvarUpdates_ = 0;             // symbols folded into noiseVar_
-  std::vector<std::complex<double>> gPrior_;  // ZC seed in tap domain
+
+  // Per-tap Gauss-Markov Kalman filter: the channel is T taps on a
+  // physical delay grid, each tap an independent Rayleigh process with
+  // known Doppler (g[k+1] = rho g[k] + w). Each symbol's pilots form the
+  // measurement update. This handles fading DYNAMICS correctly - the
+  // former sliding-window LS assumed a quasi-static shape and collapsed
+  // mid-fade when tap-relative phases rotated within the window.
+  int numTaps_ = 0;
+  double rho_ = 0.999;              // per-symbol tap correlation
+  std::vector<std::complex<double>> g_;      // tap state (T)
+  std::vector<std::complex<double>> P_;      // state covariance (T x T)
+  std::vector<double> qDiag_;                // process noise per tap (T)
+  double hVar_ = 0.0;               // mean per-carrier posterior variance
+  std::vector<cfloat> basis_;       // (n x T): row c = e^{-j2pi c d_t / N}
 
   static void solveHermitian(std::vector<std::complex<double>>& M,
                              std::vector<std::complex<double>>& b, int T);
-  std::vector<cfloat> basis_;       // (n x T): row c = e^{-j2pi c d_t / N}
-  struct PilotMeas {
-    int carrier;
-    cfloat h;
-  };
-  struct SymbolMeas {
-    std::vector<PilotMeas> pilots;
-    cfloat gain;                    // PLL-smoothed gain at capture time
-  };
-  std::vector<SymbolMeas> hist_;    // newest last
 };
 
 // Max-log LLRs for one despread source symbol.

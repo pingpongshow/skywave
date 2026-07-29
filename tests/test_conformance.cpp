@@ -79,9 +79,42 @@ TEST_CASE(conformance_net_rates_geometry) {
   }
 }
 
-// FER regression smokes run on AWGN (stable reference) while the fading
-// floor tables are still being established empirically (bertool campaign,
-// ROADMAP 1.13 status). Fading conformance is bertool's job.
+// Fading smokes at the MEASURED fading floors (WAVEFORM.md annex) on the
+// designated channels. Bounds are loose (small trial counts, outage
+// statistics); the full campaign is bertool's job.
+TEST_CASE(conformance_fading_mid_m4_moderate) {
+  int ok = runTrials(Family::Mid, 4, fadingFloorDb(Family::Mid, 4) + 1.0,
+                     10, 900, true);
+  CHECK(ok >= 7);
+}
+
+TEST_CASE(conformance_fading_wide_m8_good) {
+  // ccirGood via explicit params: runTrials' fading flag uses Moderate,
+  // so drive the channel directly here.
+  std::vector<uint8_t> payload(300);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 41 + 3);
+  TxFrameParams tp;
+  tp.family = Family::Wide;
+  tp.sig = ChirpSig::Fast;
+  tp.mode = 8;
+  tp.payload = payload;
+  auto frame = buildFrameBaseband(tp);
+  std::vector<cfloat> x(2000, cfloat(0, 0));
+  x.insert(x.end(), frame.begin(), frame.end());
+  x.insert(x.end(), 2500, cfloat(0, 0));
+  int ok = 0;
+  for (int t = 0; t < 10; ++t) {
+    ChansimParams cp = ccirGood();
+    cp.snr3kDb = fadingFloorDb(Family::Wide, 8) + 1.0;
+    cp.seed = 950 + uint64_t(t) * 7919;
+    auto y = Chansim::run(cp, x);
+    auto r = receiveFrame(Family::Wide, y);
+    if (r && r->payloadOk && r->payload == payload) ++ok;
+  }
+  CHECK(ok >= 7);
+}
+
+// FER regression smokes on AWGN (stable reference; kFloors).
 TEST_CASE(conformance_quick_wide_m8_awgn) {
   int ok = runTrials(Family::Wide, 8, floorDb(Family::Wide, 8) + 1.0, 10,
                      500, false);

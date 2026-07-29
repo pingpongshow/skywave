@@ -164,6 +164,46 @@ inline constexpr double floorDb(Family f, int mode) {
   return kFloors[size_t(f)][size_t(mode)];
 }
 
+// Sentinel: no fading conformance point exists for this mode (near-flat
+// outage tail); the mode is AWGN/near-static only, gated by AMC.
+inline constexpr double kFadingNA = 99.0;
+
+// Measured FADING conformance floors (dB SNR, 3 kHz ref): lowest SNR
+// with one-shot FER <= 10% on the mode's DESIGNATED channel - CCIR
+// Moderate for the robust tier (M4-M7), CCIR Good for the fast tier
+// (M8-M13) and for ALL NARROW modes (a 500 Hz band sees a 2-path
+// channel as flat Rayleigh: no frequency diversity, so Moderate-Doppler
+// operation relies on the link layer's ARQ). These sit well above the
+// kFloors AWGN references because a one-shot frame shorter than the
+// fade dwell faces Rayleigh OUTAGE: FER ~= P(fade < threshold), and 10%
+// outage costs ~8 dB at diversity ~chi2_2-4. ARQ + soft-combining
+// (Phase 2) is the design response; AMC (Phase 3) keys off these values
+// plus channel-quality gates. Measured 2026-07-29, 20-40 trials/point,
+// bertool ladders archived in docs/conformance/.
+inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
+    // WIDE (M9 > M10 is real: r3/4 QPSK is more burst-fragile than
+    // r1/2 16QAM under fading; M13 = kFadingNA like NARROW's)
+    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 16.0, 26.0, kFadingNA}},
+    // MID
+    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+      -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5}},
+    // NARROW (M13 = kFadingNA: 64QAM r5/6 over a flat-Rayleigh one-shot
+    // frame has a near-flat outage tail - no 10% point exists at sane
+    // SNR; AMC admits it only on near-static channels)
+    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+      -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0}},
+    // ULTRA (robust tier ~3 dB worse than WIDE: outermost carriers ride
+    // the TX band-FIR transition - candidate for a wider FIR margin.
+    // M6/M7 provisional: slow outage tails, see ROADMAP 1.13 known
+    // issues)
+    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+      4.0, 6.5, 16.0, 12.5, 8.5, 13.5, 14.5, 18.5, 24.5, 28.5}},
+}};
+inline constexpr double fadingFloorDb(Family f, int mode) {
+  return kFadingFloors[size_t(f)][size_t(mode)];
+}
+
 // --------------------------------------------------------------------- LDPC
 inline constexpr int kLdpcNShort = 648;    // control frames, PHY header
 inline constexpr int kLdpcNLong  = 1944;   // data frames

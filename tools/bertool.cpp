@@ -123,7 +123,12 @@ int main(int argc, char** argv) {
     for (int mode : a.modes) {
       const ModeDef& md = kModes[size_t(mode)];
       if (!md.active) continue;
-      const double floor = floorDb(fam, mode);
+      // Offsets are relative to the floor that matches the channel: the
+      // AWGN reference for --preset awgn, the measured fading floor for
+      // the fading presets (WAVEFORM.md fading conformance annex).
+      const double floor = a.preset == "awgn" ? floorDb(fam, mode)
+                                              : fadingFloorDb(fam, mode);
+      if (floor >= 90.0) continue;  // kFadingNA: no fading conformance
       const bool robust = mode <= 7;
       const size_t payloadLen = robust ? 60 : 300;
 
@@ -158,8 +163,12 @@ int main(int argc, char** argv) {
         for (int t = 0; t < a.trials; ++t) {
           ChansimParams cp = presetParams(a.preset);
           cp.snr3kDb = r.snrDb;
+          // Seed must vary with the SNR point too: reusing realizations
+          // across offsets pins any unlucky deep-fade-over-preamble seed
+          // as a false FER floor across the whole ladder.
           cp.seed = a.seed + uint64_t(t) * 7919 +
-                    uint64_t(mode) * 131 + uint64_t(fam) * 100003;
+                    uint64_t(mode) * 131 + uint64_t(fam) * 100003 +
+                    uint64_t(std::llround(off * 2.0 + 64.0)) * 15485863ull;
           auto y = Chansim::run(cp, x);
           RxStage st = RxStage::NoDetect;
           auto res = receiveFrame(fam, y, &st);
@@ -191,12 +200,22 @@ int main(int argc, char** argv) {
   if (csv) fclose(csv);
 
   // Summary: floor-point pass/fail (FER <= 10% at offset 0, <= 1%-ish at
-  // +3 given trial count).
+  // +3 given trial count) against the same floor family as the offsets.
   int fail = 0;
   for (const auto& r : all) {
-    double off = r.snrDb - floorDb(r.fam, r.mode);
-    bool bad = (off < 0.5 && r.fer() > 0.10) ||
-               (off >= 2.5 && off < 5.0 && r.fer() > 0.04 + 1.0 / r.trials);
+    const double base = a.preset == "awgn" ? floorDb(r.fam, r.mode)
+                                           : fadingFloorDb(r.fam, r.mode);
+    double off = r.snrDb - base;
+    // AWGN decays as a coding waterfall (steep); fading FER is outage-
+    // limited and falls off far more gently above the floor. Gates carry
+    // one-sided binomial slack (~90%): a config whose true FER equals
+    // the spec must not fail the sweep half the time.
+    const double p3 = (a.preset == "awgn" ? 0.04 : 0.06) + 1.0 / r.trials;
+    auto gate = [&](double p) {
+      return p + 1.3 * std::sqrt(p * (1.0 - p) / r.trials);
+    };
+    bool bad = (off < 0.5 && r.fer() > gate(0.10)) ||
+               (off >= 2.5 && off < 5.0 && r.fer() > gate(p3));
     if (bad) {
       printf("FAIL: %s M%d @ %.1f dB FER=%.1f%%\n", plan(r.fam).name, r.mode,
              r.snrDb, 100 * r.fer());

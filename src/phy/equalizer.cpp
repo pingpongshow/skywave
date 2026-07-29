@@ -10,57 +10,29 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
                                std::vector<cfloat> h0, double noiseVar0)
     : family_(family), robust_(robustClass), h_(std::move(h0)),
       noiseVar_(std::max(noiseVar0, 1e-6)) {
-  shape_ = h_;  // seed the slow structural estimate from the ZC handoff
-  // The sliding-window LS already smooths; the blend just suppresses
-  // solve-to-solve jitter. Robust class integrates longer windows at low
-  // per-pilot SNR; fast class must chase fading.
-  alphaH_ = robust_ ? 0.4 : 0.8;
-  g1_ = robust_ ? 0.15 : 0.35;
-  g2_ = robust_ ? 0.015 : 0.05;
-
-  // Joint pilot LS setup: T taps at delays d_t = (t-1) * N/n, covering one
-  // slightly-negative tap through ~CP+8. Pilot positions rotate by one
-  // carrier per symbol, so a window of a few symbols supplies measurements
-  // at 2-4x T distinct carriers - solvable without any interpolation or
-  // edge extrapolation (which is what wrecks dispersive channels: flat
-  // extension past the outermost pilot is ~0.24 rad/carrier wrong at 1 ms
-  // delay spread).
   // Tap grid at HALF the segment's natural resolution (N/2n): a grid at
   // exactly N/n is an orthogonal DFT over the carrier segment, and any
   // off-grid physical delay then leaks slowly-decaying Dirichlet tails
-  // beyond the retained window (the same segment-leakage failure as naive
-  // DFT truncation). The 2x-oversampled non-orthogonal basis represents
-  // off-grid delays with fast-decaying coefficients; ridge regularization
-  // handles the resulting near-collinearity.
+  // beyond the retained window. The 2x-oversampled non-orthogonal basis
+  // represents off-grid delays with fast-decaying coefficients; the
+  // Kalman prior handles the resulting near-collinearity.
   const int n = plan(family_).carriers();
   const double spacing = double(kFftBaseband) / (2.0 * n);
   numTaps_ = 3 + int(56.0 / spacing);
-  gPrior_.assign(size_t(numTaps_), {0.0, 0.0});
-  // Window length: enough pilot measurements to overdetermine the tap
-  // solve by ~3x. NARROW carries ~2 pilots/symbol against 7 taps, so a
-  // 4-symbol window is barely determined and 64QAM EVM starves; families
-  // with rich pilot budgets keep short windows for fading agility.
-  const int np0 = std::max(int(symbolLayout(family_, 0).pilotCarriers.size()), 1);
-  const int needed = (3 * numTaps_ + np0 - 1) / np0;
-  histSymbols_ = robust_ ? std::max(8, needed) : std::max(4, needed);
-  basis_.resize(size_t(n) * numTaps_);
+  const int T = numTaps_;
+  basis_.resize(size_t(n) * T);
   for (int c = 0; c < n; ++c) {
-    for (int t = 0; t < numTaps_; ++t) {
+    for (int t = 0; t < T; ++t) {
       double d = (t - 2) * spacing;
       double ph = -2.0 * M_PI * double(c) * d / kFftBaseband;
-      basis_[size_t(c) * numTaps_ + t] =
+      basis_[size_t(c) * T + t] =
           cfloat(float(std::cos(ph)), float(std::sin(ph)));
     }
   }
 
-  // Tap-domain fit of the ZC handoff estimate: the prior MEAN for every
-  // subsequent solve. At deep-floor SNR the ZC block (coherent over 3-6
-  // known symbols) is a far better estimate than any pilot-window LS (T
-  // taps from a handful of noise-dominated pilots), so the solve must
-  // shrink toward the seed - shrinking toward zero throws the seed away
-  // the moment the window fills.
+  // Initial tap state: LS fit of the ZC handoff estimate onto the grid.
+  g_.assign(size_t(T), {0.0, 0.0});
   {
-    const int T = numTaps_;
     std::vector<std::complex<double>> M0(size_t(T) * T, {0.0, 0.0});
     std::vector<std::complex<double>> b0(size_t(T), {0.0, 0.0});
     for (int c = 0; c < n; ++c) {
@@ -82,8 +54,245 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
       M0[size_t(i) * T + i] += 1e-3 * double(n);
     }
     solveHermitian(M0, b0, T);
-    gPrior_ = b0;
+    g_ = b0;
   }
+
+  // Gauss-Markov dynamics: rho = exp(-2 (pi fd Ts)^2), designed at the
+  // worst-case Doppler each class must survive (robust: CCIR Poor 1 Hz;
+  // fast: AMC-gated to <= 0.5 Hz channels). NOTE (empirical, see ROADMAP
+  // 1.13): the residual tracking floor under fading (~ -8 dB vs signal
+  // at high SNR) is NOT process-noise-limited - varying fd/Q trades
+  // per-family wins and losses without moving the floor; it is the
+  // moving off-grid tap representation itself. Model refinement (e.g.
+  // tracked physical-delay taps, adaptive Q) is Phase-3 work.
+  // Process noise follows a SMOOTHED seed delay profile: the seed's
+  // instantaneous tap powers say where the channel's energy lives, but a
+  // tap that happened to be mid-fade at ZC time must not be starved
+  // forever (that starved taps was the failure of the per-tap-
+  // proportional first cut), so take the neighborhood max plus a floor.
+  const double fd = robust_ ? 1.0 : 0.5;
+  const double Ts =
+      double(kFftBaseband + kCpSamplesAudio[1] / kDecimation) / kFsBaseband;
+  const double arg = 2.0 * std::pow(M_PI * fd * Ts, 2.0);
+  rho_ = std::exp(-arg);
+  double seedPow = 0.0;
+  for (const auto& v : g_) seedPow += std::norm(v);
+  seedPow = std::max(seedPow, 1e-6);
+  qDiag_.assign(size_t(T), 0.0);
+  const double qScale = 1.0 - rho_ * rho_;
+  {
+    // Profile shape: neighborhood max spreads each seed tap's power to
+    // adjacent grid delays; the floor keeps starved taps acquirable.
+    // Then NORMALIZE the total to the physical steady-state power
+    // (seedPow) - the un-normalized neighborhood sum is ~5x too big, and
+    // total process noise beyond the channel's actual power inflates the
+    // posterior without bound, crushing the LLR scale via noiseVar().
+    double sum = 0.0;
+    for (int t = 0; t < T; ++t) {
+      double prof = 0.0;
+      for (int u = std::max(0, t - 2); u <= std::min(T - 1, t + 2); ++u) {
+        prof = std::max(prof, std::norm(g_[size_t(u)]));
+      }
+      qDiag_[size_t(t)] = prof + 0.1 * seedPow / T;
+      sum += qDiag_[size_t(t)];
+    }
+    const double norm = qScale * 1.2 * seedPow / std::max(sum, 1e-12);
+    for (auto& q : qDiag_) q *= norm;
+  }
+
+  // Initial covariance: the ZC estimate is good but not perfect; start
+  // with a modest fraction of the per-tap steady-state power.
+  P_.assign(size_t(T) * T, {0.0, 0.0});
+  for (int t = 0; t < T; ++t) {
+    P_[size_t(t) * T + t] = 0.05 * qDiag_[size_t(t)] / qScale;
+  }
+  hVar_ = 0.0;
+}
+
+double ChannelTracker::snrDb() const {
+  double p = 0;
+  for (const auto& v : h_) p += std::norm(v);
+  p /= double(h_.size());
+  return 10.0 * std::log10(std::max(p / noiseVar_, 1e-9));
+}
+
+void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
+  const int n = plan(family_).carriers();
+  const int T = numTaps_;
+  auto lay = symbolLayout(family_, symIdx);
+  const int np = int(lay.pilotCarriers.size());
+  if (np == 0) return;
+
+  // Predict: g <- rho g, P <- rho^2 P + Q.
+  for (auto& v : g_) v *= rho_;
+  const double r2 = rho_ * rho_;
+  for (auto& v : P_) v *= r2;
+  for (int t = 0; t < T; ++t) P_[size_t(t) * T + t] += qDiag_[size_t(t)];
+
+  // Pilot measurements m = A g + noise, A rows = basis rows of the pilot
+  // carriers (divided by the known pilot value happens on capture).
+  std::vector<std::complex<double>> m(static_cast<size_t>(np));
+  std::vector<const cfloat*> rows(static_cast<size_t>(np));
+  {
+    int k = 0;
+    for (int c : lay.pilotCarriers) {
+      cfloat meas = bins[size_t(carrierToBasebandBin(family_, c))] /
+                    pilotValue(c, symIdx);
+      m[size_t(k)] = std::complex<double>(meas.real(), meas.imag());
+      rows[size_t(k)] = &basis_[size_t(c) * T];
+      ++k;
+    }
+  }
+
+  // Innovation and residual gating (FLYWHEEL): compare against predicted
+  // H at the pilots. Track the raw common-gain fit for telemetry.
+  double resid = 0.0;
+  double pilotPow = 0.0;
+  std::complex<double> gnum(0, 0);
+  double gden = 0;
+  for (int k = 0; k < np; ++k) {
+    std::complex<double> pred(0, 0);
+    const cfloat* row = rows[size_t(k)];
+    for (int t = 0; t < T; ++t) {
+      pred += std::complex<double>(row[t].real(), row[t].imag()) *
+              g_[size_t(t)];
+    }
+    resid += std::norm(m[size_t(k)] - pred);
+    pilotPow += std::norm(pred);
+    gnum += m[size_t(k)] * std::conj(pred);
+    gden += std::norm(pred);
+  }
+  resid /= np;
+  pilotPow /= np;
+  lastGain_ = gden > 1e-12
+                  ? cfloat(float((gnum / gden).real()),
+                           float((gnum / gden).imag()))
+                  : cfloat(1, 0);
+  phase_ = std::atan2(lastGain_.imag(), lastGain_.real());
+
+  // Bootstrap R: the ZC handoff's noiseVar0 is an H-error figure, not
+  // per-pilot measurement noise - at floor SNR it can be 15x low, and an
+  // underestimated R makes the very first Kalman gains enormous (observed
+  // divergence: state jumps onto noise, covariance loses definiteness).
+  // The first innovation against the good ZC seed is essentially pure
+  // measurement noise, so it calibrates R directly.
+  if (nvarUpdates_ == 0) noiseVar_ = std::max(noiseVar_, 0.8 * resid);
+
+  // Expected innovation power from filter uncertainty alone: mean of the
+  // per-pilot prior variances s_k = row P row^H (pre-update pass).
+  double meanPrior = 0.0;
+  for (int k = 0; k < np; ++k) {
+    const cfloat* row = rows[size_t(k)];
+    double s = 0.0;
+    for (int t = 0; t < T; ++t) {
+      std::complex<double> acc(0, 0);
+      for (int u = 0; u < T; ++u) {
+        acc += P_[size_t(t) * T + u] *
+               std::conj(
+                   std::complex<double>(row[u].real(), row[u].imag()));
+      }
+      s += (std::complex<double>(row[t].real(), row[t].imag()) * acc).real();
+    }
+    meanPrior += std::max(s, 0.0);
+  }
+  meanPrior /= np;
+  const double meanS = meanPrior + noiseVar_;
+
+  static const bool eqDbg = getenv("SKW_EQ_DEBUG") != nullptr;
+  // FLYWHEEL: hold only on a residual far beyond what the filter itself
+  // expects (interference, collision) - meanS already accounts for honest
+  // mid-fade innovation, so the gate is S-normalized.
+  const bool hold = resid > 10.0 * meanS;
+  if (eqDbg) {
+    fprintf(stderr,
+            "eq: sym=%d |g|=%.3f resid=%.3g pp=%.3g nv=%.3g hv=%.3g "
+            "S=%.3g%s\n",
+            symIdx, double(std::abs(lastGain_)), resid, pilotPow, noiseVar_,
+            hVar_, meanS, hold ? " HOLD" : "");
+  }
+  if (!hold) {
+    // Noise tracking: the innovation power resid contains the estimation
+    // -error share meanPrior; subtract it so nvar tracks the MEASUREMENT
+    // noise, clamped to stay positive under fluctuation.
+    const double nvarTarget = std::max(resid - meanPrior, 0.2 * resid);
+    noiseVar_ += (nvarUpdates_ < 8 ? 0.4 : 0.1) * (nvarTarget - noiseVar_);
+    ++nvarUpdates_;
+    noiseVar_ = std::max(noiseVar_, 1e-9);
+
+    // SEQUENTIAL scalar measurement updates (one pilot at a time). With
+    // diagonal R this is algebraically the joint update, but each
+    // innovation variance s = row P row^H + R is a positive scalar - no
+    // matrix inversion, and none of the joint update's indefiniteness
+    // failure modes.
+    std::vector<std::complex<double>> u(static_cast<size_t>(T));
+    for (int k = 0; k < np; ++k) {
+      const cfloat* row = rows[size_t(k)];
+      // u = P row^H ; s = row u + R ; pred = row g.
+      double s = noiseVar_;
+      std::complex<double> pred(0, 0);
+      for (int t = 0; t < T; ++t) {
+        std::complex<double> acc(0, 0);
+        for (int w = 0; w < T; ++w) {
+          acc += P_[size_t(t) * T + w] *
+                 std::conj(
+                     std::complex<double>(row[w].real(), row[w].imag()));
+        }
+        u[size_t(t)] = acc;
+        std::complex<double> rt(row[t].real(), row[t].imag());
+        s += (rt * acc).real();
+        pred += rt * g_[size_t(t)];
+      }
+      s = std::max(s, 0.1 * noiseVar_ + 1e-12);
+      const std::complex<double> e = m[size_t(k)] - pred;
+      const double sInv = 1.0 / s;
+      for (int t = 0; t < T; ++t) {
+        g_[size_t(t)] += u[size_t(t)] * sInv * e;
+      }
+      for (int t = 0; t < T; ++t) {
+        for (int w = 0; w < T; ++w) {
+          P_[size_t(t) * T + w] -=
+              u[size_t(t)] * std::conj(u[size_t(w)]) * sInv;
+        }
+      }
+    }
+    // Numerical hygiene: keep P Hermitian with a tiny diagonal floor.
+    for (int t = 0; t < T; ++t) {
+      for (int w = 0; w < t; ++w) {
+        std::complex<double> avg =
+            0.5 * (P_[size_t(t) * T + w] + std::conj(P_[size_t(w) * T + t]));
+        P_[size_t(t) * T + w] = avg;
+        P_[size_t(w) * T + t] = std::conj(avg);
+      }
+      double dg = P_[size_t(t) * T + t].real();
+      P_[size_t(t) * T + t] = std::max(dg, 1e-9);
+    }
+  }
+
+  // Project the state to per-carrier H and the mean posterior variance
+  // (row P row^H averaged over carriers - the demapper's uncertainty).
+  // The projection must be EXACT: P's off-diagonal structure (updates
+  // concentrate along the observed subspace) makes the trace a large
+  // overcount, and the demapper's LLR scale rides on this number.
+  double hv = 0.0;
+  std::vector<std::complex<double>> Pr(static_cast<size_t>(T));
+  for (int c = 0; c < n; ++c) {
+    const cfloat* row = &basis_[size_t(c) * T];
+    std::complex<double> acc(0, 0);
+    double v = 0.0;
+    for (int t = 0; t < T; ++t) {
+      std::complex<double> rt(row[t].real(), row[t].imag());
+      acc += rt * g_[size_t(t)];
+      std::complex<double> pa(0, 0);
+      for (int u = 0; u < T; ++u) {
+        std::complex<double> ru(row[u].real(), row[u].imag());
+        pa += P_[size_t(t) * T + u] * std::conj(ru);
+      }
+      v += (rt * pa).real();
+    }
+    h_[size_t(c)] = cfloat(float(acc.real()), float(acc.imag()));
+    hv += std::max(v, 0.0);
+  }
+  hVar_ = hv / std::max(n, 1);
 }
 
 // In-place Gaussian elimination with partial pivoting; solution in b.
@@ -115,163 +324,6 @@ void ChannelTracker::solveHermitian(std::vector<std::complex<double>>& M,
       }
       b[size_t(r)] -= f * b[size_t(col)];
     }
-  }
-}
-
-double ChannelTracker::snrDb() const {
-  double p = 0;
-  for (const auto& v : h_) p += std::norm(v);
-  p /= double(h_.size());
-  return 10.0 * std::log10(std::max(p / noiseVar_, 1e-9));
-}
-
-void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
-  const int n = plan(family_).carriers();
-  auto lay = symbolLayout(family_, symIdx);
-  const int np = int(lay.pilotCarriers.size());
-
-  // Fast/slow decomposition: fading dynamics are dominated by a COMMON
-  // complex gain (flat component - fast, measurable per symbol from this
-  // symbol's pilots), while the tap SHAPE decorrelates much more slowly.
-  // Fit the scalar per symbol against the current shape, then push
-  // gain-normalized measurements into the long shape window so the shape
-  // fit stays stationary.
-  std::vector<PilotMeas> cur;
-  cur.reserve(size_t(np));
-  cfloat num(0, 0);
-  float den = 0;
-  for (int c : lay.pilotCarriers) {
-    cfloat m = bins[size_t(carrierToBasebandBin(family_, c))] /
-               pilotValue(c, symIdx);
-    cur.push_back({c, m});
-    num += m * std::conj(shape_[size_t(c)]);
-    den += std::norm(shape_[size_t(c)]);
-  }
-  cfloat gain = den > 1e-12f ? num / den : cfloat(1, 0);
-
-  // Residual and FLYWHEEL check against gain * shape.
-  double resid = 0.0;
-  double pilotPow = 0.0;
-  for (const auto& pm : cur) {
-    cfloat expect = gain * shape_[size_t(pm.carrier)];
-    resid += std::norm(pm.h - expect);
-    pilotPow += std::norm(expect);
-  }
-  resid /= std::max(np, 1);
-  pilotPow /= std::max(np, 1);
-  if (resid > 4.0 * (pilotPow + noiseVar_)) return;  // FLYWHEEL hold
-
-  // Fast warm-up, then slow symmetric tracking. A conservatively high
-  // ZC-handoff seed otherwise keeps the noise-scaled ridge inflated for
-  // tens of symbols (the ridge bias itself elevates residuals, so the
-  // loop converges at the EMA rate, not the window rate) - NARROW's first
-  // payload codeword spans ~30 symbols and eats the whole transient.
-  // Steady state must stay SYMMETRIC: chasing downward excursions tracks
-  // the minimum of a noisy chi-square, and the resulting low-biased nvar
-  // makes LLRs overconfident and trips false FLYWHEEL holds at floor SNR.
-  noiseVar_ += (nvarUpdates_ < 8 ? 0.4 : 0.1) * (resid - noiseVar_);
-  ++nvarUpdates_;
-  noiseVar_ = std::max(noiseVar_, 1e-9);
-  lastGain_ = gain;
-
-  // PLL-smoothed gain: the raw per-symbol fit above is the gauge of
-  // everything downstream, and for pilot-poor families at low SNR it is
-  // mostly measurement noise (NARROW: 2 pilots at 0 dB -> sigma ~0.5 rad,
-  // which alone destroys QPSK). The PHYSICAL common gain moves slowly
-  // (residual CFO + fade rotation), so a 2nd-order phase PLL plus an
-  // amplitude EMA recovers most of the SNR. The smoothed value - not the
-  // raw fit - anchors the gauge: it is stored with the measurements and
-  // reused unchanged in every later solve (a stored PHYSICAL trajectory
-  // cannot gauge-oscillate the way stale re-fit gains did).
-  {
-    const double pred = phase_ + freq_;
-    double innov = std::atan2(gain.imag(), gain.real()) - pred;
-    while (innov > M_PI) innov -= 2.0 * M_PI;
-    while (innov < -M_PI) innov += 2.0 * M_PI;
-    phase_ = pred + g1_ * innov;
-    freq_ += g2_ * innov;
-    gainAmp_ += 0.25 * (std::abs(gain) - gainAmp_);
-    gainAmp_ = std::max(gainAmp_, 1e-4);
-  }
-  const cfloat gS(float(gainAmp_ * std::cos(phase_)),
-                  float(gainAmp_ * std::sin(phase_)));
-
-  hist_.push_back({std::move(cur), gS});
-  if (int(hist_.size()) > histSymbols_) hist_.erase(hist_.begin());
-
-  const int T = numTaps_;
-  // Normal equations M g = b over the window, each symbol's measurements
-  // normalized by its STORED PLL gain and weighted by age * |gS|^2
-  // (deep-faded symbols carry amplified noise after normalization -
-  // |gS|^2 weighting is the MRC optimum and keeps them from poisoning
-  // the shape). The solved g is the tap-domain SHAPE in the PLL's unit
-  // gauge - the same gauge as the ZC prior.
-  std::vector<std::complex<double>> M(size_t(T) * T, {0.0, 0.0});
-  std::vector<std::complex<double>> b(size_t(T), {0.0, 0.0});
-  const double ageDecay = robust_ ? 0.9 : 0.8;
-  double w = 1.0;
-  double sumW = 0.0;  // total LS weight, for noise-scaled ridge
-  const int newest = int(hist_.size()) - 1;
-  for (int a = newest; a >= 0; --a) {
-    const cfloat ca = hist_[size_t(a)].gain;
-    double ca2 = std::norm(ca);
-    if (ca2 < 1e-8) {
-      w *= ageDecay;
-      continue;
-    }
-    const double wEff = w * ca2;
-    const std::complex<double> caInv =
-        1.0 / std::complex<double>(ca.real(), ca.imag());
-    sumW += wEff * double(hist_[size_t(a)].pilots.size());
-    for (const auto& pm : hist_[size_t(a)].pilots) {
-      const cfloat* row = &basis_[size_t(pm.carrier) * T];
-      std::complex<double> mNorm =
-          std::complex<double>(pm.h.real(), pm.h.imag()) * caInv;
-      for (int i = 0; i < T; ++i) {
-        std::complex<double> ri(row[i].real(), row[i].imag());
-        b[size_t(i)] += wEff * std::conj(ri) * mNorm;
-        for (int j = i; j < T; ++j) {
-          std::complex<double> rj(row[j].real(), row[j].imag());
-          M[size_t(i) * T + j] += wEff * std::conj(ri) * rj;
-        }
-      }
-    }
-    w *= ageDecay;
-  }
-  // Noise-scaled ridge TOWARD THE ZC PRIOR (MAP with prior mean gPrior_):
-  // lambda = 3*nvar makes the prior dominate exactly when pilots are
-  // noise-dominated (deep-floor robust headers, where the coherent ZC
-  // estimate is the best information available) and become negligible
-  // when pilots are clean (64QAM needs the unbiased pilot solve). A
-  // fixed zero-target ridge either biases clean EVM (pilot-poor
-  // families) or discards the seed at floor - both were observed.
-  const double lambda = 3.0 * noiseVar_ + 1e-3;
-  for (int i = 0; i < T; ++i) {
-    for (int j = 0; j < i; ++j) {
-      M[size_t(i) * T + j] = std::conj(M[size_t(j) * T + i]);
-    }
-    M[size_t(i) * T + i] += lambda;
-    b[size_t(i)] += lambda * gPrior_[size_t(i)];
-  }
-  solveHermitian(M, b, T);
-  const std::vector<std::complex<double>>& g = b;
-  (void)sumW;
-  // Project back to carriers: shape in the PLL's unit gauge. While the
-  // window is still FILLING the solve is ridge-limited, so lean on the
-  // previous shape in proportion to the missing fill. The demap estimate
-  // for THIS symbol is gS * shape - the smoothed gain restores the gauge.
-  const float fill = float(hist_.size()) / float(histSymbols_);
-  for (int c = 0; c < n; ++c) {
-    const cfloat* row = &basis_[size_t(c) * T];
-    std::complex<double> acc(0, 0);
-    for (int t = 0; t < T; ++t) {
-      acc += std::complex<double>(row[t].real(), row[t].imag()) *
-             g[size_t(t)];
-    }
-    cfloat sNew(float(acc.real()), float(acc.imag()));
-    cfloat shapeNew = fill * sNew + (1.0f - fill) * shape_[size_t(c)];
-    shape_[size_t(c)] = shapeNew;
-    h_[size_t(c)] = gS * shapeNew;
   }
 }
 
