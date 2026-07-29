@@ -201,11 +201,14 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
 
 *Exit gate: **Milestone M2**.*
 
-- [ ] **2.1 Link envelope + frame types** — pack/parse for every
+- [x] **2.1 Link envelope + frame types** — pack/parse for every
   PROTOCOL.md frame type, flags, piggybacked `ack_base`, voice-vs-ARQ
   sequence spaces.
   *Gate: `test_frame` round-trips + malformed-input fuzz (no crashes,
-  clean rejects).*
+  clean rejects).* ✓ 2026-07-29 — link/frame.{hpp,cpp}: 12-byte envelope
+  + CRC-32, 22 body types, callsign validation + FNV-1a-24 hash,
+  reserved-mode clamp (M0–M3→M4), reserved caps/flag bits rejected;
+  8000-iteration fuzz clean.
 - [ ] **2.2 Session FSM + timers** — states, airtime-aware timeout
   computation (PHY airtime query), retry budgets, idle disconnect.
   *Gate: `test_fsm` table-driven transition coverage incl. timeout paths.*
