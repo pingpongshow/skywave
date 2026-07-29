@@ -216,9 +216,15 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   queued actions), 6 states, PROTOCOL.md retry budgets (CALL/START 4,
   DISC 3), clamped airtime timeouts (frameAirtimeSec added to
   phy/framer), idle disconnect 120 s + keepalive 20 s (flag-gated).
-- [ ] **2.3 Handshake** — CALL/CALL_ACK/START/START_ACK(NAK) bodies,
+- [x] **2.3 Handshake** — CALL/CALL_ACK/START/START_ACK(NAK) bodies,
   capability intersection, quality-seeded initial mode, ULTRA fallback.
   *Gate: `test_handshake` — happy path, every NAK reason, fallback.*
+  ✓ 2026-07-29 — link/handshake.{hpp,cpp}: initial mode = highest with
+  effSNR ≥ kFadingFloors + 2.5 (AMC promote margin; kFadingNA excluded,
+  M12+ selectivity gate), capped at M10 (fragile-mode gates need live
+  traffic); responder silence vs START_NAK split; ULTRA fallback =
+  first half of attempts ULTRA then WIDE; ULTRA-configured responders
+  also accept WIDE (fallback must land).
 - [ ] **2.4 ARQ engine** — SR window, gap bitmaps, compact ACK (7-byte
   body incl. CFO report), adaptive timeout, retransmit priority,
   max-retries teardown.
