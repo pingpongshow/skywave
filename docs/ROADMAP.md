@@ -426,6 +426,17 @@ ST2 found and fixed a real bug: a TCP client vanishing mid-send
 SIGPIPE'd the process (now SO_NOSIGPIPE/MSG_NOSIGNAL in TcpServer). Phase 5 exits through **ST3**
 (real/virtual audio devices - BlackHole/VB-Cable - two processes,
 independent clocks, ≥2 h zero-drop soak; ctest label `hardware`).
+✓ ST3 smoke-verified 2026-07-29 (`tests/st3_hardware.py`, ctest
+`st3_hardware`, label `hardware`, enabled via `SKW_HARDWARE_TESTS=1`):
+two REAL `skywave` processes linked through BlackHole 2ch (forward) and
+VB-Cable (reverse) — each with its own audio clock and worker thread,
+driven exclusively through the TCP control/data ports. Connected in
+20.5 s, 2 KiB byte-exact, AMC climbed M4→M12 live on the loopback
+channel, 22 soak cycles with ZERO drops (86 s). **Operator decision
+2026-07-29: the formal ≥2 h zero-drop soak (and all long-duration
+runs) are deferred to a dedicated endurance pass after the remaining
+phases complete** — the harness takes `--soak-sec 7200` when that pass
+runs. Phase 5 closes on the smoke evidence.
 On-air work is gated by **ST4** (attended rig checklist).
 
 ## Phase 4 — Services

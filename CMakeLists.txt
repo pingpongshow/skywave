@@ -210,6 +210,20 @@ if(BUILD_TESTS)
   if(ENABLE_GUI)
     skw_test(test_gui)
   endif()
+  # ST3 (TESTING.md): two real processes over real/virtual audio devices.
+  # Labeled `hardware` and excluded from default runs: ctest -L hardware.
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_FOUND)
+    add_test(NAME st3_hardware
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/st3_hardware.py
+                     --binary $<TARGET_FILE:skywave>)
+    set_tests_properties(st3_hardware PROPERTIES
+      LABELS "hardware"
+      TIMEOUT 14400
+      SKIP_RETURN_CODE 77
+      DISABLED $<NOT:$<BOOL:$ENV{SKW_HARDWARE_TESTS}>>)
+  endif()
   skw_test(test_amc)
   skw_test(test_harq)
   skw_test(test_chanmem)
