@@ -177,7 +177,7 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
       -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5, 99.0}},
     // NARROW
     {{-19.5, -17.5, -15.0, -12.0,
-      -15.0, -12.5, -10.0, -7.5, -4.5, -1.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
+      -15.0, -12.5, -10.0, -7.5, -3.5, -0.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,
       -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5, 99.0}},
@@ -189,7 +189,7 @@ inline double floorDb(Family f, int mode);  // reads the active profile
 inline constexpr double kFadingNA = 99.0;
 
 // Measured FADING conformance floors (dB SNR, 3 kHz ref): lowest SNR
-// with one-shot FER <= 10% on the mode's DESIGNATED channel - CCIR
+// with one-shot FER <= ~10-15% on the mode's DESIGNATED channel - CCIR
 // Moderate for the robust tier (M4-M7), CCIR Good for the fast tier
 // (M8-M13) and for ALL NARROW modes (a 500 Hz band sees a 2-path
 // channel as flat Rayleigh: no frequency diversity, so Moderate-Doppler

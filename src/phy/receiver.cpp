@@ -595,11 +595,16 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   double h0pow = 0;
   for (const auto& v : h0) h0pow += std::norm(v);
   h0pow /= std::max(n, 1);
-  // ZC-measured noise seed when available: short frames (ACKs) never
-  // converge the tracker, and a crude 10-dB-below-signal guess froze
-  // AMC's effective SNR at ~16 dB on rich channels.
-  const double nv0 =
-      zc.noiseVar > 0.0 ? zc.noiseVar : h0pow * 0.1;
+  // ZC-measured noise seed, taken only when it LOWERS the estimate:
+  // short frames (ACKs) never converge the tracker and the crude
+  // 10-dB-below-signal guess froze AMC's effective SNR at ~16 dB on
+  // rich channels - but under fading the "identical" ZC symbols differ
+  // by CHANNEL MOTION, so the inter-symbol spread overestimates noise
+  // and a high seed poisons whole frames (measured: M8+ fading FER
+  // 30-70% far above the floors).
+  const double nv0 = zc.noiseVar > 0.0
+                         ? std::min(zc.noiseVar, h0pow * 0.1)
+                         : h0pow * 0.1;
   ChannelTracker tracker(family, robust, std::move(h0), nv0);
 
   SymbolWalker walker{family, sig, zc.cfoHz, t0, 0, &tracker};

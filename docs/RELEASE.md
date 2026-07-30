@@ -15,13 +15,21 @@ breaking wire changes, never for releases.
    ```
 2. **Sanitizer sweeps** (`build-asan`, `build-ubsan`: same suites green;
    ThreadSanitizer on `test_st2` + `test_tcp` at minimum).
-3. **Conformance sweeps** — archive under `docs/conformance/`:
+3. **Conformance sweeps** — archive under `docs/conformance/`. Fading
+   sweeps run each tier on its DESIGNATED channel (kFadingFloors
+   convention): CCIR Moderate for the robust tier on WIDE/MID/ULTRA,
+   CCIR Good for the fast tier and for ALL NARROW modes — a single
+   moderate sweep across every mode "fails" Good-designated points by
+   construction.
    ```
-   build/bertool --preset awgn     --trials 40 --csv docs/conformance/rel_awgn.csv
-   build/bertool --preset moderate --trials 40 --csv docs/conformance/rel_mod.csv
+   build/bertool --preset awgn --trials 40 --csv docs/conformance/rel_awgn.csv
+   build/bertool --preset moderate --trials 40 --modes 4,5,6,7 --families wide,mid,ultra
+   build/bertool --preset good --trials 40 --modes 8,9,10,11,12,13
+   build/bertool --preset good --trials 40 --modes 4,5,6,7 --families narrow
    build/bertool --css --preset awgn --trials 40 --csv docs/conformance/rel_css.csv
+   build/bertool --band vhf-fm --trials 40 --csv docs/conformance/rel_vhf.csv
    ```
-   Every point must print `== all points pass ==`.
+   Every sweep must print `== all points pass ==`.
 4. **ST3 hardware gate** (real/virtual audio devices):
    ```
    SKW_HARDWARE_TESTS=1 ctest --test-dir build -L hardware --output-on-failure

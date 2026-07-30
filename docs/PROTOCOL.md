@@ -155,7 +155,7 @@ therefore computed from airtime, which the PHY reports per frame:
 | `CALL` response timeout | `own_airtime + expected_response_airtime + 6 s`, clamped 12–600 s; 4 attempts (8 with the CSS tier enabled) |
 | `START` response timeout | same formula; 4 attempts (8 with CSS) |
 | ACK timeout | adaptive: `burst_airtime + expected_ack_airtime + 3 s` |
-| idle disconnect | 120 s without any valid frame; with the CSS tier enabled, `max(120 s, 10 × CALL airtime)` — deep sessions have routine multi-minute decode droughts |
+| idle disconnect | 120 s without any valid frame; sessions COMMITTED to a CSS mode scale to `max(120 s, 10 × CALL airtime)` — deep links have routine multi-minute decode droughts, OFDM sessions keep tight hang detection |
 | keepalive interval | 20 s idle |
 | `DISC` retry | `2 × frame_airtime + 3 s` cadence, 3 attempts, then unilateral teardown |
 
