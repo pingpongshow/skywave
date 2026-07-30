@@ -4,11 +4,13 @@
 // burst (baseband samples); rxBurst() consumes a received capture.
 // The worker (and the two-modem harness) own audio and scheduling.
 //
-// Phase-2 simplifications (documented in ROADMAP):
-//  - one link frame per PHY frame (burst container lands in Phase 3)
+// Notes:
 //  - control frames ride sequence 0 outside ARQ (FSM retries cover them);
 //    DATA frames carry ARQ sequence numbers
-//  - fixed per-mode payload segment budget (proto-layer pipeline in 3.x)
+//  - app bytes flow through the proto pipeline (proto/pipeline.hpp):
+//    coalesce -> zstd (negotiated) -> exact codeword-budget segments;
+//    each segment's flags byte is stored WITH the ARQ payload so
+//    retransmissions reproduce the original envelope flags
 #pragma once
 
 #include <deque>
@@ -25,6 +27,7 @@
 #include "link/handshake.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
+#include "proto/pipeline.hpp"
 
 namespace skw {
 
@@ -49,7 +52,7 @@ class LinkEngine {
   FsmState state() const { return fsm_.state(); }
   FsmDiscCause lastDiscCause() const { return fsm_.lastDiscCause(); }
   int sessionMode() const { return mode_; }
-  size_t txBacklog() const { return txBuffer_.size(); }
+  size_t txBacklog() const { return protoTx_.backlogBytes(); }
   bool idleClean() const;  // nothing pending anywhere
 
   // --- mode control (3.2) ---------------------------------------------
@@ -148,12 +151,11 @@ class LinkEngine {
   CallAckBody lastCallAck_{};     // initiator: stored for makeStart
   CallBody lastCall_{};           // responder: stored for evaluateStart
   std::deque<OutFrame> outQueue_; // control first, then data
-  std::deque<uint8_t> txBuffer_;  // app bytes awaiting segmentation
-  std::vector<uint8_t> rxData_;
+  // Proto pipeline (4.1): coalesce/compress/segment above ARQ.
+  ProtoTx protoTx_;
+  ProtoRx protoRx_;
+  double lastNow_ = 0.0;    // for sendData(), which takes no timestamp
+  size_t dataBudget_ = 57;  // exact-fill segment size at mode_/profile
 };
-
-// Per-mode DATA payload segment budget (bytes) - fills the codeword
-// budget approximately; exact proto-layer sizing arrives in Phase 3.
-size_t dataSegmentBytes(int mode);
 
 }  // namespace skw

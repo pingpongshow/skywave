@@ -81,6 +81,7 @@ add_library(skywave_core STATIC
   src/link/probe.cpp
   src/link/mask.cpp
   src/link/monitor.cpp
+  src/proto/pipeline.cpp
   src/tcp/server.cpp
   src/tcp/control.cpp
   src/fec/crc.cpp
@@ -142,6 +143,7 @@ if(BUILD_TESTS)
   skw_test(test_m2)
   skw_test(test_m3_ramp)
   skw_test(test_system)
+  skw_test(test_proto)
   skw_test(test_amc)
   skw_test(test_harq)
   skw_test(test_chanmem)

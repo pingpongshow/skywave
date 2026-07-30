@@ -15,6 +15,20 @@ using namespace skw;
 
 namespace {
 
+// Incompressible test payloads: with zstd negotiated (4.1), periodic
+// patterns would compress to almost nothing and stop exercising ARQ.
+std::vector<uint8_t> noiseBlob(size_t n, uint64_t seed) {
+  std::vector<uint8_t> v(n);
+  uint64_t s = seed * 2654435761u + 1;
+  for (auto& b : v) {
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    b = uint8_t(s >> 32);
+  }
+  return v;
+}
+
 struct Pair {
   LinkEngine a, b;
   ChansimParams chanAB, chanBA;
@@ -118,10 +132,7 @@ TEST_CASE(m2_bulk_transfer) {
   for (double snr : {25.0, 12.0}) {
     Pair p(snr, 42 + uint64_t(snr));
     CHECK(p.connect());
-    std::vector<uint8_t> blob(12 * 1024);
-    for (size_t i = 0; i < blob.size(); ++i) {
-      blob[i] = uint8_t(i * 131 + 7 + size_t(snr));
-    }
+    auto blob = noiseBlob(12 * 1024, 17 + uint64_t(snr));
     p.a.sendData(blob);
     std::vector<uint8_t> got;
     for (int i = 0; i < 4000 && got.size() < blob.size(); ++i) {
@@ -139,8 +150,7 @@ TEST_CASE(m2_bulk_transfer_with_loss) {
   // Drop 1 in 7 A->B bursts: ARQ must recover byte-exact.
   Pair p(25.0, 99);
   CHECK(p.connect());
-  std::vector<uint8_t> blob(6 * 1024);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 37 + 3);
+  auto blob = noiseBlob(6 * 1024, 37);
   p.a.sendData(blob);
   std::vector<uint8_t> got;
   int n = 0;
@@ -214,8 +224,7 @@ TEST_CASE(m3_mode_pin_scenario) {
   CHECK_EQ(p.b.sessionMode(), 6);
   CHECK(p.a.modePinned());
   // Traffic at high SNR: pinned mode must hold.
-  std::vector<uint8_t> blob(2048);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i);
+  auto blob = noiseBlob(2048, 11);
   p.a.sendData(blob);
   std::vector<uint8_t> got;
   for (int i = 0; i < 1500 && got.size() < blob.size(); ++i) {
@@ -258,8 +267,7 @@ TEST_CASE(m3_promotion_through_probe) {
   Pair p(35.0, 66);
   CHECK(p.connect());
   CHECK(p.a.sessionMode() <= 10);
-  std::vector<uint8_t> blob(16 * 1024);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 7 + 1);
+  auto blob = noiseBlob(16 * 1024, 66);
   p.a.sendData(blob);
   std::vector<uint8_t> got;
   int best = p.a.sessionMode();
@@ -289,8 +297,9 @@ TEST_CASE(m3_mask_excision) {
   // Interference starts.
   p.chanAB.toneHz = 300.0;
   p.chanAB.toneAmp = 0.35;
-  std::vector<uint8_t> blob(10 * 1024);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 61 + 9);
+  // Long enough that the >= 5 s tone-persistence gate trips well before
+  // the transfer drains (the 4.1 pipeline moves ~1.5x more bytes/frame).
+  auto blob = noiseBlob(24 * 1024, 88);
   p.a.sendData(blob);
   std::vector<uint8_t> got;
   bool masked = false;
@@ -320,8 +329,7 @@ double m13TransferAirtime(bool aggregate, size_t bytes) {
   if (!p.connect()) return -1;
   if (!p.a.pinMode(13, p.now)) return -1;
   for (int i = 0; i < 40 && p.b.sessionMode() != 13; ++i) p.step();
-  std::vector<uint8_t> blob(bytes);
-  for (size_t i = 0; i < bytes; ++i) blob[i] = uint8_t(i * 17 + 3);
+  auto blob = noiseBlob(bytes, 123);
   const double t0 = p.now;
   p.a.sendData(blob);
   std::vector<uint8_t> got;
@@ -391,8 +399,7 @@ TEST_CASE(m3_tx_freq_alignment) {
   p.chanAB.cfoHz = 24.0;
   p.chanBA.cfoHz = -24.0;
   CHECK(p.connect());
-  std::vector<uint8_t> blob(8 * 1024);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 3 + 1);
+  auto blob = noiseBlob(8 * 1024, 77);
   p.a.sendData(blob);
   p.b.sendData(blob);
   std::vector<uint8_t> got, gotA;
@@ -404,6 +411,13 @@ TEST_CASE(m3_tx_freq_alignment) {
     got.insert(got.end(), d.begin(), d.end());
     auto d2 = p.a.takeReceivedData();
     gotA.insert(gotA.end(), d2.begin(), d2.end());
+    if (getenv("SKW_TXA_DEBUG") && i % 100 == 0) {
+      std::printf("  i=%d t=%.0f got=%zu gotA=%zu modeA=%d modeB=%d "
+                  "backB=%zu stA=%d stB=%d shA=%.1f shB=%.1f\n",
+                  i, p.now, got.size(), gotA.size(), p.a.sessionMode(),
+                  p.b.sessionMode(), p.b.txBacklog(), int(p.a.state()),
+                  int(p.b.state()), p.a.txShiftHz(), p.b.txShiftHz());
+    }
   }
   CHECK(got == blob);
   CHECK(gotA == blob);
@@ -428,8 +442,7 @@ TEST_CASE(m3_cp_auto_steps_under_multipath) {
   p.chanBA = p.chanAB;
   p.chanBA.seed = p.chanAB.seed + 5000;
   CHECK(p.connect(800));  // handshake fights ISI until CP steps up
-  std::vector<uint8_t> blob(2048);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 11 + 5);
+  auto blob = noiseBlob(3072, 55);  // sized for the 25-frame CP streak
   p.a.sendData(blob);
   std::vector<uint8_t> got;
   for (int i = 0; i < 8000 && got.size() < blob.size(); ++i) {
@@ -480,8 +493,7 @@ TEST_CASE(m3_monitor_third_party) {
     }
   };
   p.a.connectTo("K6XYZ", p.now);
-  std::vector<uint8_t> blob(2048);
-  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 5 + 2);
+  auto blob = noiseBlob(2048, 44);
   bool sent = false;
   std::vector<uint8_t> got;
   for (int i = 0; i < 1200 && got.size() < blob.size(); ++i) {

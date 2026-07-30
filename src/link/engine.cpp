@@ -48,13 +48,6 @@ int framesPerBurst(int mode) {
 
 }  // namespace
 
-size_t dataSegmentBytes(int mode) {
-  // Rough codeword-budget fill: robust modes keep frames short (airtime),
-  // fast modes fill N=1944 codewords.
-  if (mode <= 7) return 90;
-  return 300;
-}
-
 LinkEngine::LinkEngine(EngineConfig cfg)
     : cfg_(std::move(cfg)),
       fsm_(fsmConfigFor(cfg_.policy)),
@@ -62,7 +55,7 @@ LinkEngine::LinkEngine(EngineConfig cfg)
       arqRx_(8) {}
 
 bool LinkEngine::idleClean() const {
-  return outQueue_.empty() && txBuffer_.empty() && arqTx_.inFlight() == 0 &&
+  return outQueue_.empty() && protoTx_.idle() && arqTx_.inFlight() == 0 &&
          !ackPending_;
 }
 
@@ -79,13 +72,11 @@ void LinkEngine::disconnect(double now) {
 }
 
 void LinkEngine::sendData(std::span<const uint8_t> bytes) {
-  txBuffer_.insert(txBuffer_.end(), bytes.begin(), bytes.end());
+  protoTx_.submit(bytes, lastNow_);
 }
 
 std::vector<uint8_t> LinkEngine::takeReceivedData() {
-  auto out = std::move(rxData_);
-  rxData_.clear();
-  return out;
+  return protoRx_.takeBytes();
 }
 
 void LinkEngine::queueControl(LinkType t, std::vector<uint8_t> body,
@@ -119,6 +110,7 @@ void LinkEngine::drainFsmActions(double /*now*/) {
       case FsmAction::SendStart: {
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
+        protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
         queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
         break;
       }
@@ -183,7 +175,8 @@ void LinkEngine::drainFsmActions(double /*now*/) {
                                     f.env.type == LinkType::Ack;
                            }),
             outQueue_.end());
-        txBuffer_.clear();
+        protoTx_.reset();
+        protoRx_.abortMessage();  // delivered bytes stay drainable
         ackPending_ = false;
         break;
     }
@@ -194,12 +187,26 @@ void LinkEngine::pumpData(double now) {
   if (fsm_.state() != FsmState::Connected) return;
   // Retransmits first (arbiter priority), then new segments.
   if (auto r = arqTx_.nextRetransmit(now)) {
+    // A copy of this sequence may already be queued (aggressive timeout
+    // requeues while the TX queue is still draining): let the queued
+    // copy fly instead of stacking duplicates into the queue.
+    for (const auto& q : outQueue_) {
+      if (q.env.type == LinkType::Data && q.env.sequence == r->seq) {
+        return;
+      }
+    }
     OutFrame f;
     f.env.type = LinkType::Data;
     f.env.sessionId = sessionId_;
     f.env.sequence = r->seq;
     f.env.ackBase = arqRx_.ackBase();
-    f.body = DataBody{r->rv, r->payload}.pack();
+    // ARQ payloads are stored as [flags byte][wire segment] so the
+    // retransmission reproduces the original envelope flags.
+    f.env.flags = r->payload.empty() ? 0 : r->payload[0];
+    f.body = DataBody{r->rv,
+                      {r->payload.begin() + (r->payload.empty() ? 0 : 1),
+                       r->payload.end()}}
+                 .pack();
     // HARQ AUTO: IR when both peers advertise it - the retransmission
     // steps down to the same-constellation r1/2 mode (M9->M8, M11->M10)
     // and the receiver seeds systematic priors from the failed attempt.
@@ -210,18 +217,28 @@ void LinkEngine::pumpData(double now) {
     return;
   }
   for (int k = 0; k < framesPerBurst(mode_); ++k) {
-    if (txBuffer_.empty() || !arqTx_.canSend()) return;
-    const size_t n = std::min(txBuffer_.size(), dataSegmentBytes(mode_));
-    std::vector<uint8_t> seg(txBuffer_.begin(), txBuffer_.begin() + long(n));
-    txBuffer_.erase(txBuffer_.begin(), txBuffer_.begin() + long(n));
-    auto seq = arqTx_.send(seg, now);
+    if (!arqTx_.canSend()) return;
+    auto seg = protoTx_.nextSegment(dataBudget_, now);
+    if (!seg) return;
+    std::vector<uint8_t> stored;
+    stored.reserve(1 + seg->bytes.size());
+    stored.push_back(seg->flags);
+    stored.insert(stored.end(), seg->bytes.begin(), seg->bytes.end());
+    auto seq = arqTx_.send(std::move(stored), now);
     if (!seq) return;
+    static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
+      if (protoDbg) {
+      fprintf(stderr, "%s txDATA seq=%u flags=%02x len=%zu mode=%d\n",
+              cfg_.policy.ownCall.c_str(), *seq, seg->flags,
+              seg->bytes.size(), mode_);
+    }
     OutFrame f;
     f.env.type = LinkType::Data;
+    f.env.flags = seg->flags;
     f.env.sessionId = sessionId_;
     f.env.sequence = *seq;
     f.env.ackBase = arqRx_.ackBase();
-    f.body = DataBody{0, std::move(seg)}.pack();
+    f.body = DataBody{0, std::move(seg->bytes)}.pack();
     f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
     f.mode = mode_;
     outQueue_.push_back(std::move(f));
@@ -262,7 +279,13 @@ void LinkEngine::updateArqTimeout() {
   // round trip exceeded the fast-mode timeout, MODE_CHANGE retry cycles
   // outran their own MODE_ACKs, and the committed modes diverged until
   // the session died.
-  std::vector<uint8_t> seg(dataSegmentBytes(mode_));
+  // Segment budget first: exact codeword fill for the on-air shape a
+  // full data burst takes at this mode (solo frame, or an F-entry burst
+  // container when aggregation applies).
+  const int fpb = cfg_.burstAggregation ? framesPerBurst(mode_) : 1;
+  dataBudget_ = dataPayloadBudget(mode_, fpb, (mode_ <= 7 ? 1 : 2) * fpb);
+  std::vector<uint8_t> seg(
+      static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
   tp.family = cfg_.policy.family;
   tp.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
@@ -322,6 +345,7 @@ void LinkEngine::unpinMode() {
 bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
+  lastNow_ = now;
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);
@@ -350,7 +374,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     if (maskDet_ && cfg_.maskingEnabled && (sessionCaps_ & kCapMasking) &&
         mode_ >= 8) {
       if (pendingMaskEpoch_ >= 0 && now >= maskRetryAt_) {
-        if (++maskTries_ >= 2) {
+        if (++maskTries_ >= 4) {
           pendingMaskEpoch_ = -1;  // abandon this mask generation
         } else {
           MaskUpdateBody mu;
@@ -360,7 +384,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           queueControl(LinkType::MaskUpdate, mu.pack(),
                        mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                        std::min(mode_, 8));
-          maskRetryAt_ = now + 2.0;
+          // Airtime-derived like every other timer: a fixed short
+          // interval abandoned the exchange before the MASK_ACK could
+          // even ride back behind a data container.
+          maskRetryAt_ = now + arqTx_.timeoutSec();
         }
       }
       if (pendingMaskEpoch_ < 0) {
@@ -378,7 +405,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           queueControl(LinkType::MaskUpdate, mu.pack(),
                        mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                        std::min(mode_, 8));
-          maskRetryAt_ = now + 2.0;
+          // Airtime-derived like every other timer: a fixed short
+          // interval abandoned the exchange before the MASK_ACK could
+          // even ride back behind a data container.
+          maskRetryAt_ = now + arqTx_.timeoutSec();
         }
       }
     }
@@ -432,18 +462,53 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   }
   if (ackPending_ && fsm_.state() == FsmState::Connected) {
     ackPending_ = false;
-    auto ack = arqRx_.makeAck(
-        int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0, 127.0)), 0,
-        int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0, 127.0)));
-    // Feedback at least as robust as forward traffic (M4 for M4-M6).
-    queueControl(LinkType::Ack, ack.pack(),
-                 mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast,
-                 mode_ <= 6 ? 4 : mode_);
+    // At most one ACK in the queue, ahead of bulk DATA but behind other
+    // control frames. Feedback priority matters: an ACK stuck behind a
+    // retransmit backlog reports stale state and drives the peer into
+    // dup storms (observed under two-way bulk). Absolute front is wrong
+    // too: with data arriving every burst, a fresh front ACK per tick
+    // starved MASK_UPDATE forever. The body is refreshed at transmit
+    // time below, so an already-queued ACK just keeps its slot.
+    const bool queued =
+        std::any_of(outQueue_.begin(), outQueue_.end(),
+                    [](const OutFrame& f) {
+                      return f.env.type == LinkType::Ack;
+                    });
+    if (!queued) {
+      auto ack = arqRx_.makeAck(
+          int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0, 127.0)), 0,
+          int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0, 127.0)));
+      OutFrame f;
+      f.env.type = LinkType::Ack;
+      f.env.sessionId = sessionId_;
+      f.env.sequence = 0;
+      f.env.ackBase = arqRx_.ackBase();
+      f.body = ack.pack();
+      // Feedback at least as robust as forward traffic (M4 for M4-M6).
+      f.sig = mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast;
+      f.mode = mode_ <= 6 ? 4 : mode_;
+      outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
+                                    [](const OutFrame& q) {
+                                      return q.env.type == LinkType::Data;
+                                    }),
+                       std::move(f));
+    }
   }
   pumpData(now);
   if (outQueue_.empty()) return std::nullopt;
   OutFrame f = std::move(outQueue_.front());
   outQueue_.pop_front();
+  if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
+    // Refresh ACK feedback at transmit time - see the ackPending_ note.
+    f.env.ackBase = arqRx_.ackBase();
+    f.body = arqRx_.makeAck(
+                 int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0,
+                                   127.0)),
+                 0,
+                 int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0,
+                                   127.0)))
+                 .pack();
+  }
   // MAC burst container: pack consecutive DATA frames of the same
   // mode/signature into one PHY frame (one preamble/sync/header for the
   // whole burst). Control frames always travel solo.
@@ -489,6 +554,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
 }
 
 void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
+  lastNow_ = now;
   RxStage stage;
   auto res =
       receiveFrame(cfg_.policy.family, samples, &stage, &harq_, &rxMask_);
@@ -588,6 +654,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (ok) {
         mode_ = std::get<StartAckBody>(r).finalMode;
         sessionCaps_ = start->caps;
+        protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
       }
       fsm_.rxStart(now, ok);
       break;
@@ -606,9 +673,24 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto d = DataBody::parse(f.body);
       if (!d || fsm_.state() != FsmState::Connected) return;
       if (amc_) amc_->onFrameResult(d->rv > 0, true);
-      arqRx_.onData(f.env.sequence, std::move(d->payload));
+      // Stash the proto flags with the payload so they survive the
+      // out-of-order window and reach the proto layer in order.
+      std::vector<uint8_t> stored;
+      stored.reserve(1 + d->payload.size());
+      stored.push_back(f.env.flags &
+                       (kFlagCompressed | kFlagMoreFragments));
+      stored.insert(stored.end(), d->payload.begin(), d->payload.end());
+      const auto acc = arqRx_.onData(f.env.sequence, std::move(stored));
+      static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
+      if (protoDbg) {
+        fprintf(stderr, "%s rxDATA seq=%u flags=%02x len=%zu acc=%d\n",
+                cfg_.policy.ownCall.c_str(), f.env.sequence, f.env.flags,
+                d->payload.size(), int(acc));
+      }
       for (auto& p : arqRx_.takeDelivered()) {
-        rxData_.insert(rxData_.end(), p.begin(), p.end());
+        if (p.empty()) continue;
+        protoRx_.onSegment(
+            p[0], std::span<const uint8_t>(p.data() + 1, p.size() - 1));
       }
       ackPending_ = true;
       break;
@@ -616,6 +698,12 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Ack: {
       auto a = AckBody::parse(f.body);
       if (!a) return;
+      static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
+      if (protoDbg) {
+        fprintf(stderr, "%s rxACK base=%u bitmap=%04x inflight=%zu\n",
+                cfg_.policy.ownCall.c_str(), a->ackBase, a->gapBitmap,
+                arqTx_.inFlight());
+      }
       if (amc_) amc_->onRemoteSnr(a->snrHalfDb * 0.5, now);
       onCfoReport(a->cfoHalfHz * 0.5);
       arqTx_.onAck(*a, now);
@@ -681,6 +769,12 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       // The peer's RX sees interference on these carriers: zero them in
       // OUR transmissions from now on, and confirm.
       txMask_.bits = mu->mask;
+      static const bool maskDbg = getenv("SKW_MASK_DEBUG") != nullptr;
+      if (maskDbg) {
+        fprintf(stderr, "%s rxMASKUPD epoch=%d masked=%d\n",
+                cfg_.policy.ownCall.c_str(), mu->epoch,
+                txMask_.maskedCount(cfg_.policy.family));
+      }
       queueControl(LinkType::MaskAck, MaskAckBody{mu->epoch}.pack(),
                    mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                    std::min(mode_, 8));
@@ -688,6 +782,12 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     }
     case LinkType::MaskAck: {
       auto ma = MaskAckBody::parse(f.body);
+      static const bool maskDbg = getenv("SKW_MASK_DEBUG") != nullptr;
+      if (maskDbg) {
+        fprintf(stderr, "%s rxMASKACK epoch=%d pending=%d\n",
+                cfg_.policy.ownCall.c_str(), ma ? ma->epoch : -1,
+                pendingMaskEpoch_);
+      }
       if (!ma || pendingMaskEpoch_ < 0 ||
           ma->epoch != uint8_t(pendingMaskEpoch_)) {
         return;

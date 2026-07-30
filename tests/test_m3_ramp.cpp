@@ -79,7 +79,18 @@ RampResult runRamp(bool genie, uint64_t seed) {
   for (double s = 0; s <= 26; s += 4) sched.push_back(s);
   for (double s = 22; s >= 0; s -= 4) sched.push_back(s);
 
-  const std::vector<uint8_t> chunk(1500, 0xA5);
+  // Incompressible traffic: a constant-fill chunk would zstd down to a
+  // few bytes and turn the throughput ramp into a frame-rate counter.
+  std::vector<uint8_t> chunk(1500);
+  {
+    uint64_t s = seed ^ 0xC0FFEE;
+    for (auto& v : chunk) {
+      s ^= s << 13;
+      s ^= s >> 7;
+      s ^= s << 17;
+      v = uint8_t(s >> 32);
+    }
+  }
   int lastPinned = -1;
   for (double seg : sched) {
     snr = seg;

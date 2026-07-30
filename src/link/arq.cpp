@@ -40,8 +40,10 @@ std::optional<uint16_t> ArqTx::send(std::vector<uint8_t> payload,
 
 void ArqTx::onAck(const AckBody& ack, double now) {
   // Release everything below the cumulative base.
+  bool progress = false;
   while (!pending_.empty() && seqDiff(pending_.front().seq, ack.ackBase) < 0) {
     pending_.pop_front();
+    progress = true;
   }
   // Drop released seqs from the retransmit queue.
   retxQueue_.erase(
@@ -56,6 +58,7 @@ void ArqTx::onAck(const AckBody& ack, double now) {
     for (auto it = pending_.begin(); it != pending_.end(); ++it) {
       if (it->seq == seq) {
         pending_.erase(it);
+        progress = true;
         break;
       }
     }
@@ -82,6 +85,15 @@ void ArqTx::onAck(const AckBody& ack, double now) {
       }
       if (d < highest) queueRetx(p);
     }
+  }
+
+  // Forward progress proves the link is alive and delivering: the retry
+  // budget exists to detect a DEAD peer, not to cap how long a busy
+  // bidirectional session may take to schedule everything (observed
+  // failure: sustained two-way bulk starved ACK turnaround, timeouts
+  // requeued aggressively, and a healthy session hit max-retries).
+  if (progress) {
+    for (auto& p : pending_) p.retries = 0;
   }
 
   // Rearm/clear the timer.

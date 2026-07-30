@@ -426,10 +426,22 @@ On-air work is gated by **ST4** (attended rig checklist).
 
 *Exit gate: **Milestone M4**.*
 
-- [ ] **4.1 Compression** — zstd with marker byte, coalesce window,
+- [x] **4.1 Compression** — zstd with marker byte, coalesce window,
   negotiation, 8 MiB cap. *Gate: `test_proto` compression cases.*
-- [ ] **4.2 Fragmentation/reassembly** — more-fragments chain, codeword-
+  ✓ 2026-07-29 — `proto/pipeline` ProtoTx/ProtoRx: 250 ms / 4 KiB
+  coalesce, zstd level 9 (negotiated via `kCapZstd`, kept only when it
+  saves ≥ 8 bytes), markers 0x00/0x5A, 8 MiB decompress + reassembly cap.
+  End-to-end effect measured in `test_proto`: 16 KiB of text moves in 6
+  harness steps vs 34 for incompressible noise.
+- [x] **4.2 Fragmentation/reassembly** — more-fragments chain, codeword-
   budget-sized segmentation. *Gate: large-message round-trips under loss.*
+  ✓ 2026-07-29 — exact codeword-budget segmentation
+  (`dataPayloadBudget`: solo frame or F-entry burst container fills the
+  codeword target with < 8·F bits of byte-flooring padding; robust modes
+  1 codeword, fast modes 2/frame); flags byte stored with the ARQ payload
+  so retransmissions reproduce the envelope; 16 KiB round-trips
+  byte-exact under 1-in-7 loss. Fixed three protocol bugs this exposed —
+  see Deviations Log.
 - [ ] **4.3 File transfer** — metadata, service tags, 32 KiB checkpoints,
   `EVT:FILE_*`. *Gate: `test_file` + two-modem transfer scenario.*
 - [ ] **4.4 Session resume** — tokens, window, sequence continuation,
@@ -663,3 +675,36 @@ doc was updated)*
      robust floors on Moderate): preamble shorter than fade dwell.
      Handled by call-retry at the link layer; conformance counts it in
      FER today.
+- **4.1–4.2 / 2026-07-29** — Proto pipeline landed (`src/proto/pipeline`):
+  the fixed `dataSegmentBytes` placeholder is gone; segments are sized by
+  `dataPayloadBudget(mode, framesPerBurst, codewordTarget)` so a full data
+  burst (solo frame or burst container) fills an integral number of LDPC
+  codewords (residual < 8·F bits, byte flooring only). Targets: robust
+  modes 1 codeword/burst (M4 solo payload 138 B — same airtime as the old
+  padded 90 B, +53% bytes), fast modes 2 codewords/frame (M8×2 = 243 B,
+  M13×4 = 397 B). Segment flags travel as a prefix byte inside the stored
+  ARQ payload (TX and RX), so retransmission and the out-of-order stash
+  reproduce/preserve envelope flags without ARQ API changes.
+- **4.1–4.2 / 2026-07-29** — Sustained BIDIRECTIONAL bulk (first exercised
+  here: pre-4.1 scenario blobs were periodic and zstd crushed them to a
+  frame or two) exposed three latent protocol bugs, all fixed:
+  1. **Stale ACK bodies**: ACKs were built at queue time; behind a
+     retransmit backlog they aired reporting an old receive floor and
+     drove the peer into duplicate storms. ACK bodies are now refreshed
+     at transmit time, at most one ACK is queued, placed ahead of DATA
+     but behind other control frames (absolute-front placement starved
+     MASK_UPDATE forever — one fresh ACK per tick under continuous RX).
+  2. **Retry exhaustion on a live link**: every ACK-timeout requeue
+     counted toward max-retries even when the frame had not aired yet
+     (TX queue still draining) and even while ACKs were actively
+     arriving; a healthy two-way session hit 8 "retries" and tore down.
+     Now: forward progress in any received ACK resets the retry counters
+     (the budget detects a dead peer, not a busy schedule), and a
+     retransmit already sitting in the TX queue is not queued twice.
+  3. **Mask exchange on a fixed 2 s timer**: at M10 container airtimes
+     (~2–3 s/burst) the 2-try/2 s MASK_UPDATE retry abandoned the epoch
+     before MASK_ACK could ride back. Now airtime-derived
+     (`arqTx_.timeoutSec()`, 4 tries) like every other protocol timer.
+  Test payloads in `test_m2`/`test_system`/`test_m3_ramp` switched to
+  xorshift noise so ARQ/PHY stress stays independent of compression;
+  `test_proto` covers compressible traffic explicitly.

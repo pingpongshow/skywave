@@ -82,8 +82,16 @@ struct AudioPair {
   }
 
   bool transfer(size_t bytes, uint8_t tag, int budget = 4000) {
+    // Incompressible payload: keep the ARQ/PHY stress independent of the
+    // proto layer's zstd (which would crush a periodic pattern).
     std::vector<uint8_t> blob(bytes);
-    for (size_t i = 0; i < bytes; ++i) blob[i] = uint8_t(i * 13 + tag);
+    uint64_t s = 0x9E3779B97F4A7C15ull ^ (uint64_t(tag) << 32);
+    for (auto& v : blob) {
+      s ^= s << 13;
+      s ^= s >> 7;
+      s ^= s << 17;
+      v = uint8_t(s >> 32);
+    }
     a.sendData(blob);
     std::vector<uint8_t> got;
     for (int i = 0; i < budget && got.size() < blob.size(); ++i) {
