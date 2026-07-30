@@ -392,6 +392,13 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       requestModeChange(mode_, cpWant_, now);
     } else if (amc_ && isInitiator_ && pendingMode_ < 0) {
       auto d = amc_->evaluate(now);
+      static const bool amcDbg = getenv("SKW_AMC_DEBUG") != nullptr;
+      if (amcDbg) {
+        fprintf(stderr,
+                "amc t=%.0f mode=%d eff=%.1f retry=%.2f decision=%d->%d\n",
+                now, mode_, amc_->effectiveSnrDb(now), amc_->retryRatio(),
+                int(d.kind), int(d.targetMode));
+      }
       if (d.kind == AmcDecision::Kind::Promote &&
           probeGate_.required(d.targetMode) &&
           !probeGate_.cleared(d.targetMode)) {
