@@ -16,7 +16,9 @@
 #include "phy/receiver.hpp"
 #include "sim/chansim.hpp"
 #include "skytest.hpp"
+#include "link/engine.hpp"
 #include "voice/codec.hpp"
+#include "voice/session.hpp"
 
 using namespace skw;
 
@@ -281,6 +283,329 @@ TEST_CASE(voice_concealment_decays_to_silence) {
   CHECK(rms(f2) < rms(f1));   // attenuation applied per repeat
   CHECK_EQ(int(rms(f4)), 0);  // silence after 2 repeats
   CHECK_EQ(int(dec.concealedFrames()), 6);
+}
+
+// --- 5.5: session control, jitter buffer, voice port, two-modem loop -------
+
+TEST_CASE(voice_fsm_talkspurt_arbitration) {
+  VoiceFsm a, b;
+  auto drain = [](VoiceFsm& f) {
+    std::vector<VoiceAction> acts;
+    while (auto x = f.nextAction()) acts.push_back(*x);
+    return acts;
+  };
+  auto has = [](const std::vector<VoiceAction>& v, VoiceAction a) {
+    for (auto x : v) {
+      if (x == a) return true;
+    }
+    return false;
+  };
+  // Open handshake.
+  a.cmdOpen(VoiceCodec::C1300, 0.0);
+  CHECK(has(drain(a), VoiceAction::SendOpen));
+  b.rxOpen(VoiceCodec::C1300, 0.1);
+  auto bActs = drain(b);
+  CHECK(has(bActs, VoiceAction::SendOpenAck));
+  CHECK(has(bActs, VoiceAction::IndicateOpen));
+  a.rxOpenAck(VoiceCodec::C1300, 0.2);
+  CHECK(has(drain(a), VoiceAction::IndicateOpen));
+  CHECK(a.state() == VoiceState::Open);
+  CHECK(b.state() == VoiceState::Open);
+
+  // A takes the talkspurt.
+  a.cmdPttOn(1.0);
+  CHECK(has(drain(a), VoiceAction::SendPttReq));
+  b.rxPttReq(1.1, false);
+  CHECK(has(drain(b), VoiceAction::SendPttGrant));
+  CHECK(b.state() == VoiceState::Receiving);
+  a.rxPttGrant(1.2);
+  CHECK(has(drain(a), VoiceAction::IndicateTalking));
+  CHECK(a.talking());
+  // B asking mid-spurt is ignored until A releases.
+  b.rxPttReq(1.5, false);
+  a.rxPttReq(1.5, true);
+  CHECK(a.talking());
+  a.cmdPttOff(2.0);
+  CHECK(has(drain(a), VoiceAction::SendPttEnd));
+  CHECK(!a.talking());
+  b.rxPttEnd(2.1);
+  CHECK(has(drain(b), VoiceAction::IndicateStopped));
+  CHECK(b.state() == VoiceState::Open);
+
+  // Simultaneous request: the tie-break must leave exactly one talker.
+  VoiceFsm x, y;
+  x.rxOpen(VoiceCodec::C1300, 0.0);
+  y.rxOpen(VoiceCodec::C1300, 0.0);
+  (void)drain(x);
+  (void)drain(y);
+  x.cmdPttOn(3.0);
+  y.cmdPttOn(3.0);
+  (void)drain(x);
+  (void)drain(y);
+  x.rxPttReq(3.1, true);   // x wins the tie
+  y.rxPttReq(3.1, false);  // y yields
+  const bool yGrants = has(drain(y), VoiceAction::SendPttGrant);
+  CHECK(yGrants);
+  CHECK(x.state() == VoiceState::Requesting);
+  CHECK(y.state() == VoiceState::Receiving);
+  x.rxPttGrant(3.2);
+  CHECK(x.talking());
+  CHECK(!y.talking());  // never both
+
+  // Talkspurt hold cap releases a channel whose peer vanished.
+  VoiceFsm z;
+  z.rxOpen(VoiceCodec::C1300, 0.0);
+  (void)drain(z);
+  z.rxPttReq(10.0, false);
+  (void)drain(z);
+  CHECK(z.state() == VoiceState::Receiving);
+  z.tick(10.0 + 400.0);
+  CHECK(has(drain(z), VoiceAction::IndicateStopped));
+  CHECK(z.state() == VoiceState::Open);
+
+  // Unanswered OPEN gives up after the configured attempts.
+  VoiceFsm w;
+  w.cmdOpen(VoiceCodec::C700, 0.0);
+  (void)drain(w);
+  double t = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    t += 9.0;
+    w.tick(t);
+    (void)drain(w);
+  }
+  CHECK(w.state() == VoiceState::Closed);
+}
+
+TEST_CASE(voice_jitter_buffer) {
+  JitterBuffer jb;
+  const std::vector<int16_t> chunk(800, 100);  // 100 ms
+  // Below the 240 ms target the buffer holds everything back.
+  jb.push(chunk);
+  CHECK(!jb.primed());
+  CHECK(jb.take(160).empty());
+  jb.push(chunk);
+  jb.push(chunk);  // 300 ms
+  CHECK(jb.primed());
+  auto got = jb.take(160);
+  CHECK_EQ(int(got.size()), 160);
+  CHECK_EQ(int(jb.depthMs()), 280);
+  // Drain past the end: underrun counted, buffer re-primes.
+  size_t guard = 0;
+  while (jb.depthSamples() > 0 && guard++ < 100) jb.take(400);
+  jb.take(400);
+  CHECK(jb.underruns() > 0);
+  CHECK(!jb.primed());
+}
+
+TEST_CASE(voice_port_records) {
+  VoiceRecord rec;
+  rec.type = kVoiceRecUplink;
+  rec.sequence = 0x11223344;
+  rec.sampleCounter = 0xAABBCCDD01020304ull;
+  rec.pcm = {1, -2, 3, -32768, 32767};
+  auto bytes = rec.pack();
+  CHECK_EQ(int(bytes.size()), int(16 + rec.pcm.size() * 2));
+  CHECK_EQ(int(bytes[0]), int(kVoiceRecVersion));
+  VoiceRecordParser p;
+  // Split across two feeds: the parser must reassemble.
+  p.feed({bytes.data(), 7});
+  CHECK(p.take().empty());
+  p.feed({bytes.data() + 7, bytes.size() - 7});
+  auto got = p.take();
+  CHECK_EQ(int(got.size()), 1);
+  CHECK_EQ(int(got[0].type), int(kVoiceRecUplink));
+  CHECK_EQ(int(got[0].sequence), int(rec.sequence));
+  CHECK(got[0].sampleCounter == rec.sampleCounter);
+  CHECK(got[0].pcm == rec.pcm);
+  // Back-to-back records in one feed.
+  std::vector<uint8_t> two = bytes;
+  two.insert(two.end(), bytes.begin(), bytes.end());
+  VoiceRecordParser p2;
+  p2.feed(two);
+  CHECK_EQ(int(p2.take().size()), 2);
+  // Garbage version: counted and flushed, never interpreted as PCM.
+  VoiceRecordParser p3;
+  std::vector<uint8_t> bad(32, 0xEE);
+  p3.feed(bad);
+  CHECK_EQ(int(p3.badRecords()), 1);
+  CHECK(p3.take().empty());
+}
+
+namespace {
+
+struct VoicePair {
+  LinkEngine a, b;
+  ChansimParams chanAB, chanBA;
+  double now = 0.0;
+  uint64_t seedCtr = 1;
+  int lossEvery = 0;
+  int passes = 0;
+
+  VoicePair() : a(mk("W1AW")), b(mk("K6XYZ")) {
+    chanAB.fading = false;
+    chanAB.snr3kDb = 26.0;
+    chanBA = chanAB;
+    chanAB.seed = 5100;
+    chanBA.seed = 9100;
+  }
+
+  static EngineConfig mk(const char* call) {
+    EngineConfig c;
+    c.policy.ownCall = call;
+    c.policy.caps = kCapZstd | kCapResume;
+    return c;
+  }
+
+  void step() {
+    auto bA = a.tick(now);
+    auto bB = b.tick(now);
+    double dt = 0.05;
+    auto push = [&](std::vector<cfloat>& burst, LinkEngine& to,
+                    ChansimParams& ch, bool drop) {
+      dt += double(burst.size()) / kFsBaseband;
+      if (drop) return;
+      std::vector<cfloat> x(1500, cfloat(0, 0));
+      x.insert(x.end(), burst.begin(), burst.end());
+      x.insert(x.end(), 2000, cfloat(0, 0));
+      ChansimParams cp = ch;
+      cp.seed = ch.seed + (seedCtr++) * 7919;
+      auto y = Chansim::run(cp, x);
+      to.rxBurst(y, now);
+    };
+    ++passes;
+    const bool drop = lossEvery > 0 && (passes % lossEvery) == 0;
+    if (bA) push(*bA, b, chanAB, drop);
+    if (bB) push(*bB, a, chanBA, false);
+    now += dt;
+  }
+
+  bool connect() {
+    a.connectTo("K6XYZ", now);
+    for (int i = 0; i < 600; ++i) {
+      step();
+      if (a.state() == FsmState::Connected &&
+          b.state() == FsmState::Connected) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool pinMode(int m) {
+    if (!a.pinMode(m, now)) return false;
+    for (int i = 0; i < 80 && b.sessionMode() != m; ++i) step();
+    return a.sessionMode() == m && b.sessionMode() == m;
+  }
+};
+
+}  // namespace
+
+TEST_CASE(voice_two_modem_loop) {
+  // ROADMAP 5.5 gate: open voice over a live session, run a talkspurt of
+  // real speech from A to B, verify B plays it out through the jitter
+  // buffer, then hand the channel to B and back.
+  VoicePair p;
+  CHECK(p.connect());
+  CHECK(p.pinMode(10));  // unspread mode: voice-capable
+
+  CHECK(p.a.openVoice(std::nullopt, p.now));  // AUTO codec
+  for (int i = 0; i < 200 && (p.a.voiceState() != VoiceState::Open ||
+                              p.b.voiceState() != VoiceState::Open);
+       ++i) {
+    p.step();
+  }
+  CHECK(p.a.voiceState() == VoiceState::Open);
+  CHECK(p.b.voiceState() == VoiceState::Open);
+  std::printf("voice loop: codec=%d transport=M%d\n",
+              int(p.a.voiceCodec()), p.a.sessionMode());
+
+  // A requests the talkspurt and streams 4 s of speech.
+  CHECK(p.a.setVoicePtt(true, p.now));
+  for (int i = 0; i < 200 && p.a.voiceState() != VoiceState::Talking; ++i) {
+    p.step();
+  }
+  CHECK(p.a.voiceState() == VoiceState::Talking);
+  CHECK(p.b.voiceState() == VoiceState::Receiving);
+
+  const auto speech = testSpeech(4.0);
+  p.a.pushVoicePcm(speech);
+  std::vector<int16_t> heard;
+  for (int i = 0; i < 4000 && heard.size() < speech.size() / 2; ++i) {
+    p.step();
+    auto pcm = p.b.takeVoicePcm(800);
+    heard.insert(heard.end(), pcm.begin(), pcm.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  std::printf("voice loop: heard %zu samples of %zu sent, rms ratio %.2f\n",
+              heard.size(), speech.size(),
+              rms(speech) > 0 ? rms(heard) / rms(speech) : 0.0);
+  writeArtifact("voice_loop_rx.s16", heard);
+  CHECK(heard.size() >= speech.size() / 2);  // half of it played out
+  CHECK(rms(heard) > 0.2 * rms(speech));     // and it is speech
+
+  // Release, then B takes the channel: the arbitration reverses.
+  CHECK(p.a.setVoicePtt(false, p.now));
+  for (int i = 0; i < 200 && p.b.voiceState() != VoiceState::Open; ++i) {
+    p.step();
+  }
+  CHECK(p.b.voiceState() == VoiceState::Open);
+  CHECK(p.b.setVoicePtt(true, p.now));
+  for (int i = 0; i < 300 && p.b.voiceState() != VoiceState::Talking; ++i) {
+    p.step();
+  }
+  CHECK(p.b.voiceState() == VoiceState::Talking);
+  CHECK(p.a.voiceState() == VoiceState::Receiving);
+
+  // Close from A: both ends return to CLOSED.
+  p.a.closeVoice(p.now);
+  for (int i = 0; i < 200 && p.b.voiceState() != VoiceState::Closed; ++i) {
+    p.step();
+  }
+  CHECK(p.a.voiceState() == VoiceState::Closed);
+  CHECK(p.b.voiceState() == VoiceState::Closed);
+  // The data session is untouched by the voice service.
+  CHECK(p.a.state() == FsmState::Connected);
+}
+
+TEST_CASE(voice_loop_conceals_lost_frames) {
+  // Voice frames are never retransmitted: dropped VOICE_DATA must show up
+  // as concealment, and the session must not stall or NAK.
+  VoicePair p;
+  CHECK(p.connect());
+  CHECK(p.pinMode(10));
+  CHECK(p.a.openVoice(std::nullopt, p.now));
+  for (int i = 0; i < 300 && p.b.voiceState() != VoiceState::Open; ++i) {
+    p.step();
+  }
+  CHECK(p.b.voiceState() == VoiceState::Open);
+  CHECK(p.a.setVoicePtt(true, p.now));
+  for (int i = 0; i < 300 && p.a.voiceState() != VoiceState::Talking; ++i) {
+    p.step();
+  }
+  CHECK(p.a.voiceState() == VoiceState::Talking);
+  // Loss starts only now: the subject here is VOICE_DATA loss, and
+  // dropping the OPEN/PTT control frames instead would just test the
+  // FSM retries (covered above) while stalling the spurt.
+  p.lossEvery = 5;  // drop 1 in 5 A->B bursts
+  p.a.pushVoicePcm(testSpeech(6.0));
+  std::vector<int16_t> heard;
+  for (int i = 0; i < 1200 && p.a.voiceTxQueued() > 0; ++i) {
+    p.step();
+    auto pcm = p.b.takeVoicePcm(800);
+    heard.insert(heard.end(), pcm.begin(), pcm.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  // Drain whatever the jitter buffer still holds.
+  for (int i = 0; i < 200; ++i) {
+    p.step();
+    auto pcm = p.b.takeVoicePcm(800);
+    heard.insert(heard.end(), pcm.begin(), pcm.end());
+  }
+  std::printf("voice loss: heard %zu samples, concealed %u frames\n",
+              heard.size(), p.b.voiceConcealed());
+  CHECK(p.a.state() == FsmState::Connected);  // no teardown from voice loss
+  CHECK(p.b.voiceConcealed() > 0);            // gaps were concealed
+  CHECK(!heard.empty());
 }
 
 SKYTEST_MAIN

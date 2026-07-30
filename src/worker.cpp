@@ -819,6 +819,191 @@ bool ModemWorker::keyRotate() {
 #endif
 }
 
+#ifdef SKW_HAVE_VOICE
+const char* ModemWorker::voiceModeNameLocked() const {
+  switch (voiceMode_) {
+    case VoiceMode::Connected: return "CONNECTED";
+    case VoiceMode::Broadcast: return "BROADCAST";
+    default: return "OFF";
+  }
+}
+#endif
+
+bool ModemWorker::voiceSupported() {
+#ifdef SKW_HAVE_VOICE
+  return true;
+#else
+  return false;
+#endif
+}
+
+#ifdef SKW_HAVE_VOICE
+namespace {
+const char* voiceCodecName(VoiceCodec c) {
+  switch (c) {
+    case VoiceCodec::C700: return "700C";
+    case VoiceCodec::C1300: return "1300";
+    case VoiceCodec::C2400: return "2400";
+    default: return "3200";
+  }
+}
+const char* voiceStateName(VoiceState s) {
+  switch (s) {
+    case VoiceState::Closed: return "CLOSED";
+    case VoiceState::Opening: return "OPENING";
+    case VoiceState::Open: return "OPEN";
+    case VoiceState::Requesting: return "REQUESTING";
+    case VoiceState::Talking: return "TALKING";
+    default: return "RECEIVING";
+  }
+}
+}  // namespace
+#endif
+
+std::string ModemWorker::voiceModeStr() {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  switch (voiceMode_) {
+    case VoiceMode::Connected: return "CONNECTED";
+    case VoiceMode::Broadcast: return "BROADCAST";
+    default: return "OFF";
+  }
+#else
+  return "OFF";
+#endif
+}
+
+bool ModemWorker::setVoiceMode(const std::string& m) {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  if (m == "OFF") {
+    voiceMode_ = VoiceMode::Off;
+    engine_->closeVoice(nowSec());
+    return true;
+  }
+  if (m == "CONNECTED") {
+    voiceMode_ = VoiceMode::Connected;
+    return true;
+  }
+  if (m == "BROADCAST") {
+    voiceMode_ = VoiceMode::Broadcast;
+    return true;
+  }
+  return false;
+#else
+  (void)m;
+  return false;
+#endif
+}
+
+std::string ModemWorker::voiceCodecStr() {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  const std::string active = voiceCodecName(engine_->voiceCodec());
+  return voiceCodecWant_ ? active : "AUTO(" + active + ")";
+#else
+  return "AUTO";
+#endif
+}
+
+bool ModemWorker::setVoiceCodec(const std::string& c) {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  if (c == "AUTO") {
+    voiceCodecWant_.reset();
+    return true;
+  }
+  if (c == "700C") {
+    voiceCodecWant_ = VoiceCodec::C700;
+  } else if (c == "1300") {
+    voiceCodecWant_ = VoiceCodec::C1300;
+  } else if (c == "2400") {
+    voiceCodecWant_ = VoiceCodec::C2400;
+  } else if (c == "3200") {
+    voiceCodecWant_ = VoiceCodec::C3200;
+  } else {
+    return false;
+  }
+  return true;
+#else
+  (void)c;
+  return false;
+#endif
+}
+
+bool ModemWorker::voiceStart() {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  if (voiceMode_ == VoiceMode::Off) return false;
+  return engine_->openVoice(voiceCodecWant_, nowSec());
+#else
+  return false;
+#endif
+}
+
+bool ModemWorker::voiceStop() {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  engine_->closeVoice(nowSec());
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool ModemWorker::voicePtt(bool on) {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  return engine_->setVoicePtt(on, nowSec());
+#else
+  (void)on;
+  return false;
+#endif
+}
+
+std::string ModemWorker::voiceStatusLine() {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  const VoiceState st = engine_->voiceState();
+  const std::string codec = voiceCodecWant_
+                                ? voiceCodecName(engine_->voiceCodec())
+                                : std::string("AUTO(") +
+                                      voiceCodecName(engine_->voiceCodec()) +
+                                      ")";
+  return std::string("MODE=") + voiceModeNameLocked() + " CODEC=" + codec +
+         " STATE=" + voiceStateName(st) +
+         " PTT=" + (st == VoiceState::Talking ||
+                            st == VoiceState::Requesting
+                        ? "ON"
+                        : "OFF") +
+         " GRANTED=" + (st == VoiceState::Talking ? "ON" : "OFF") +
+         " TXQ=" + std::to_string(engine_->voiceTxQueued()) +
+         " RXQ=" + std::to_string(engine_->voiceRxDepthMs() * 8) +
+         " TRANSPORT=M" + std::to_string(engine_->sessionMode());
+#else
+  return "";
+#endif
+}
+
+void ModemWorker::submitVoicePcm(std::span<const int16_t> pcm) {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  engine_->pushVoicePcm(pcm);
+#else
+  (void)pcm;
+#endif
+}
+
+std::vector<int16_t> ModemWorker::takeVoicePcm(size_t samples) {
+#ifdef SKW_HAVE_VOICE
+  std::lock_guard lock(modemMutex_);
+  return engine_->takeVoicePcm(samples);
+#else
+  (void)samples;
+  return {};
+#endif
+}
+
 bool ModemWorker::pttSet(const std::string& key, const std::string& val) {
   std::lock_guard lock(modemMutex_);
   if (key == "METHOD") {

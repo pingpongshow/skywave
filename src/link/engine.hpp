@@ -32,6 +32,10 @@
 #ifdef SKW_HAVE_CRYPTO
 #include "crypto/session.hpp"
 #endif
+#ifdef SKW_HAVE_VOICE
+#include "voice/codec.hpp"
+#include "voice/session.hpp"
+#endif
 
 namespace skw {
 
@@ -85,6 +89,25 @@ class LinkEngine {
   uint16_t cryptoEpoch() const;
   // Manual KEYROTATE: bumps the epoch on a live encrypted session.
   bool rotateKeys(double now);
+
+#ifdef SKW_HAVE_VOICE
+  // --- voice (5.5) -------------------------------------------------------
+  // VOICESTART/VOICESTOP/VOICEPTT. openVoice picks the codec from the
+  // session transport (AUTO) or clamps a manual choice; false when the
+  // current mode cannot carry voice at all.
+  bool openVoice(std::optional<VoiceCodec> want, double now);
+  void closeVoice(double now);
+  bool setVoicePtt(bool on, double now);
+  VoiceState voiceState() const { return voiceFsm_.state(); }
+  VoiceCodec voiceCodec() const { return voiceFsm_.codec(); }
+  bool voiceCodecAuto() const { return voiceCodecAuto_; }
+  // Microphone PCM in (8 kHz mono), speaker PCM out (jitter-buffered).
+  void pushVoicePcm(std::span<const int16_t> pcm);
+  std::vector<int16_t> takeVoicePcm(size_t samples);
+  size_t voiceTxQueued() const;
+  int voiceRxDepthMs() const { return jitter_.depthMs(); }
+  uint32_t voiceConcealed() const { return voiceDec_.concealedFrames(); }
+#endif
 
   // --- broadcast (4.5) ---------------------------------------------------
   // Connectionless frames: calling signature + robust header + M4.
@@ -257,6 +280,21 @@ class LinkEngine {
   // Fault-mode teardown (ARQ exhaustion, peer's for-cause DISC, idle
   // timeout): keeps the resume token alive; operator DISC does not.
   bool faultDisc_ = false;
+#ifdef SKW_HAVE_VOICE
+  // Voice service. VOICE_DATA rides its own sequence space and is never
+  // ARQ-tracked (late voice is worthless); a talkspurt streams units
+  // back-to-back so the preamble cost is paid once.
+  void drainVoiceActions(double now);
+  void pumpVoice(double now);
+  VoiceFsm voiceFsm_;
+  VoiceEncoder voiceEnc_{VoiceCodec::C700};
+  VoiceDecoder voiceDec_;
+  JitterBuffer jitter_;
+  bool voiceCodecAuto_ = true;
+  uint16_t voiceTxSeq_ = 0;
+  uint16_t voiceRxSeq_ = 0;
+  bool haveVoiceRxSeq_ = false;
+#endif
 #ifdef SKW_HAVE_CRYPTO
   // Session crypto. cryptoOn_ = the committed session is encrypted;
   // sealing applies to DATA payload bodies (handshake and broadcast

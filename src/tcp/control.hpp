@@ -70,6 +70,17 @@ struct ControlBackend {
   virtual bool setEncryption(bool /*on*/) { return false; }
   virtual bool setPsk(const std::string& /*hex*/) { return false; }
   virtual bool keyRotate() { return false; }
+
+  // --- voice (ENABLE_VOICE builds; otherwise ERROR:UNSUPPORTED) ---------
+  virtual bool voiceSupported() { return false; }
+  virtual std::string voiceModeStr() { return "OFF"; }
+  virtual bool setVoiceMode(const std::string& /*m*/) { return false; }
+  virtual std::string voiceCodecStr() { return "AUTO"; }
+  virtual bool setVoiceCodec(const std::string& /*c*/) { return false; }
+  virtual bool voiceStart() { return false; }
+  virtual bool voiceStop() { return false; }
+  virtual bool voicePtt(bool /*on*/) { return false; }
+  virtual std::string voiceStatusLine() { return ""; }
 };
 
 // Uppercases the verb, dispatches, returns the single response line.

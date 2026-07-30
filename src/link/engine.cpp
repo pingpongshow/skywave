@@ -188,6 +188,138 @@ double LinkEngine::retryRatio() const {
   return amc_ ? amc_->retryRatio() : 0.0;
 }
 
+#ifdef SKW_HAVE_VOICE
+bool LinkEngine::openVoice(std::optional<VoiceCodec> want, double now) {
+  if (fsm_.state() != FsmState::Connected) return false;
+  auto codec = want ? clampVoiceCodec(cfg_.policy.family, mode_, *want)
+                    : autoVoiceCodec(cfg_.policy.family, mode_);
+  if (!codec) return false;  // mode cannot carry voice
+  voiceCodecAuto_ = !want.has_value();
+  voiceEnc_.setCodec(*codec);
+  voiceFsm_.cmdOpen(*codec, now);
+  drainVoiceActions(now);
+  return true;
+}
+
+void LinkEngine::closeVoice(double now) {
+  voiceFsm_.cmdClose(now);
+  drainVoiceActions(now);
+  jitter_.reset();
+  voiceDec_.reset();
+  voiceEnc_.reset();
+  haveVoiceRxSeq_ = false;
+}
+
+bool LinkEngine::setVoicePtt(bool on, double now) {
+  if (voiceFsm_.state() == VoiceState::Closed) return false;
+  if (on) {
+    voiceFsm_.cmdPttOn(now);
+  } else {
+    voiceFsm_.cmdPttOff(now);
+  }
+  drainVoiceActions(now);
+  return true;
+}
+
+void LinkEngine::pushVoicePcm(std::span<const int16_t> pcm) {
+  voiceEnc_.pushPcm(pcm);
+}
+
+std::vector<int16_t> LinkEngine::takeVoicePcm(size_t samples) {
+  return jitter_.take(samples);
+}
+
+size_t LinkEngine::voiceTxQueued() const {
+  return voiceEnc_.pendingSamples();
+}
+
+void LinkEngine::drainVoiceActions(double now) {
+  while (auto a = voiceFsm_.nextAction()) {
+    // Voice control frames are small and time-critical: they ride the
+    // session mode (voice needs an unspread mode anyway).
+    const ChirpSig sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    switch (*a) {
+      case VoiceAction::SendOpen:
+        queueControl(LinkType::VoiceOpen,
+                     VoiceOpenBody{voiceFsm_.codec()}.pack(), sig, mode_);
+        break;
+      case VoiceAction::SendOpenAck:
+        queueControl(LinkType::VoiceOpenAck,
+                     VoiceOpenBody{voiceFsm_.codec()}.pack(), sig, mode_);
+        break;
+      case VoiceAction::SendClose:
+        queueControl(LinkType::VoiceClose, {}, sig, mode_);
+        break;
+      case VoiceAction::SendPttReq:
+        queueControl(LinkType::VoicePttReq, {}, sig, mode_);
+        break;
+      case VoiceAction::SendPttGrant:
+        queueControl(LinkType::VoicePttGrant, {}, sig, mode_);
+        break;
+      case VoiceAction::SendPttEnd:
+        queueControl(LinkType::VoicePttEnd, {}, sig, mode_);
+        break;
+      case VoiceAction::IndicateOpen:
+        events_.push_back("EVT:VOICE OPEN");
+        break;
+      case VoiceAction::IndicateClosed:
+        events_.push_back("EVT:VOICE CLOSED");
+        break;
+      case VoiceAction::IndicateTalking:
+        events_.push_back("EVT:VOICE TALKING");
+        break;
+      case VoiceAction::IndicateStopped:
+        events_.push_back("EVT:VOICE STOPPED");
+        break;
+    }
+  }
+  (void)now;
+}
+
+void LinkEngine::pumpVoice(double now) {
+  if (!voiceFsm_.talking()) return;
+  // AMC demoted below what the codec needs: step down at the next frame
+  // boundary rather than dropping voice (VOICE.md).
+  if (voiceCodecAuto_) {
+    if (auto best = autoVoiceCodec(cfg_.policy.family, mode_)) {
+      if (*best != voiceFsm_.codec()) {
+        voiceFsm_.setCodec(*best);
+        voiceEnc_.setCodec(*best);
+        events_.push_back("EVT:VOICE codec");
+      }
+    } else {
+      closeVoice(now);  // below the family's voice floor entirely
+      return;
+    }
+  }
+  // Stream units back-to-back while the talkspurt holds the channel.
+  // Voice preempts queued DATA but never control (queueControl pushes
+  // control ahead of data already).
+  while (auto unit = voiceEnc_.nextUnit(dataBudget_, false)) {
+    OutFrame f;
+    f.env.type = LinkType::VoiceData;
+    f.env.sessionId = sessionId_;
+    f.env.sequence = voiceTxSeq_++;  // independent voice counter
+    f.env.ackBase = arqRx_.ackBase();
+    f.body = unit->pack();
+#ifdef SKW_HAVE_CRYPTO
+    if (cryptoOn_) {
+      f.env.flags |= kFlagEncrypted;
+      sealPayload(f.env, f.body);
+    }
+#endif
+    f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    f.mode = mode_;
+    // Ahead of DATA, behind control.
+    outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
+                                  [](const OutFrame& q) {
+                                    return q.env.type == LinkType::Data;
+                                  }),
+                     std::move(f));
+  }
+}
+#endif  // SKW_HAVE_VOICE
+
 #ifdef SKW_HAVE_CRYPTO
 bool LinkEngine::cryptoAuth() const { return crypto_.established(); }
 bool LinkEngine::cryptoActive() const { return cryptoOn_; }
@@ -897,6 +1029,11 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                        std::move(f));
     }
   }
+#ifdef SKW_HAVE_VOICE
+  voiceFsm_.tick(now);
+  drainVoiceActions(now);
+  pumpVoice(now);
+#endif
   pumpFile();
   pumpData(now);
   // CW ID (PROTOCOL.md): pure audio-layer identification - after
@@ -1372,6 +1509,74 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
 #endif
       break;
     }
+#ifdef SKW_HAVE_VOICE
+    case LinkType::VoiceOpen: {
+      auto vo = VoiceOpenBody::parse(f.body);
+      if (!vo || fsm_.state() != FsmState::Connected) return;
+      // Accept at what our transport can carry (never above the peer's
+      // proposal): the responder may only lower it.
+      auto codec = clampVoiceCodec(cfg_.policy.family, mode_, vo->codec);
+      if (!codec) return;  // cannot carry voice here: stay silent
+      voiceEnc_.setCodec(*codec);
+      voiceFsm_.rxOpen(*codec, now);
+      drainVoiceActions(now);
+      break;
+    }
+    case LinkType::VoiceOpenAck: {
+      auto vo = VoiceOpenBody::parse(f.body);
+      if (!vo) return;
+      voiceEnc_.setCodec(vo->codec);
+      voiceFsm_.rxOpenAck(vo->codec, now);
+      drainVoiceActions(now);
+      break;
+    }
+    case LinkType::VoiceClose:
+      voiceFsm_.rxClose(now);
+      drainVoiceActions(now);
+      jitter_.reset();
+      voiceDec_.reset();
+      haveVoiceRxSeq_ = false;
+      break;
+    case LinkType::VoicePttReq:
+      // Tie-break by callsign order so a simultaneous request never
+      // leaves both stations believing they hold the channel.
+      voiceFsm_.rxPttReq(now, cfg_.policy.ownCall < remoteCall_);
+      drainVoiceActions(now);
+      break;
+    case LinkType::VoicePttGrant:
+      voiceFsm_.rxPttGrant(now);
+      drainVoiceActions(now);
+      break;
+    case LinkType::VoicePttEnd:
+      voiceFsm_.rxPttEnd(now);
+      drainVoiceActions(now);
+      break;
+    case LinkType::VoiceData: {
+      std::vector<uint8_t> body = f.body;
+#ifdef SKW_HAVE_CRYPTO
+      if (cryptoOn_) {
+        if (!(f.env.flags & kFlagEncrypted)) return;
+        if (!openPayload(f.env, body)) return;
+      }
+#endif
+      auto vd = VoiceDataBody::parse(body);
+      if (!vd) return;
+      // Gaps in the VOICE sequence space conceal; they are never NAKed.
+      if (haveVoiceRxSeq_) {
+        const int16_t gap = seqDiff(f.env.sequence, voiceRxSeq_);
+        if (gap > 1) {
+          voiceDec_.onGap((gap - 1) * vd->frameCount);
+        } else if (gap <= 0) {
+          return;  // duplicate or reordered: voice has no retransmission
+        }
+      }
+      voiceRxSeq_ = f.env.sequence;
+      haveVoiceRxSeq_ = true;
+      voiceDec_.onVoiceData(*vd);
+      jitter_.push(voiceDec_.takePcm());
+      break;
+    }
+#endif
     case LinkType::Keepalive:
       break;  // rxTraffic already refreshed the idle timer
     default:

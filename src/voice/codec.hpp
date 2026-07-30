@@ -54,8 +54,13 @@ class VoiceEncoder {
  public:
   explicit VoiceEncoder(VoiceCodec c);
   ~VoiceEncoder();
+  // Non-copyable (owns codec state) but movable, so the owning
+  // LinkEngine stays move-assignable. Defined out-of-line where Impl is
+  // complete.
   VoiceEncoder(const VoiceEncoder&) = delete;
   VoiceEncoder& operator=(const VoiceEncoder&) = delete;
+  VoiceEncoder(VoiceEncoder&&) noexcept;
+  VoiceEncoder& operator=(VoiceEncoder&&) noexcept;
 
   VoiceCodec codec() const { return codec_; }
   // Mid-talkspurt codec step-down (AMC demoted): applies at the next
@@ -87,6 +92,8 @@ class VoiceDecoder {
   ~VoiceDecoder();
   VoiceDecoder(const VoiceDecoder&) = delete;
   VoiceDecoder& operator=(const VoiceDecoder&) = delete;
+  VoiceDecoder(VoiceDecoder&&) noexcept;
+  VoiceDecoder& operator=(VoiceDecoder&&) noexcept;
 
   void onVoiceData(const VoiceDataBody& body);
   // A detected gap in the voice sequence space: conceal `units` worth of

@@ -194,12 +194,35 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
     }
     return be.keyRotate() ? "KEYROTATE" : "ERROR:STATE";
   }
-  // Recognized but unavailable in this build/phase (voice is Phase 5):
-  // a distinct error keeps clients from confusing them with typos.
-  if (verb == "VOICE" || verb == "VOICECODEC" ||
-      verb == "VOICESTART" || verb == "VOICESTOP" || verb == "VOICEPTT" ||
-      verb == "VOICESTATUS") {
-    return "ERROR:UNSUPPORTED";
+  if (verb == "VOICE" || verb == "VOICECODEC" || verb == "VOICESTART" ||
+      verb == "VOICESTOP" || verb == "VOICEPTT" || verb == "VOICESTATUS") {
+    // Compiled out (no Codec2): recognized but unavailable, which is a
+    // distinct answer from a typo.
+    if (!be.voiceSupported()) return "ERROR:UNSUPPORTED";
+    if (verb == "VOICE") {
+      if (argc == 0) return "VOICE " + be.voiceModeStr();
+      return be.setVoiceMode(upper(tok[1])) ? "VOICE " + be.voiceModeStr()
+                                            : "ERROR:BADARG";
+    }
+    if (verb == "VOICECODEC") {
+      if (argc == 0) return "VOICECODEC " + be.voiceCodecStr();
+      return be.setVoiceCodec(upper(tok[1]))
+                 ? "VOICECODEC " + be.voiceCodecStr()
+                 : "ERROR:BADARG";
+    }
+    if (verb == "VOICESTART") {
+      return be.voiceStart() ? "VOICESTART" : "ERROR:STATE";
+    }
+    if (verb == "VOICESTOP") {
+      return be.voiceStop() ? "VOICESTOP" : "ERROR:STATE";
+    }
+    if (verb == "VOICEPTT") {
+      if (argc != 1) return "ERROR:BADARG";
+      auto v = parseOnOff(tok[1]);
+      if (!v) return "ERROR:BADARG";
+      return be.voicePtt(*v) ? "VOICEPTT " + onOff(*v) : "ERROR:STATE";
+    }
+    return "VOICESTATUS " + be.voiceStatusLine();
   }
   return "ERROR:UNKNOWN";
 }

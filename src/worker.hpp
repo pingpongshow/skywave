@@ -128,6 +128,19 @@ class ModemWorker : public ControlBackend {
   bool setEncryption(bool on) override;
   bool setPsk(const std::string& hex) override;
   bool keyRotate() override;
+  bool voiceSupported() override;
+  std::string voiceModeStr() override;
+  bool setVoiceMode(const std::string& m) override;
+  std::string voiceCodecStr() override;
+  bool setVoiceCodec(const std::string& c) override;
+  bool voiceStart() override;
+  bool voiceStop() override;
+  bool voicePtt(bool on) override;
+  std::string voiceStatusLine() override;
+
+  // --- voice port bridge (thread-safe; main.cpp owns port 9102) ----------
+  void submitVoicePcm(std::span<const int16_t> pcm);
+  std::vector<int16_t> takeVoicePcm(size_t samples);
 
  private:
   void threadMain();
@@ -138,6 +151,9 @@ class ModemWorker : public ControlBackend {
 
   // Locked helpers (modemMutex_ held).
   static std::string fsmStateNameLocked(FsmState st);
+#ifdef SKW_HAVE_VOICE
+  const char* voiceModeNameLocked() const;
+#endif
   void rebuildEngine();          // IDLE-only reconfiguration
   void pumpRxLocked(double now);
   void pumpTxLocked(double now);
@@ -193,6 +209,11 @@ class ModemWorker : public ControlBackend {
   float blockDbfs_ = -120.0f;
   float floorDbfs_ = -120.0f;
   bool chanBusy_ = false;
+
+#ifdef SKW_HAVE_VOICE
+  VoiceMode voiceMode_ = VoiceMode::Off;
+  std::optional<VoiceCodec> voiceCodecWant_;  // nullopt = AUTO
+#endif
 
   // Notification/state-change tracking.
   FsmState lastState_ = FsmState::Idle;

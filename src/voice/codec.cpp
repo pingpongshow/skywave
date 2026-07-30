@@ -141,6 +141,8 @@ VoiceEncoder::VoiceEncoder(VoiceCodec c)
 }
 
 VoiceEncoder::~VoiceEncoder() = default;
+VoiceEncoder::VoiceEncoder(VoiceEncoder&&) noexcept = default;
+VoiceEncoder& VoiceEncoder::operator=(VoiceEncoder&&) noexcept = default;
 
 void VoiceEncoder::setCodec(VoiceCodec c) {
   if (c == codec_) return;
@@ -210,6 +212,8 @@ struct VoiceDecoder::Impl {
 
 VoiceDecoder::VoiceDecoder() : impl_(std::make_unique<Impl>()) {}
 VoiceDecoder::~VoiceDecoder() = default;
+VoiceDecoder::VoiceDecoder(VoiceDecoder&&) noexcept = default;
+VoiceDecoder& VoiceDecoder::operator=(VoiceDecoder&&) noexcept = default;
 
 void VoiceDecoder::onVoiceData(const VoiceDataBody& body) {
   impl_->ensure(body.codec);

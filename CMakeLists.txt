@@ -62,7 +62,7 @@ if(ENABLE_CRYPTO)
   list(APPEND SKW_CRYPTO_SOURCES src/crypto/session.cpp)
 endif()
 if(ENABLE_VOICE)
-  list(APPEND SKW_CRYPTO_SOURCES src/voice/codec.cpp)
+  list(APPEND SKW_CRYPTO_SOURCES src/voice/codec.cpp src/voice/session.cpp)
 endif()
 
 add_library(skywave_core STATIC

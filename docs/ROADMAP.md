@@ -589,10 +589,31 @@ others `[P]` across tracks.*
   40 ms, 2400/3200 are 20 ms) and a stale local table would silently
   corrupt the wire format; (2) `codec2.h` includes `<codec2/version.h>`,
   so CMake must put the PARENT of the pkg-config include dir on the path.
-- [ ] **5.5 Voice: session control + port** — OPEN/PTT-arbitration/CLOSE
+- [x] **5.5 Voice: session control + port** — OPEN/PTT-arbitration/CLOSE
   flows, broadcast voice, jitter buffer, voice TCP port records, codec
   auto-mapping with demotion stepdown.
   *Gate: two-modem `voice_loop` scenario + command surface.*
+  ✓ 2026-07-29 — `voice/session`: `VoiceFsm` (Closed/Opening/Open/
+  Requesting/Talking/Receiving) with OPEN retries, a deterministic
+  callsign-order tie-break so simultaneous PTT requests never leave both
+  stations talking, and a talkspurt hold cap that frees a channel whose
+  peer vanished; `JitterBuffer` (240 ms prime target, underrun counted +
+  re-prime); voice-port records (BE header, PCM16LE media) with a
+  streaming parser. Engine: VOICE_DATA streams back-to-back during a
+  granted spurt on its own sequence space, never ARQ-tracked — gaps
+  conceal, duplicates/reorders drop; frames sit ahead of DATA but behind
+  control in the TX queue; AUTO codec steps down when AMC demotes and
+  voice closes below the family's voice floor. Worker/control surface:
+  `VOICE/VOICECODEC/VOICESTART/VOICESTOP/VOICEPTT/VOICESTATUS` (compiled
+  out → `ERROR:UNSUPPORTED`). Gate (`test_voice`, 11 cases): two-modem
+  loop opens AUTO(2400) at M10, streams 4 s of speech that B plays out
+  through the jitter buffer, hands the channel to B and back, then closes
+  both ends with the data session untouched; a 1-in-5 VOICE_DATA loss run
+  conceals 38 frames without stalling or tearing down.
+  Test-design note: the loss run enables loss only after the talkspurt is
+  live — dropping the OPEN/PTT control frames instead just re-tests the
+  FSM retries while starving the spurt, and thousands of simulated
+  seconds of silence then trip the idle-disconnect timer.
 - [ ] **5.6 GUI: shell + telemetry** — SDL2/ImGui on main thread (service
   thread takeover), snapshot consumption, theming.
   *Gate: runs on macOS + Linux; clean headless fallback.*
