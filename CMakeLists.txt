@@ -162,6 +162,7 @@ target_link_libraries(skywave PRIVATE skywave_core)
 
 install(TARGETS skywave RUNTIME DESTINATION bin)
 install(DIRECTORY docs/ DESTINATION share/doc/skywave)
+install(FILES THIRD_PARTY.md DESTINATION share/doc/skywave)
 
 # --- tools --------------------------------------------------------------------
 if(BUILD_TOOLS)

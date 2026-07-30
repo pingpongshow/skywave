@@ -78,7 +78,6 @@ Details and acceptance criteria live in [BUILD_PLAN.md](BUILD_PLAN.md).
 
 Named here so their absence reads as a decision, not an oversight:
 
-- **CSS deep tier** (`M0–M3`, connect below ~−9 dB) — Phase 6, forward-specified in [WAVEFORM.md](WAVEFORM.md)
 - **VHF-FM band profile** (wideband FM data-port operation) — Phase 7, forward-specified in [WAVEFORM.md](WAVEFORM.md); note that plain FM *voice-channel* operation already works with the v1 HF profile
 - **True wideband SDR/IQ operation** (≥ 25 kHz channels, non-soundcard I/O) — out of scope for this project; a future sibling front-end reusing the link/proto layers as libraries
 - **Mid-session bandwidth-family renegotiation** — family is fixed per session; changing requires reconnect (resume makes this cheap)
@@ -91,5 +90,5 @@ Named here so their absence reads as a decision, not an oversight:
 - SNR figures are referenced to a **3 kHz noise bandwidth** unless stated otherwise.
 - `NET` rates are post-FEC payload bit rates; `GROSS` rates are uncoded waveform rates.
 - All multi-byte wire fields are **little-endian** unless a format says otherwise.
-- Mode identifiers `M0–M13` are ladder positions; `M0–M3` are reserved (inactive) in v1.
+- Mode identifiers `M0–M13` are ladder positions; `M0–M3` are the CSS deep tier (Phase 6), used only when both peers negotiate `CAP_CSS_TIER`.
 - Rates and floors are quoted for the default `MEDIUM` cyclic prefix.
