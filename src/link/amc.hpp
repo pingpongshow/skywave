@@ -84,6 +84,7 @@ class Amc {
   bool modeEligible(uint8_t k, double effSnr,
                     bool assumeProbeClean = false) const;
   double operatingFloorDb(uint8_t k) const;
+  uint8_t demoteTarget(int steps) const;  // skips kFadingNA rungs
 
   AmcConfig cfg_;
   uint8_t mode_;

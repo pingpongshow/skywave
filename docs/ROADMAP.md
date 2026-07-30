@@ -1134,3 +1134,39 @@ doc was updated)*
   protocol loses feedback frames into keyed transmitters - true
   half-duplex turn-taking is future work; the validated envelope is
   full-duplex audio paths (virtual cables, split TX/RX radios).
+- **Stress campaign / 2026-07-30, discoveries #7-#10** — The floor
+  soak (connect clean, then collapse the channel to marginal SNR)
+  exposed four defects in the degradation path, three fixed:
+  7. **Resume restored the stale mode**: a session that died because
+     conditions collapsed resumed at its old fast mode, decoded
+     nothing, died, and looped forever. The resumed mode is now clamped
+     by `initialModeFromQuality` of the resume exchange itself.
+  8. **Demotion deadlock**: MODE_CHANGE/MODE_ACK and keepalives rode
+     the fast session mode, so a session stranded above the collapsed
+     channel's floor could neither send nor decode the exchange that
+     would demote it (120 s idle-death was the only way down).
+     DEMOTIONS and keepalives now ride the robust transport
+     (promotions keep the committed mode - robust-for-everything cost
+     the M3 ramp-tracking gate).
+  9. **kFadingNA ladder traps**: demote stepped INTO static-only rungs
+     (WIDE M4 -> M3(NA), parked dead) and promote could never step OUT
+     of the CSS tier past them (single-step only). Both directions now
+     skip NA rungs (`Amc::demoteTarget`, NA-skipping promote).
+  10. **OPEN BUG (reproducible, not yet fixed)**: WIDE-family CSS DATA
+     frames through the ST2 radio chain fail DETERMINISTICALLY for
+     specific payloads - the identical retransmission fails identically
+     forever, wedging the stream on a permanent ARQ hole (repro:
+     `SKW_SOAK_SCENARIO=floor ./soak_st2`, watch seq=2 retransmit every
+     ~40 s while seq=3 delivered). CSS conformance ran clean-baseband
+     chansim only and CSS link gates ran engine-level MID: the WIDE
+     CSS data path through TX/RX bandpass+ALC+AGC was never validated.
+     Suspect band-edge/ALC interaction with specific chirp payloads
+     (analogue of the fixed M14 PAPR content-dependence). Deep-tier
+     DATA (as opposed to handshake/control) through real audio chains
+     needs a dedicated validation pass before relying on CSS payload
+     transport OTA.
+  Scenario calibration: floor scenario now connects clean then
+  degrades, runs one-way at a +9 dB set-point (the ST2 radio chain's
+  bandpass costs ~6 dB vs clean-baseband bertool floors), deep-tier
+  stall window 900 s. Soak status: churn PASS, blackout PASS, floor
+  blocked on discovery #10.

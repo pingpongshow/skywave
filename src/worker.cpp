@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "core/constants.hpp"
+#include "sim/chansim.hpp"
 #include "core/log.hpp"
 #include "link/frame.hpp"
 #include "phy/framer.hpp"
@@ -283,6 +284,52 @@ void ModemWorker::pumpRxLocked(double now) {
   }
 }
 
+// SKW_TX_IMPAIR (TESTING.md, hardware impairment runs): apply the
+// Watterson channel simulator to our OWN transmit baseband before the
+// sound device, so REAL audio paths (ST3 virtual cables, real rigs on a
+// bench) carry controlled-impairment signal with real device timing.
+// Format: "preset=awgn|good|moderate|poor,snr=<dB>,cfo=<Hz>,ppm=<f>,
+//          dropms=<ms>,dropevery=<sec>"  (all keys optional)
+namespace {
+struct TxImpair {
+  bool on = false;
+  ChansimParams base;
+  double dropMs = 0.0, dropEvery = 0.0;
+};
+TxImpair parseTxImpair() {
+  TxImpair t;
+  const char* e = getenv("SKW_TX_IMPAIR");
+  if (!e || !*e) return t;
+  t.on = true;
+  t.base = ChansimParams{};
+  t.base.fading = false;
+  t.base.snr3kDb = 99.0;
+  std::string spec(e);
+  size_t pos = 0;
+  while (pos < spec.size()) {
+    size_t end = spec.find(',', pos);
+    if (end == std::string::npos) end = spec.size();
+    std::string kv = spec.substr(pos, end - pos);
+    pos = end + 1;
+    size_t eq = kv.find('=');
+    if (eq == std::string::npos) continue;
+    std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
+    if (k == "preset") {
+      if (v == "good") t.base = ccirGood();
+      else if (v == "moderate") t.base = ccirModerate();
+      else if (v == "poor") t.base = ccirPoor();
+      else { t.base = ChansimParams{}; t.base.fading = false; }
+      t.base.snr3kDb = 99.0;
+    } else if (k == "snr") t.base.snr3kDb = std::atof(v.c_str());
+    else if (k == "cfo") t.base.cfoHz = std::atof(v.c_str());
+    else if (k == "ppm") t.base.clockPpm = std::atof(v.c_str());
+    else if (k == "dropms") t.dropMs = std::atof(v.c_str());
+    else if (k == "dropevery") t.dropEvery = std::atof(v.c_str());
+  }
+  return t;
+}
+}  // namespace
+
 void ModemWorker::pumpTxLocked(double now) {
   // New burst from the engine (only once the previous one fully left).
   if (txPendingOff_ >= txPending_.size()) {
@@ -316,6 +363,32 @@ void ModemWorker::pumpTxLocked(double now) {
       std::vector<cfloat> padded(lead, cfloat(0, 0));
       padded.insert(padded.end(), burst->begin(), burst->end());
       padded.insert(padded.end(), tail, cfloat(0, 0));
+      static const TxImpair txImpair = parseTxImpair();
+      if (txImpair.on) {
+        ChansimParams p = txImpair.base;
+        // SNR references THIS burst's measured power, so `snr=` means
+        // what it says regardless of PAPR normalization.
+        double pow = 0.0;
+        for (const auto& v : padded) {
+          pow += double(v.real()) * v.real() + double(v.imag()) * v.imag();
+        }
+        p.refSignalPower = pow / double(padded.size());
+        p.seed = 0x5eed + (++txImpairSeq_) * 7919;
+        padded = Chansim::run(p, padded);
+        if (txImpair.dropEvery > 0.0 && txImpair.dropMs > 0.0 &&
+            now - lastTxDropAt_ >= txImpair.dropEvery) {
+          lastTxDropAt_ = now;
+          const size_t n =
+              std::min(padded.size(),
+                       size_t(txImpair.dropMs * 1e-3 * kFsBaseband));
+          const size_t at = padded.size() > n
+                                ? (txImpairSeq_ * 2654435761u) %
+                                      (padded.size() - n)
+                                : 0;
+          std::fill(padded.begin() + long(at),
+                    padded.begin() + long(at + n), cfloat(0, 0));
+        }
+      }
       std::vector<float> audio;
       up_.process(padded, audio);
       const float g = float(std::pow(10.0, cfg_.outputGainDb / 20.0));

@@ -693,9 +693,14 @@ void LinkEngine::drainFsmActions(double now) {
                      mode_ <= 3 ? 0 : 4);
         break;
       case FsmAction::SendKeepalive:
+        // Robust transport ALWAYS: the keepalive is the liveness probe
+        // of last resort. Riding the fast session mode made a stranded
+        // fast-mode session totally deaf when the channel collapsed
+        // (nothing it sent OR needed to hear was decodable), forcing a
+        // 120 s idle-death + reconnect instead of a demotion.
         queueControl(LinkType::Keepalive, KeepaliveBody{20}.pack(),
-                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Fast,
-                     mode_ <= 3 ? mode_ : std::max(mode_, 8));
+                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Robust,
+                     mode_ <= 3 ? mode_ : 4);
         break;
       case FsmAction::IndicateConnected: {
         // TX-alignment bootstrap: connected fast-signature frames only
@@ -1004,9 +1009,15 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
   pendingCp_ = cp;
   ++modeEpoch_;
   modeChangeTries_ = 0;
-  // Demotions transmit at the TARGET (lower) mode so a degraded peer can
-  // still decode them; promotions ride the current committed mode.
-  const int txMode = std::min(target, mode_);
+  // DEMOTIONS ride the ROBUST transport (CSS mode for CSS-committed
+  // sessions): riding min(target, mode_) deadlocked - a fast-mode
+  // session whose channel collapsed below the fast floor could neither
+  // send nor decode the very exchange that demotes it. PROMOTIONS ride
+  // the current committed mode: the channel is healthy by definition,
+  // and robust airtime for every upward step measurably drags ramp
+  // tracking (M3 gate).
+  const int txMode =
+      mode_ <= 3 ? mode_ : (target < mode_ ? 4 : mode_);
   queueControl(LinkType::ModeChange,
                ModeChangeBody{uint8_t(target), uint8_t(cp), modeEpoch_}
                    .pack(),
@@ -1055,7 +1066,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       if (++modeChangeTries_ >= 3) {
         pendingMode_ = -1;  // give up; stay at the committed mode
       } else {
-        const int txMode = std::min(pendingMode_, mode_);
+        const int txMode =
+            mode_ <= 3 ? mode_
+                       : (pendingMode_ < mode_ ? 4 : mode_);  // see above
         queueControl(LinkType::ModeChange,
                      ModeChangeBody{uint8_t(pendingMode_),
                                     uint8_t(pendingCp_), modeEpoch_}
@@ -1625,7 +1638,17 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       resumePeerCkptOff_ = rr->fileOffset;
       sessionCaps_ = resumeCtx_.caps;
       protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
-      mode_ = resumeCtx_.mode;
+      // Resume must NOT restore a mode the CURRENT channel cannot
+      // carry: sessions that die because conditions collapsed would
+      // resume at the stale fast mode, decode nothing, die, and loop
+      // forever (observed at floor SNR: 3 resume cycles, 0 bytes in
+      // 20 min). Clamp by the quality measured on this very exchange -
+      // the AMC re-coordinates upward later if conditions allow.
+      mode_ = std::min<int>(resumeCtx_.mode,
+                            initialModeFromQuality(
+                                cfg_.policy.family, q.snrDb, q.selectivity,
+                                cfg_.policy.maxMode,
+                                (sessionCaps_ & kCapCssTier) != 0));
       cpMode_ = resumeCtx_.cp;
       fsm_.rxStart(now, true);  // emits ResumeAck via the StartAck slot
       break;
@@ -1642,7 +1665,14 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       resumePeerHasCkpt_ = ra->hasFileCkpt;
       resumePeerCkptId_ = ra->fileId;
       resumePeerCkptOff_ = ra->fileOffset;
-      mode_ = resumeCtx_.mode;
+      // Same stale-mode clamp as the responder side (see ResumeReq):
+      // transient asymmetry is fine - frames self-describe their mode
+      // and MODE_CHANGE re-coordinates.
+      mode_ = std::min<int>(resumeCtx_.mode,
+                            initialModeFromQuality(
+                                cfg_.policy.family, q.snrDb, q.selectivity,
+                                cfg_.policy.maxMode,
+                                (sessionCaps_ & kCapCssTier) != 0));
       cpMode_ = resumeCtx_.cp;
       fsm_.rxStartAck(now);
       break;
@@ -1728,10 +1758,14 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto mc = ModeChangeBody::parse(f.body);
       if (!mc || fsm_.state() != FsmState::Connected) return;
       if (isInitiator_) return;  // only the initiator drives mode control
-      // Echo the epoch at the LOWER of target/current mode (the
-      // initiator may already have committed it); sig follows that mode.
+      // Demote-echo on the ROBUST transport; promote-echo rides the
+      // (lower of target/current) committed mode as before.
       {
-        const int ackMode = std::min(int(mc->targetMode), mode_);
+        const int ackMode =
+            mode_ <= 3 ? mode_
+                       : (int(mc->targetMode) < mode_
+                              ? 4
+                              : std::min(int(mc->targetMode), mode_));
         queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
                      sigForMode(ackMode), ackMode);
       }

@@ -200,6 +200,8 @@ class ModemWorker : public ControlBackend {
 
   // TX staging: upconverted audio waiting for ring space.
   std::vector<float> txPending_;
+  uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed
+  double lastTxDropAt_ = 0.0;  // SKW_TX_IMPAIR dropout scheduler
   size_t txPendingOff_ = 0;
   double txTestUntil_ = 0.0;
 

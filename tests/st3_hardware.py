@@ -90,14 +90,21 @@ class Ctrl:
             pass
 
 
-def launch(binary, call, in_dev, out_dev, data_port, ctrl_port, logdir):
+def launch(binary, call, in_dev, out_dev, data_port, ctrl_port, logdir,
+           impair=None):
     log = open(os.path.join(logdir, f"st3_{call}.log"), "w")
+    env = dict(os.environ)
+    if impair:
+        # SKW_TX_IMPAIR: each modem impairs its OWN transmit audio
+        # (worker-level Watterson tap), so both directions of the real
+        # device path carry controlled-impairment signal.
+        env["SKW_TX_IMPAIR"] = impair
     proc = subprocess.Popen(
         [binary, "--callsign", call,
          "--audio-in", str(in_dev), "--audio-out", str(out_dev),
          "--data-port", str(data_port), "--ctrl-port", str(ctrl_port),
          "--voice-port", str(ctrl_port + 1), "--log-level", "1"],
-        stdout=log, stderr=subprocess.STDOUT)
+        stdout=log, stderr=subprocess.STDOUT, env=env)
     return proc, log
 
 
@@ -124,6 +131,10 @@ def main():
     ap.add_argument("--soak-sec", type=float,
                     default=float(os.environ.get("SKW_ST3_SOAK", "60")))
     ap.add_argument("--bytes", type=int, default=2048)
+    ap.add_argument("--impair",
+                    default=os.environ.get("SKW_ST3_IMPAIR", ""),
+                    help="SKW_TX_IMPAIR spec applied to BOTH modems, "
+                         "e.g. 'preset=good,snr=15,cfo=1.0,ppm=100'")
     args = ap.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -144,8 +155,12 @@ def main():
     logdir = os.environ.get("SKW_ST3_LOGDIR", ".")
     # A transmits into the forward device and listens on the reverse one;
     # B is the mirror image. Two processes, two audio clocks.
-    a_proc, a_log = launch(binary, "W1AW", rev, fwd, 9200, 9201, logdir)
-    b_proc, b_log = launch(binary, "K6XYZ", fwd, rev, 9210, 9211, logdir)
+    if args.impair:
+        print(f"ST3: TX impairment active: {args.impair}")
+    a_proc, a_log = launch(binary, "W1AW", rev, fwd, 9200, 9201, logdir,
+                           args.impair)
+    b_proc, b_log = launch(binary, "K6XYZ", fwd, rev, 9210, 9211, logdir,
+                           args.impair)
     a_ctrl = b_ctrl = None
     a_data = b_data = None
     rc = 1
