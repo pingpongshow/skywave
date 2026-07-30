@@ -14,11 +14,13 @@ breaking wire changes, never for releases.
    cmake -B build-crypto -DENABLE_CRYPTO=ON && cmake --build build-crypto -j && ctest --test-dir build-crypto
    ```
 2. **Sanitizer sweeps** (`build-asan`, `build-ubsan`: same suites green;
-   ThreadSanitizer on `test_st2` + `test_tcp` at minimum). Known host
-   limitation (see ROADMAP deviations, 2026-07-30): Apple clang 17.0.0
-   compiler-rt on Darwin 25.6 cannot start ASan (init spin) or TSan
-   (init SIGSEGV) at all — on such hosts UBSan is the required gate and
-   the ASan/TSan sweeps are deferred to a working toolchain.
+   ThreadSanitizer on `test_st2` + `test_tcp` at minimum). Toolchain
+   note (see ROADMAP deviations, 2026-07-30): Apple clang 17 compiler-rt
+   on Darwin 25.6 cannot start ASan/TSan at all; Command Line Tools
+   26.6 (clang 21) fixes this — configure the sanitizer builds with
+   `-DCMAKE_C_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang`
+   (+ clang++, + `-DCMAKE_OSX_SYSROOT=.../SDKs/MacOSX.sdk`) if the
+   active Xcode still ships the broken runtime.
 3. **Conformance sweeps** — archive under `docs/conformance/`. Fading
    sweeps run each tier on its DESIGNATED channel (kFadingFloors
    convention): CCIR Moderate for the robust tier on WIDE/MID/ULTRA,

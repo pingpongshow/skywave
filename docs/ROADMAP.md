@@ -1049,4 +1049,7 @@ doc was updated)*
   platform init and runs clean: FULL suite green under
   `-fsanitize=undefined` (37/37). Release gate 2 therefore ships with
   UBSan coverage only; rerun the ASan/TSan sweeps when the host Xcode
-  toolchain is updated.
+  toolchain is updated. RESOLVED 2026-07-30, post-v1.0.0: installing
+  Command Line Tools 26.6 (clang 21.0.0) fixed both runtimes; the
+  deferred sweeps then ran clean — ASan FULL suite 37/37, TSan
+  `test_tcp` + `test_st2` pass, zero race reports.
