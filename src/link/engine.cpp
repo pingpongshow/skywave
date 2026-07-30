@@ -131,6 +131,7 @@ void LinkEngine::drainFsmActions(double /*now*/) {
         break;
       case FsmAction::IndicateConnected: {
         harq_.clear();
+        probeGate_ = ProbeGate();
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
@@ -280,9 +281,33 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         modeChangeDeadline_ = now + arqTx_.timeoutSec();
       }
     }
+    probeGate_.tick(now);
     if (amc_ && isInitiator_ && pendingMode_ < 0) {
       auto d = amc_->evaluate(now);
-      if (d.kind != AmcDecision::Kind::None) {
+      if (d.kind == AmcDecision::Kind::Promote &&
+          probeGate_.required(d.targetMode) &&
+          !probeGate_.cleared(d.targetMode)) {
+        // Fragile mode: verify live before committing. The PROBE rides
+        // the CANDIDATE mode; its probeId also travels in the PHY header
+        // seqLow so the peer can report a payload decode failure.
+        if (auto req = probeGate_.begin(d.targetMode, now)) {
+          for (int i = 0; i < req->count; ++i) {
+            OutFrame f;
+            f.env.type = LinkType::Probe;
+            f.env.sessionId = sessionId_;
+            f.env.sequence = req->probeId;
+            f.env.ackBase = arqRx_.ackBase();
+            f.body = ProbeBody{req->probeId, uint8_t(req->mode)}.pack();
+            f.sig = ChirpSig::Fast;
+            f.mode = req->mode;
+            outQueue_.push_back(std::move(f));
+          }
+        }
+      } else if (d.kind != AmcDecision::Kind::None) {
+        if (d.kind == AmcDecision::Kind::Promote &&
+            probeGate_.required(d.targetMode)) {
+          probeGate_.consumeClearance();
+        }
         requestModeChange(d.targetMode, now);
       }
     }
@@ -309,6 +334,16 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   auto res = receiveFrame(cfg_.policy.family, samples, &stage, &harq_);
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
+    // A PROBE whose header decoded but payload failed still gets its
+    // verdict: the probeId rides the PHY header's seqLow.
+    if (res && !res->payloadOk &&
+        res->header.frameType == uint8_t(LinkType::Probe) &&
+        fsm_.state() == FsmState::Connected) {
+      queueControl(LinkType::ProbeAck,
+                   ProbeAckBody{res->header.seqLow, 0, kProbeFailed}.pack(),
+                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   std::min(mode_, 8));
+    }
     return;
   }
   auto parsed = parseFrame(res->payload);
@@ -324,6 +359,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                          double now) {
   lastRxQuality_ = q;
   fsm_.rxTraffic(now);
+  probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
     amc_->onLocalSnr(q.snrDb);
   }
@@ -409,6 +445,35 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::DiscAck:
       fsm_.rxDiscAck(now);
       break;
+    case LinkType::Probe: {
+      auto p = ProbeBody::parse(f.body);
+      if (!p || fsm_.state() != FsmState::Connected) return;
+      // Decoded at the candidate mode: clean when the margin holds,
+      // marginal when it decoded right at the edge.
+      const double floor = fadingFloorDb(cfg_.policy.family, p->probeMode);
+      const double ref = floor < 90.0
+                             ? floor
+                             : floorDb(cfg_.policy.family, p->probeMode);
+      const uint8_t quality =
+          q.snrDb >= ref + 1.0 ? kProbeClean : kProbeMarginal;
+      queueControl(LinkType::ProbeAck,
+                   ProbeAckBody{p->probeId,
+                                int8_t(std::clamp(q.snrDb * 2.0, -127.0,
+                                                  127.0)),
+                                quality}
+                       .pack(),
+                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   std::min(mode_, 8));
+      break;
+    }
+    case LinkType::ProbeAck: {
+      auto pa = ProbeAckBody::parse(f.body);
+      if (!pa || !isInitiator_) return;
+      const bool clearedNow =
+          probeGate_.onProbeAck(pa->probeId, pa->decodedOk);
+      if (amc_) amc_->onProbeResult(clearedNow, now);
+      break;
+    }
     case LinkType::Keepalive:
       break;  // rxTraffic already refreshed the idle timer
     default:

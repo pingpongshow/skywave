@@ -317,8 +317,14 @@ disconnects over the simulated ionosphere end to end.**
   versioned binary cache, retry/age penalties per spec. Engine/worker
   wiring (feeding stats + applying the seed at CONNECT) lands with the
   worker integration.
-- [ ] **3.6 Probe-before-promote** `[P]` — PROBE/PROBE_ACK, eligibility,
+- [x] **3.6 Probe-before-promote** `[P]` — PROBE/PROBE_ACK, eligibility,
   cooldown. *Gate: `test_probe` + two-modem promotion scenario.*
+  ✓ 2026-07-29 — link/probe.{hpp,cpp} ProbeGate + engine wiring: PROBE
+  rides the candidate mode with probeId duplicated in the PHY header
+  seqLow so a payload-failed probe still gets a FAILED verdict from the
+  header alone; clean/marginal/failed via SNR margin at the responder;
+  2 probes for M12+; 10-frame cooldown; timeout = failed. Harness
+  scenario promotes M10→M11→M12 through both gate shapes.
 - [ ] **3.7 Carrier masking** `[P]` — weight tracking, MASK_UPDATE/ACK,
   RLE, pilot-skip interpolation, demote-on-ratio.
   *Gate: two-modem `mask_excision` scenario (injected tone → recovery).*

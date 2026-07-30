@@ -18,6 +18,7 @@
 
 #include "link/amc.hpp"
 #include "link/arq.hpp"
+#include "link/probe.hpp"
 #include "link/frame.hpp"
 #include "link/fsm.hpp"
 #include "link/handshake.hpp"
@@ -84,6 +85,7 @@ class LinkEngine {
   ArqRx arqRx_;
   std::optional<Amc> amc_;
   HarqChase harq_;  // chase soft-combining across retransmissions
+  ProbeGate probeGate_;
   // Mode-control ownership: the session INITIATOR drives AMC decisions
   // and MODE_CHANGE; the responder's channel view reaches it via ACK SNR
   // reports. Two independent controllers would collide mid-air (observed:

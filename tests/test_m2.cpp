@@ -242,4 +242,29 @@ TEST_CASE(m3_mode_pin_scenario) {
   CHECK_EQ(p.a.sessionMode(), p.b.sessionMode());
 }
 
+TEST_CASE(m3_promotion_through_probe) {
+  // Rich SNR: session starts at the M10 initial cap; promotion into M11
+  // must go through a clean PROBE/PROBE_ACK exchange, and the committed
+  // modes never diverge.
+  Pair p(35.0, 66);
+  CHECK(p.connect());
+  CHECK(p.a.sessionMode() <= 10);
+  std::vector<uint8_t> blob(16 * 1024);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 7 + 1);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  int best = p.a.sessionMode();
+  for (int i = 0; i < 5000 && got.size() < blob.size(); ++i) {
+    p.step();
+    best = std::max(best, p.a.sessionMode());
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == blob);
+  std::printf("promotion: best mode reached M%d\n", best);
+  CHECK(best >= 11);  // crossed the probe gate
+  for (int i = 0; i < 12; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), p.b.sessionMode());
+}
+
 SKYTEST_MAIN
