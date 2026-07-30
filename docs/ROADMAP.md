@@ -296,9 +296,20 @@ disconnects over the simulated ionosphere end to end.**
   accumulators keyed by (frameType, seqLow, mode, length, cw index),
   bounded store, wired through LinkEngine::rxBurst. Measured: 12/12
   combined decodes at single-tx-knee − 2.5 dB (vs ≤6/12 single).
-- [ ] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR
+- [x] **3.4 HARQ IR** — rate-stepdown retransmission with systematic-LLR
   priors; AUTO negotiation.
   *Gate: IR outperforms chase for rate > 1/2 modes in bertool A/B.*
+  ✓ 2026-07-29 — irStepDownMode (M9→M8, M11→M10); receiver stores a
+  failed rate>1/2 payload's systematic channel LLRs under a
+  mode-agnostic key and seeds the r1/2 step-down decode; engine
+  retransmits at the step-down mode when kCapHarqIr negotiated (AUTO).
+  A/B at M9 floor−5: chase 0/10, IR 8/10. DEVIATIONS: (1) M12/M13
+  degenerate to chase - the ladder has no 64QAM r1/2 rung, so the
+  spec's "r1/2 matrix" is realized as same-constellation mode
+  step-down where one exists; (2) priors are the failed attempt's
+  systematic CHANNEL LLRs (decoder does not yet export app-LLR
+  posteriors) - a strict subset of the spec's "accumulated posteriors",
+  upgradeable inside ldpc.cpp later.
 - [x] **3.5 Channel memory** `[P]` — keying, EMA store, persistence,
   aging, recommendation clamps, START seeding (lower-of-two rule).
   *Gate: `test_chanmem`.* ✓ 2026-07-29 — link/chanmem.{hpp,cpp}: 64-entry

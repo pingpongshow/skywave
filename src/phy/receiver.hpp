@@ -40,6 +40,21 @@ class HarqChase {
            (uint64_t(cwIndex) << 40);
   }
 
+  // --- IR (rate-stepdown) info-bit priors -----------------------------
+  // A failed rate>1/2 payload stores its systematic-bit channel LLRs in
+  // stream order under a MODE-AGNOSTIC key; the r1/2 step-down
+  // retransmission adds them to the systematic positions of its decode.
+  // Chase never touches these (same-rate retransmissions combine full
+  // codeword LLRs above instead).
+  static uint64_t infoKey(uint8_t frameType, uint8_t seqLow,
+                          uint16_t length) {
+    return 0x8000000000000000ull | uint64_t(frameType) |
+           (uint64_t(seqLow) << 8) | (uint64_t(length) << 24);
+  }
+  void storeInfoPriors(uint64_t key, std::vector<float> llrs);
+  const std::vector<float>* infoPriors(uint64_t key) const;
+  void dropInfoPriors(uint64_t key) { priors_.erase(key); }
+
  private:
   struct Entry {
     std::vector<float> llr;
@@ -47,8 +62,15 @@ class HarqChase {
     uint64_t stamp = 0;
   };
   std::unordered_map<uint64_t, Entry> store_;
+  std::unordered_map<uint64_t, std::vector<float>> priors_;
   uint64_t stampCtr_ = 0;
 };
+
+// The r1/2 step-down mode for IR retransmissions: M9->M8, M11->M10.
+// Returns the input mode when no same-constellation r1/2 rung exists
+// (M12/M13: 64QAM r1/2 is not in the ladder - IR degenerates to chase,
+// documented deviation) or the mode is already r1/2.
+int irStepDownMode(int mode);
 
 struct RxFrameResult {
   PhyHeader header;

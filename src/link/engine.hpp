@@ -92,6 +92,8 @@ class LinkEngine {
   bool isInitiator_ = false;
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
+  uint16_t sessionCaps_ = 0;      // committed capability intersection
+  bool harqIr() const { return (sessionCaps_ & kCapHarqIr) != 0; }
   // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK).
   int pendingMode_ = -1;
   uint8_t modeEpoch_ = 0;

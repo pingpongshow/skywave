@@ -97,14 +97,43 @@ std::vector<uint8_t> bitsToBytes(std::span<const uint8_t> bits) {
   return out;
 }
 
+// Deinterleave, optionally add IR info-bit priors at the systematic
+// positions (priorOff = this codeword's offset into the payload's info
+// stream), decode. sysOut (optional) receives the deinterleaved
+// systematic-bit channel LLRs for prior storage.
 bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
-                    std::vector<uint8_t>& info) {
+                    std::vector<uint8_t>& info,
+                    std::span<const float> priors = {}, size_t priorOff = 0,
+                    std::vector<float>* sysOut = nullptr) {
   std::vector<float> llr;
   deinterleave<float>(llrInterleaved, llr);
+  if (sysOut) {
+    sysOut->assign(llr.begin(), llr.begin() + code.k());
+  }
+  for (size_t i = 0;
+       i < size_t(code.k()) && priorOff + i < priors.size(); ++i) {
+    llr[i] += priors[priorOff + i];
+  }
   return code.decode(llr, info);
 }
 
 }  // namespace
+
+int irStepDownMode(int mode) {
+  if (mode == 9) return 8;    // QPSK r3/4 -> QPSK r1/2
+  if (mode == 11) return 10;  // 16QAM r3/4 -> 16QAM r1/2
+  return mode;                // r1/2 already, or 64QAM (no r1/2 rung)
+}
+
+void HarqChase::storeInfoPriors(uint64_t key, std::vector<float> llrs) {
+  if (priors_.size() > 16) priors_.clear();  // bounded
+  priors_[key] = std::move(llrs);
+}
+
+const std::vector<float>* HarqChase::infoPriors(uint64_t key) const {
+  auto it = priors_.find(key);
+  return it == priors_.end() ? nullptr : &it->second;
+}
 
 int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
   if (store_.size() > 64) {
@@ -228,7 +257,23 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     restInfoBits.reserve(restBits);
     size_t remaining = restBits;
     size_t cw = 0;
-    while (remaining > 0 && ok) {
+    // IR (rate-stepdown): an r1/2 frame may be a step-down retransmission
+    // of an earlier rate>1/2 attempt - add that attempt's stored
+    // systematic priors; a failing rate>1/2 payload stores its systematic
+    // channel LLRs so the step-down decode can use them.
+    const uint64_t ikey =
+        HarqChase::infoKey(hdr->frameType, hdr->seqLow, hdr->length);
+    const bool halfRate = md.rate.num == 1 && md.rate.den == 2;
+    std::span<const float> priors{};
+    if (harq && halfRate) {
+      if (const auto* p = harq->infoPriors(ikey)) {
+        if (p->size() == restBits) priors = *p;
+      }
+    }
+    const bool collectPriors = harq && !halfRate;
+    std::vector<float> sysLlrs;
+    size_t priorOff = 0;
+    while (remaining > 0 && (ok || harq)) {
       const LdpcCode& pcode =
           LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
       std::vector<float> llr;
@@ -238,7 +283,9 @@ std::optional<RxFrameResult> receiveFrame(Family family,
         break;
       }
       std::vector<uint8_t> info;
-      bool dec = decodeCodeword(pcode, llr, info);
+      std::vector<float> sys;
+      bool dec = decodeCodeword(pcode, llr, info, priors, priorOff,
+                                collectPriors ? &sys : nullptr);
       if (harq) {
         const uint64_t key = HarqChase::frameKey(
             hdr->frameType, hdr->seqLow, hdr->mode, hdr->length,
@@ -246,7 +293,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
         if (!dec) {
           // Chase: add earlier receptions' LLRs and retry once.
           if (harq->combine(key, llr) > 1) {
-            dec = decodeCodeword(pcode, llr, info);
+            dec = decodeCodeword(pcode, llr, info, priors, priorOff);
           }
           if (dec) harq->onDecodeSuccess(key);
         } else {
@@ -260,10 +307,21 @@ std::optional<RxFrameResult> receiveFrame(Family family,
       }
       if (!dec) ok = false;
       size_t want = std::min(remaining, size_t(pcode.k()));
+      if (collectPriors && sys.size() >= want) {
+        sysLlrs.insert(sysLlrs.end(), sys.begin(), sys.begin() + long(want));
+      }
       restInfoBits.insert(restInfoBits.end(), info.begin(),
                           info.begin() + long(want));
       remaining -= want;
+      priorOff += want;
       ++cw;
+    }
+    if (harq) {
+      if (ok) {
+        harq->dropInfoPriors(ikey);
+      } else if (collectPriors && sysLlrs.size() == restBits) {
+        harq->storeInfoPriors(ikey, std::move(sysLlrs));
+      }
     }
     if (ok) {
       auto bytes = bitsToBytes(restInfoBits);

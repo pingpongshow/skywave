@@ -102,12 +102,12 @@ void LinkEngine::drainFsmActions(double /*now*/) {
         }
         break;
       }
-      case FsmAction::SendStart:
-        queueControl(LinkType::Start,
-                     makeStart(cfg_.policy, lastCallAck_, lastRxQuality_)
-                         .pack(),
-                     ChirpSig::Calling, 4);
+      case FsmAction::SendStart: {
+        StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
+        sessionCaps_ = s.caps;
+        queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
         break;
+      }
       case FsmAction::SendStartAck:
         // mode_ was fixed in onFrame when START was evaluated.
         queueControl(LinkType::StartAck, StartAckBody{uint8_t(mode_), {}}.pack(),
@@ -181,8 +181,12 @@ void LinkEngine::pumpData(double now) {
     f.env.sequence = r->seq;
     f.env.ackBase = arqRx_.ackBase();
     f.body = DataBody{r->rv, r->payload}.pack();
-    f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
-    f.mode = mode_;
+    // HARQ AUTO: IR when both peers advertise it - the retransmission
+    // steps down to the same-constellation r1/2 mode (M9->M8, M11->M10)
+    // and the receiver seeds systematic priors from the failed attempt.
+    // Modes without an r1/2 rung (and r1/2 modes) stay put = chase.
+    f.mode = harqIr() ? irStepDownMode(mode_) : mode_;
+    f.sig = f.mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
     outQueue_.push_back(std::move(f));
     return;
   }
@@ -345,7 +349,10 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (!start) return;
       auto r = evaluateStart(cfg_.policy, lastCall_, *start, q);
       const bool ok = std::holds_alternative<StartAckBody>(r);
-      if (ok) mode_ = std::get<StartAckBody>(r).finalMode;
+      if (ok) {
+        mode_ = std::get<StartAckBody>(r).finalMode;
+        sessionCaps_ = start->caps;
+      }
       fsm_.rxStart(now, ok);
       break;
     }
