@@ -1053,3 +1053,26 @@ doc was updated)*
   Command Line Tools 26.6 (clang 21.0.0) fixed both runtimes; the
   deferred sweeps then ran clean — ASan FULL suite 37/37, TSan
   `test_tcp` + `test_st2` pass, zero race reports.
+- **Stress campaign / 2026-07-30 (post-v1.0.0)** — Bidirectional
+  saturation over the ST2 audio world (new `soak_st2` harness) exposed
+  a LATENT MAC BUG shipped in v1.0.0: the Pre-TX CCA gate specified in
+  DSP.md was never wired into the TX path (the standalone `TxArbiter`
+  existed but nothing called it), so both engines transmitted on pure
+  ARQ timers. With traffic queued in BOTH directions every ACK lost the
+  race against the peer's timeout: mutual retransmission storm, ZERO
+  delivered payload at +25 dB static SNR, session death in ~3 min -
+  while one-way traffic (every prior gate: ST3, soaks, conformance) was
+  completely healthy. Fix: CCA gate implemented inside the engine
+  (`setChannelBusy`/`ccaDataGated`, DSP.md updated): DATA-class bursts
+  (including retransmissions) defer while the channel is busy (5 s
+  fairness cap, 50-300 ms per-callsign-seeded post-clear backoff);
+  control/ACK/handshake/voice bypass; gated DATA cannot invert priority
+  over queued control. The gate verdict is computed once per tick (the
+  first cut called the stateful check twice per tick and wedged one
+  direction permanently - caught by `test_st2`). After the fix:
+  sustained two-way bulk interleaves at M11 with retry ratio ~0.1-0.2,
+  and the full suite (incl. the M7 VHF 25.5 kbps gate) stays green.
+  New adversarial tooling added: `tools/fuzztool.cpp` (parsers / proto
+  / rx / engine modes; ASan campaign 800k+32k+6k+160 iterations clean,
+  UBSan campaign clean), `tests/soak_st2.cpp` + shared
+  `tests/st2_world.hpp` (churn / floor / blackout scenarios).

@@ -205,11 +205,25 @@ Per-family-band median spectrum tracker (10 s memory) reporting:
 
 ### Pre-TX CCA Gate
 
-- ordinary originate TX blocked while busy; polls at 250 ms up to a 5 s
-  cap, then proceeds anyway (HF fairness, not CSMA perfection)
-- bypasses: connected urgent control (`ACK/NAK`, `START_ACK`, `DISC_ACK`,
-  `MASK_ACK`), active handshake continuation, robust-tier recovery frames
-- config: `[modem] pre_tx_cca = true|false` (reporting stays on when off)
+Implemented INSIDE the link engine (`LinkEngine::setChannelBusy` +
+`ccaDataGated`): the worker feeds the fused energy detector's verdict
+each chunk, and the engine holds DATA-class emissions (new segments AND
+retransmissions, which otherwise burn ACK timers parked in the TX
+queue) while the channel is busy.
+
+- DATA bursts blocked while busy, up to a 5 s fairness cap, then one
+  burst proceeds anyway (HF politeness, not CSMA perfection)
+- on channel-clear after a defer: 50-300 ms randomized backoff (seeded
+  per callsign) so the two ends of a saturated bidirectional link
+  interleave instead of keying together the instant the other stops -
+  without this, two-way bulk collapses into a mutual retransmission
+  storm (zero delivered payload at +25 dB; found by the ST2 soak)
+- bypasses: everything that is not `DATA` - ACK/handshake/mode/mask/
+  probe/disconnect control, voice frames, broadcast/beacon/CW - short,
+  reactive, naturally gap-timed; a gated DATA frame never blocks a
+  control frame queued behind it (no priority inversion)
+- engine-level tests and bertool never feed the busy flag: the gate is
+  inert there by construction
 
 ## CW ID Renderer
 

@@ -390,6 +390,7 @@ size_t ModemWorker::processChunk() {
   const double now = nowSec();
   const size_t availBefore = rx_.readAvailable();
   pumpRxLocked(now);
+  engine_->setChannelBusy(chanBusy_);  // Pre-TX CCA gate input
   pumpTxLocked(now);
   drainEngineOutputsLocked();
   updateStateEventsLocked();

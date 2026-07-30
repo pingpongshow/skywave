@@ -90,6 +90,42 @@ LinkEngine::LinkEngine(EngineConfig cfg)
       arqRx_(8) {
   deepIdleSec_ =
       std::max(120.0, 10.0 * fsmConfigFor(cfg_.policy).timings.callSec);
+  // CCA backoff jitter: per-station seed so two saturated stations
+  // don't lock into synchronized proceed times.
+  ccaRng_ = 0x9e3779b97f4a7c15ull;
+  for (char c : cfg_.policy.ownCall) ccaRng_ = ccaRng_ * 131 + uint64_t(c);
+}
+
+// Pre-TX CCA gate: true while DATA-class emission must hold. The busy
+// flag is the worker's fused energy detector; without a worker feeding
+// it (engine-level tests, bertool) the gate never engages.
+bool LinkEngine::ccaDataGated(double now) {
+  if (chanBusy_) {
+    ccaProceedAt_ = -1.0;
+    if (ccaWaitStart_ < 0.0) ccaWaitStart_ = now;
+    if (now - ccaWaitStart_ >= 5.0) {
+      // Fairness cap (HF politeness, not CSMA): proceed anyway rather
+      // than starve behind a continuous foreign carrier.
+      ccaWaitStart_ = -1.0;
+      return false;
+    }
+    return true;
+  }
+  if (ccaWaitStart_ >= 0.0 && ccaProceedAt_ < 0.0) {
+    // Channel just cleared after a defer: short randomized backoff so
+    // the two ends of a saturated link interleave instead of keying
+    // together the instant the other stops.
+    ccaRng_ ^= ccaRng_ >> 12;
+    ccaRng_ ^= ccaRng_ << 25;
+    ccaRng_ ^= ccaRng_ >> 27;
+    ccaProceedAt_ = now + 0.05 + 0.25 * double(ccaRng_ % 1000) / 1000.0;
+  }
+  if (ccaProceedAt_ >= 0.0) {
+    if (now < ccaProceedAt_) return true;
+    ccaWaitStart_ = -1.0;
+    ccaProceedAt_ = -1.0;
+  }
+  return false;
 }
 
 bool LinkEngine::idleClean() const {
@@ -750,6 +786,10 @@ void LinkEngine::drainFsmActions(double now) {
 
 void LinkEngine::pumpData(double now) {
   if (fsm_.state() != FsmState::Connected) return;
+  // While the CCA gate holds, leave retransmits and new segments in the
+  // ARQ/proto layers: frames pulled now would burn their ACK timers
+  // sitting in the TX queue behind a busy channel.
+  if (ccaGatedNow_) return;
   static const bool arqDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
   // Retransmits first (arbiter priority), then new segments.
   if (auto r = arqTx_.nextRetransmit(now)) {
@@ -963,6 +1003,7 @@ bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
+  ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);
@@ -1202,8 +1243,19 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     }
     return std::nullopt;
   }
-  OutFrame f = std::move(outQueue_.front());
-  outQueue_.pop_front();
+  auto pick = outQueue_.begin();
+  if (pick->env.type == LinkType::Data && ccaGatedNow_) {
+    // Data holds for the gate, but a control frame queued behind it
+    // must not suffer priority inversion: emit the first non-DATA
+    // frame instead, or nothing this tick.
+    pick = std::find_if(outQueue_.begin(), outQueue_.end(),
+                        [](const OutFrame& q) {
+                          return q.env.type != LinkType::Data;
+                        });
+    if (pick == outQueue_.end()) return std::nullopt;
+  }
+  OutFrame f = std::move(*pick);
+  outQueue_.erase(pick);
   if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
     // Refresh ACK feedback at transmit time - see the ackPending_ note.
     f.env.ackBase = arqRx_.ackBase();

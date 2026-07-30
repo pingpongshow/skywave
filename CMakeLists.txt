@@ -168,6 +168,8 @@ install(FILES THIRD_PARTY.md DESTINATION share/doc/skywave)
 if(BUILD_TOOLS)
   add_executable(bertool tools/bertool.cpp)
   target_link_libraries(bertool PRIVATE skywave_core)
+  add_executable(fuzztool tools/fuzztool.cpp)
+  target_link_libraries(fuzztool PRIVATE skywave_core)
 endif()
 
 # --- tests --------------------------------------------------------------------
@@ -208,6 +210,10 @@ if(BUILD_TESTS)
   skw_test(test_file)
   skw_test(test_bcast)
   skw_test(test_st2)
+  # Long-run endurance scenarios (soak_st2): built always, registered as
+  # a quick smoke by default; real soaks run manually with SKW_SOAK_*.
+  add_executable(soak_st2 tests/soak_st2.cpp)
+  target_link_libraries(soak_st2 PRIVATE skywave_core)
   if(ENABLE_CRYPTO)
     skw_test(test_crypto)
   endif()

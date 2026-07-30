@@ -151,6 +151,12 @@ class LinkEngine {
   }
 
   // --- scheduling ------------------------------------------------------
+  // Pre-TX CCA gate (DSP.md): the worker feeds the fused busy-detector
+  // verdict each chunk. DATA-class bursts (new + retransmit) defer
+  // while the channel is busy, with a fairness cap and a short
+  // randomized post-clear backoff; control / handshake / ACK / voice
+  // frames bypass (urgent, short, naturally gap-timed).
+  void setChannelBusy(bool busy) { chanBusy_ = busy; }
   // Advance timers and, if a burst is due, return its baseband samples.
   std::optional<std::vector<cfloat>> tick(double now);
   // Feed a received capture (burst + padding); engine decodes and
@@ -251,6 +257,13 @@ class LinkEngine {
   int modeChangeTries_ = 0;
   uint16_t sessionId_ = 0;
   bool ackPending_ = false;       // send an ACK on the next tick
+  // Pre-TX CCA gate state (setChannelBusy).
+  bool chanBusy_ = false;
+  double ccaWaitStart_ = -1.0;   // busy-defer began (fairness cap)
+  double ccaProceedAt_ = -1.0;   // post-clear jittered proceed time
+  uint64_t ccaRng_ = 0;          // per-station jitter (desyncs peers)
+  bool ccaGatedNow_ = false;     // per-tick cached verdict
+  bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
   CallAckBody lastCallAck_{};     // initiator: stored for makeStart
   CallBody lastCall_{};           // responder: stored for evaluateStart

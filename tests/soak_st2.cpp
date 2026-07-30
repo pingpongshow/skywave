@@ -1,0 +1,252 @@
+// soak_st2: long impaired-channel endurance scenarios over the ST2 world
+// (TESTING.md). Simulated time - hours of link life run in minutes of
+// wall clock, through the full worker stack and the radio-chain
+// emulator. The pass criterion is byte-exact delivery + no stall/wedge
+// while the channel is usable, with session loss and reconnect allowed
+// (and exercised) when it is not.
+//
+// Scenarios (env SKW_SOAK_SCENARIO):
+//   churn    - SNR staircases 30 -> -14 -> 30 dB with random jumps while
+//              the channel preset rotates static/good/moderate; AMC must
+//              ride the whole ladder, sessions may die at the bottom but
+//              must recover, and every delivered byte must be exact.
+//   floor    - hold SKW_SOAK_SNR (default +1 dB) on CCIR Moderate:
+//              retransmission machinery under continuous load.
+//   blackout - good channel, but periodic 10-60 s total dead air in both
+//              directions mid-transfer: ARQ retry budgets, keepalives,
+//              reconnect, and stream continuity.
+// Env: SKW_SOAK_SIMSEC (default 900), SKW_SOAK_SEED, SKW_SOAK_SNR.
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "st2_world.hpp"
+
+using namespace skw;
+using namespace st2w;
+
+namespace {
+
+struct Gen {  // deterministic per-direction stream
+  uint64_t s;
+  std::vector<uint8_t> sent;
+  explicit Gen(uint64_t seed) : s(seed) {}
+  std::vector<uint8_t> chunk(size_t n) {
+    std::vector<uint8_t> v(n);
+    for (auto& b : v) {
+      s ^= s << 13;
+      s ^= s >> 7;
+      s ^= s << 17;
+      b = uint8_t(s >> 32);
+    }
+    sent.insert(sent.end(), v.begin(), v.end());
+    return v;
+  }
+};
+
+struct Rng {
+  uint64_t s;
+  explicit Rng(uint64_t seed) : s(seed ? seed : 1) {}
+  uint64_t next() {
+    s ^= s >> 12;
+    s ^= s << 25;
+    s ^= s >> 27;
+    return s * 0x2545f4914f6cdd1dull;
+  }
+  uint32_t u32(uint32_t bound) { return bound ? uint32_t(next() % bound) : 0; }
+};
+
+int fail(const char* what, double simSec) {
+  std::printf("SOAK FAIL at t=%.0fs: %s\n", simSec, what);
+  return 1;
+}
+
+void applyPreset(World& w, int preset, double snrDb) {
+  for (Shuttle* sh : {&w.ab, &w.ba}) {
+    ChansimParams& c = sh->chain.channel;
+    const uint64_t seed = sh->chain.seed;
+    switch (preset) {
+      case 0:
+        c = ChansimParams{};
+        c.fading = false;
+        break;
+      case 1:
+        c = ccirGood();
+        break;
+      default:
+        c = ccirModerate();
+        break;
+    }
+    c.snr3kDb = snrDb;
+    sh->chain.seed = seed;
+  }
+}
+
+const char* presetName(int p) {
+  return p == 0 ? "static" : p == 1 ? "good" : "moderate";
+}
+
+}  // namespace
+
+int main() {
+  const char* e;
+  std::string scen = (e = std::getenv("SKW_SOAK_SCENARIO")) ? e : "churn";
+  const double simSecTarget =
+      (e = std::getenv("SKW_SOAK_SIMSEC")) ? std::atof(e) : 900.0;
+  const uint64_t seed =
+      (e = std::getenv("SKW_SOAK_SEED")) ? uint64_t(std::atoll(e)) : 11;
+  const double floorSnr =
+      (e = std::getenv("SKW_SOAK_SNR")) ? std::atof(e) : 1.0;
+
+  Rng rng(seed * 40503 + 7);
+  double snr = scen == "churn" ? 30.0 : scen == "floor" ? floorSnr : 20.0;
+  int preset = scen == "floor" ? 2 : scen == "blackout" ? 1 : 0;
+
+  World w(snr, seed);
+  applyPreset(w, preset, snr);
+  Gen gA(seed * 7 + 1), gB(seed * 7 + 2);
+
+  if (w.cmd(w.a, "CONNECT K6XYZ").rfind("CONNECT", 0) != 0) {
+    return fail("CONNECT refused", 0);
+  }
+  if (!w.waitState(w.a, "CONNECTED", 4000)) {
+    return fail("initial connect", 0);
+  }
+
+  const double t0 = double(w.clk.nowUs()) * 1e-6;
+  // Churn staircase state.
+  double dwellLeft = 60.0;
+  int snrDir = -1;
+  // Blackout scheduler state.
+  double boPhase = 90.0;
+  bool boActive = false;
+  int boIdx = 0;
+  const double boLens[4] = {10.0, 25.0, 45.0, 60.0};
+  // Progress watchdog.
+  size_t lastDeliveredSum = 0;
+  double lastProgressAt = 0.0, lastReportAt = 0.0, lastPollAt = 0.0;
+  double usableSince = -1.0;  // sim time snr has been >= 5 dB
+  size_t verifiedA = 0, verifiedB = 0;
+  int reconnects = 0;
+
+  auto simNow = [&] { return double(w.clk.nowUs()) * 1e-6 - t0; };
+
+  while (simNow() < simSecTarget) {
+    w.round();
+    const double now = simNow();
+
+    // --- keep both directions loaded (<= 4 KiB in flight each) ---------
+    if (!boActive) {
+      if (gA.sent.size() < w.b.dataAcc.size() + 4096) {
+        auto c = gA.chunk(256 + rng.u32(768));
+        ::send(w.a.dataFd, c.data(), c.size(), 0);
+      }
+      if (gB.sent.size() < w.a.dataAcc.size() + 4096) {
+        auto c = gB.chunk(256 + rng.u32(768));
+        ::send(w.b.dataFd, c.data(), c.size(), 0);
+      }
+    }
+
+    // --- verify newly delivered bytes (incremental, byte-exact) --------
+    if (w.b.dataAcc.size() > verifiedA) {
+      if (w.b.dataAcc.size() > gA.sent.size()) {
+        return fail("B received more than A sent", now);
+      }
+      if (std::memcmp(w.b.dataAcc.data() + verifiedA,
+                      gA.sent.data() + verifiedA,
+                      w.b.dataAcc.size() - verifiedA) != 0) {
+        return fail("A->B payload mismatch", now);
+      }
+      verifiedA = w.b.dataAcc.size();
+    }
+    if (w.a.dataAcc.size() > verifiedB) {
+      if (w.a.dataAcc.size() > gB.sent.size()) {
+        return fail("A received more than B sent", now);
+      }
+      if (std::memcmp(w.a.dataAcc.data() + verifiedB,
+                      gB.sent.data() + verifiedB,
+                      w.a.dataAcc.size() - verifiedB) != 0) {
+        return fail("B->A payload mismatch", now);
+      }
+      verifiedB = w.a.dataAcc.size();
+    }
+
+    // --- scenario schedule ---------------------------------------------
+    if (scen == "churn") {
+      dwellLeft -= kRoundSec;
+      if (dwellLeft <= 0.0) {
+        dwellLeft = 45.0 + double(rng.u32(105));
+        if (rng.u32(5) == 0) {
+          snr += double(rng.u32(9)) - 4.0;  // random jump
+        } else {
+          snr += snrDir * (2.0 + double(rng.u32(3)));
+        }
+        if (snr <= -14.0) {
+          snr = -14.0;
+          snrDir = 1;
+        }
+        if (snr >= 30.0) {
+          snr = 30.0;
+          snrDir = -1;
+        }
+        if (rng.u32(3) == 0) preset = int(rng.u32(3));
+        applyPreset(w, preset, snr);
+      }
+    } else if (scen == "blackout") {
+      boPhase -= kRoundSec;
+      if (boPhase <= 0.0) {
+        boActive = !boActive;
+        boPhase = boActive ? boLens[boIdx++ % 4] : 90.0;
+        w.ab.drop = w.ba.drop = boActive;
+      }
+    }
+
+    // --- reconnect + watchdog (poll state sparingly: cmd() runs rounds)
+    if (now - lastPollAt > 20.0) {
+      lastPollAt = now;
+      const std::string sa = w.cmd(w.a, "STATE");
+      if (sa == "STATE LISTENING" || sa == "STATE IDLE") {
+        w.cmd(w.a, "CONNECT K6XYZ");
+        ++reconnects;
+      }
+      const size_t sum = w.a.dataAcc.size() + w.b.dataAcc.size();
+      if (sum > lastDeliveredSum) {
+        lastDeliveredSum = sum;
+        lastProgressAt = now;
+      }
+      const bool usable = snr >= 5.0 && !boActive;
+      if (usable && usableSince < 0.0) usableSince = now;
+      if (!usable) usableSince = -1.0;
+      // Stall: a usable channel for 5+ minutes and zero delivered bytes.
+      if (usableSince >= 0.0 && now - usableSince > 300.0 &&
+          now - lastProgressAt > 300.0) {
+        return fail("stall: usable channel but no progress for 300 s", now);
+      }
+    }
+
+    if (now - lastReportAt > 120.0) {
+      lastReportAt = now;
+      std::printf(
+          "SOAK t=%5.0fs snr=%5.1f %-8s bo=%d A->B=%zu B->A=%zu recon=%d\n",
+          now, snr, presetName(preset), boActive ? 1 : 0, w.b.dataAcc.size(),
+          w.a.dataAcc.size(), reconnects);
+      if (std::getenv("SKW_SOAK_DEBUG")) {
+        std::printf("  A %s\n  B %s\n", w.cmd(w.a, "STATUS").c_str(),
+                    w.cmd(w.b, "STATUS").c_str());
+      }
+      std::fflush(stdout);
+    }
+  }
+
+  // Final: at least SOME two-way traffic must have flowed, byte-exact.
+  if (w.b.dataAcc.size() < 4096 || w.a.dataAcc.size() < 4096) {
+    return fail("too little delivered over the whole run", simNow());
+  }
+  std::printf(
+      "SOAK PASS %s: %.0f sim-s, A->B %zu B, B->A %zu B, %d reconnects\n",
+      scen.c_str(), simSecTarget, w.b.dataAcc.size(), w.a.dataAcc.size(),
+      reconnects);
+  return 0;
+}
