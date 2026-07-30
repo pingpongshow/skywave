@@ -33,6 +33,11 @@ class ArqTx {
   // ACK timeout = burst_airtime + expected_ack_airtime + 3 s, [4, 45].
   void setTimeout(double sec);
   double timeoutSec() const { return timeoutSec_; }
+  // Un-aired audio queued AHEAD of any frame sent now (worker TX ring +
+  // staging). A frame cannot possibly be ACKed before its own queue
+  // delay has passed - arming deadlines without it made every timer
+  // fire early under sustained TX and snowballed retransmissions.
+  void setExtraDelay(double sec) { extraSec_ = sec < 0.0 ? 0.0 : sec; }
 
   bool canSend() const { return int(pending_.size()) < window_; }
   size_t inFlight() const { return pending_.size(); }
@@ -77,6 +82,7 @@ class ArqTx {
   int window_;
   int maxRetries_;
   double timeoutSec_ = 10.0;
+  double extraSec_ = 0.0;  // TX-queue delay ahead of newly armed timers
   double deadline_ = 0.0;  // 0 = no timer armed
   uint16_t nextSeq_ = 0;
   bool failed_ = false;

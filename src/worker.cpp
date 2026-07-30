@@ -302,6 +302,12 @@ void ModemWorker::pumpTxLocked(double now) {
       burst = buildFrameBaseband(tp);
     }
     if (burst) {
+      static const bool txDbg = getenv("SKW_TX_DEBUG") != nullptr;
+      if (txDbg) {
+        fprintf(stderr, "%s TXBURST t=%.1f n=%zu (%.2fs)\n",
+                cfg_.callsign.c_str(), now, burst->size(),
+                double(burst->size()) / kFsBaseband);
+      }
       // PTT lead/tail: silence padding the rig's keying swallows.
       const size_t lead = size_t(cfg_.pttLeadMs) * kFsBaseband / 1000;
       const size_t tail = size_t(cfg_.pttTailMs) * kFsBaseband / 1000;
@@ -391,6 +397,9 @@ size_t ModemWorker::processChunk() {
   const size_t availBefore = rx_.readAvailable();
   pumpRxLocked(now);
   engine_->setChannelBusy(chanBusy_);  // Pre-TX CCA gate input
+  engine_->setTxQueueSec(
+      (double(txPending_.size() - txPendingOff_) + double(tx_.readAvailable())) /
+      double(kFsAudio));
   pumpTxLocked(now);
   drainEngineOutputsLocked();
   updateStateEventsLocked();

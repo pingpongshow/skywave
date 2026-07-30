@@ -1076,3 +1076,20 @@ doc was updated)*
   / rx / engine modes; ASan campaign 800k+32k+6k+160 iterations clean,
   UBSan campaign clean), `tests/soak_st2.cpp` + shared
   `tests/st2_world.hpp` (churn / floor / blackout scenarios).
+- **Stress campaign / 2026-07-30, discovery #2** — Making the ST2 world
+  drain TX audio at REAL TIME (it previously let a modem transmit ~100x
+  faster than wall clock, which had been masking queueing physics)
+  exposed a second latent production bug: the engine emitted bursts
+  into the worker's 8 s TX ring with ARQ deadlines armed against
+  'now', so under sustained load a frame's ACK timer could expire
+  BEFORE the frame had even finished queueing for air - spurious
+  timeouts snowballed retransmissions until the transmitter ran at
+  100% duty with zero goodput (observed as a 110 s continuous
+  transmission in the dropout/starvation scenario). Fixes: (1) the
+  worker reports its TX backlog (staging + ring) to the engine each
+  chunk (`LinkEngine::setTxQueueSec`), and every ArqTx deadline arms
+  as `timeout + queue delay` (`ArqTx::setExtraDelay`); (2) the ST2
+  shuttle gained a 12 s capture safety cap. After the fix the faults
+  scenario delivers byte-exact again and the full suite (incl. the
+  VHF 25.5 kbps gate) is green. `SKW_TX_DEBUG` / `SKW_CCA_DEBUG` added
+  to the debug env-var set.

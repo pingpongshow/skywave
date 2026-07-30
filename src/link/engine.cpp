@@ -100,6 +100,13 @@ LinkEngine::LinkEngine(EngineConfig cfg)
 // flag is the worker's fused energy detector; without a worker feeding
 // it (engine-level tests, bertool) the gate never engages.
 bool LinkEngine::ccaDataGated(double now) {
+  static const bool dbg = getenv("SKW_CCA_DEBUG") != nullptr;
+  if (dbg) {
+    fprintf(stderr, "%s cca t=%.1f busy=%d wait=%.1f proceed=%.1f q=%zu inflight=%zu backlog=%zu\n",
+            cfg_.policy.ownCall.c_str(), now, chanBusy_ ? 1 : 0,
+            ccaWaitStart_, ccaProceedAt_, outQueue_.size(),
+            arqTx_.inFlight(), protoTx_.backlogBytes());
+  }
   if (chanBusy_) {
     ccaProceedAt_ = -1.0;
     if (ccaWaitStart_ < 0.0) ccaWaitStart_ = now;
@@ -1004,6 +1011,7 @@ bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
   ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
+  arqTx_.setExtraDelay(txQueueSec_);
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);

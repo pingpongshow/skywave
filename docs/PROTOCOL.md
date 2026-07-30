@@ -248,7 +248,12 @@ Multi-frame bursts use the PHY **burst container**
 ([WAVEFORM.md](WAVEFORM.md)) — one preamble/sync/header for the whole
 burst, link frames packed back-to-back inside. The window follows the
 COMMITTED mode across `MODE_CHANGE` (resizing mid-session; shrink only
-limits new sends). On the **VHF-FM band profile** the top rungs
+limits new sends). ACK deadlines arm as `timeout + TX-queue delay`:
+the worker reports how much already-emitted audio is still waiting in
+its TX path, since a frame sent behind that backlog cannot possibly be
+ACKed before the backlog airs (without this, sustained TX made every
+timer fire early and snowballed retransmissions). On the **VHF-FM band
+profile** the top rungs
 (`M13+`) additionally use a deep-pipe MAC: window 16, data codeword
 targets that fill the 4095-byte PHY cap (per-burst preamble overhead
 dominates top-rung throughput), and BATCHED feedback — one cumulative

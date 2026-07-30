@@ -157,6 +157,10 @@ class LinkEngine {
   // randomized post-clear backoff; control / handshake / ACK / voice
   // frames bypass (urgent, short, naturally gap-timed).
   void setChannelBusy(bool busy) { chanBusy_ = busy; }
+  // Seconds of already-emitted audio still waiting in the worker's TX
+  // path (staging + ring). Feeds ARQ deadline arming (a frame sent now
+  // airs only after this delay) - see ArqTx::setExtraDelay.
+  void setTxQueueSec(double s) { txQueueSec_ = s < 0.0 ? 0.0 : s; }
   // Advance timers and, if a burst is due, return its baseband samples.
   std::optional<std::vector<cfloat>> tick(double now);
   // Feed a received capture (burst + padding); engine decodes and
@@ -263,6 +267,7 @@ class LinkEngine {
   double ccaProceedAt_ = -1.0;   // post-clear jittered proceed time
   uint64_t ccaRng_ = 0;          // per-station jitter (desyncs peers)
   bool ccaGatedNow_ = false;     // per-tick cached verdict
+  double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
   CallAckBody lastCallAck_{};     // initiator: stored for makeStart

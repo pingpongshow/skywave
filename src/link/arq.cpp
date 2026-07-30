@@ -34,7 +34,7 @@ std::optional<uint16_t> ArqTx::send(std::vector<uint8_t> payload,
   p.seq = nextSeq_++;
   p.payload = std::move(payload);
   pending_.push_back(std::move(p));
-  if (deadline_ == 0.0) deadline_ = now + timeoutSec_;
+  if (deadline_ == 0.0) deadline_ = now + timeoutSec_ + extraSec_;
   return pending_.back().seq;
 }
 
@@ -97,7 +97,7 @@ void ArqTx::onAck(const AckBody& ack, double now) {
   }
 
   // Rearm/clear the timer.
-  deadline_ = pending_.empty() ? 0.0 : now + timeoutSec_;
+  deadline_ = pending_.empty() ? 0.0 : now + timeoutSec_ + extraSec_;
 }
 
 std::optional<ArqTx::Retransmit> ArqTx::nextRetransmit(double now) {
@@ -109,7 +109,7 @@ std::optional<ArqTx::Retransmit> ArqTx::nextRetransmit(double now) {
     p->inRetxQueue = false;
     ++p->retries;
     ++p->rv;
-    deadline_ = now + timeoutSec_;
+    deadline_ = now + timeoutSec_ + extraSec_;
     return Retransmit{p->seq, p->rv, p->payload};
   }
   return std::nullopt;
@@ -119,7 +119,7 @@ void ArqTx::tick(double now) {
   if (deadline_ == 0.0 || now < deadline_ || pending_.empty()) return;
   // ACK never came: requeue every in-flight frame, oldest first.
   for (auto& p : pending_) queueRetx(p);
-  deadline_ = now + timeoutSec_;
+  deadline_ = now + timeoutSec_ + extraSec_;
 }
 
 void ArqTx::resumeFrom(uint16_t peerNextSeq, double now) {
@@ -134,7 +134,7 @@ void ArqTx::resumeFrom(uint16_t peerNextSeq, double now) {
     p.inRetxQueue = false;
     queueRetx(p);
   }
-  deadline_ = pending_.empty() ? 0.0 : now + timeoutSec_;
+  deadline_ = pending_.empty() ? 0.0 : now + timeoutSec_ + extraSec_;
 }
 
 // -------------------------------------------------------------------- ArqRx

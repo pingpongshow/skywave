@@ -71,6 +71,9 @@ struct Shuttle {
       if (std::fabs(s) > 1e-5f) {
         acc.push_back(s);
         quiet = 0;
+        // Safety cap: sustained continuous TX must not accumulate an
+        // unbounded capture (the chain processes per capture).
+        if (acc.size() > size_t(12 * kFsAudio)) flush();
       } else if (!acc.empty()) {
         acc.push_back(s);
         if (++quiet > int(0.12 * kFsAudio)) flush();
@@ -179,16 +182,18 @@ struct World {
   }
 
   void moveAudio(Node& from, Node& to, Shuttle& sh) {
+    // REAL-TIME TX drain: a real audio driver consumes exactly one
+    // round of samples per round of wall clock. Draining the whole
+    // ring here let a modem transmit ~100x faster than real time -
+    // under two-way load the shuttle queue grew unboundedly, ACKs
+    // arrived tens of seconds late, and every ARQ timer fired first
+    // (found by the bidirectional saturation soak).
     float buf[8192];
-    size_t got;
-    size_t total = 0;
-    while ((got = from.txRing.read({buf, std::min(sizeof(buf) / 4,
-                                                  from.txRing.readAvailable())})) >
-           0) {
-      sh.push({buf, got});
-      total += got;
-      if (got < sizeof(buf) / 4) break;
-    }
+    static_assert(sizeof(buf) / sizeof(buf[0]) >= kRoundSamples);
+    const size_t got = from.txRing.read(
+        {buf, std::min(kRoundSamples, from.txRing.readAvailable())});
+    const size_t total = got;
+    if (got > 0) sh.push({buf, got});
     // The worker writes only bursts to its TX ring (a real audio driver
     // emits silence on its own): an empty ring for a few rounds marks
     // the burst end, so flush it through the radio chain.
