@@ -109,11 +109,12 @@ struct ModeDef {
 inline constexpr int kNumModes  = 14;   // M0..M13
 inline constexpr int kFirstMode = 4;    // lowest active mode in v1
 inline constexpr std::array<ModeDef, kNumModes> kModes = {{
-    // M0-M3: reserved CSS tier
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 1, false},
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 1, false},
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 1, false},
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 1, false},
+    // M0-M3: CSS deep tier. `spread` holds the spreading factor SF
+    // (2^SF chips per symbol); M0 is the deepest.
+    {Waveform::Css, Constellation::Qpsk, {4, 7}, 8, false},  // M0 SF8
+    {Waveform::Css, Constellation::Qpsk, {4, 7}, 7, false},  // M1 SF7
+    {Waveform::Css, Constellation::Qpsk, {4, 7}, 6, false},  // M2 SF6
+    {Waveform::Css, Constellation::Qpsk, {4, 7}, 5, false},  // M3 SF5
     // M4-M13: unified spread-OFDM ladder
     {Waveform::Ofdm, Constellation::Qpsk,  {1, 2}, 16, true},  // M4
     {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  8, true},  // M5

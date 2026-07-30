@@ -669,9 +669,27 @@ others `[P]` across tracks.*
 
 *Exit gate: **Milestone M6**.*
 
-- [ ] **6.1 CSS modulator/demodulator** — SF5–SF8 per WAVEFORM.md forward
+- [x] **6.1 CSS modulator/demodulator** — SF5–SF8 per WAVEFORM.md forward
   spec, non-coherent dechirp-FFT, light FEC.
   *Gate: CSS FER curves vs SNR down to −14 dB in bertool.*
+  ✓ 2026-07-29 — `src/dsp/css.{hpp,cpp}` (cssModulate/cssDemodSymbol +
+  Hamming(7,4)/gray/depth-7-interleave bit layer + payload wrappers),
+  `bertool --css` FER sweep (all points pass AWGN gates; curves archived
+  `docs/conformance/skw_css_awgn.csv`), test_css (8 cases: geometry,
+  symbol/bit round-trips, single-bit + whole-symbol-loss correction, CFO,
+  floor gates). −14 dB gate met: MID/NARROW M0 FER≈0 at −14 dB.
+  DEVIATIONS: (1) demod is a matched-filter bank over all cyclic shifts
+  (one FFT cross-correlation), not literal dechirp+chip-decimate+FFT —
+  at the 12 kHz oversampled rate chip decimation aliases large shifts
+  and split-bin folding costs ~3 dB; the matched filter is AWGN-optimal
+  and measured 2–3 dB deeper. (2) The scalar "floors −9 → −14 dB"
+  forward estimate became a measured PER-FAMILY table (`cssFloorDb`,
+  WAVEFORM.md): the CSS band is the noise bandwidth, so floors range
+  −5 (WIDE M3) to −19.5 dB (NARROW M0); −14 sits inside MID/NARROW M0
+  coverage. (3) `kModes[0..3]` rows now carry the real SF in `spread`
+  and rate 4/7 (Hamming), `active` stays false until 6.2. (4) Gray
+  mapping direction is bin = fromGray(bits) (bits = toGray(bin)) — the
+  adjacent-bin-costs-one-bit property holds in the BIN domain.
 - [ ] **6.2 CSS integration** — `waveform=1` PHY header path, sync
   arbitration, `M0–M3` ladder rows, `CAP_CSS_TIER` negotiation,
   handshake-on-CSS.

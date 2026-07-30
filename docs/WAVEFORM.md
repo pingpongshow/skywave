@@ -144,10 +144,10 @@ inactive in v1. The ladder is ordered strictly by robustness.
 
 | Mode | Waveform | Constellation | LDPC rate | Spread | Notes |
 |---|---|---|---|---:|---|
-| `M0` | *(reserved: CSS)* | — | — | — | future, ~−14 dB |
-| `M1` | *(reserved: CSS)* | — | — | — | future |
-| `M2` | *(reserved: CSS)* | — | — | — | future |
-| `M3` | *(reserved: CSS)* | — | — | — | future |
+| `M0` | CSS | — | Hamming(7,4) | SF8 | deep tier; modem built, inactive until 6.2 |
+| `M1` | CSS | — | Hamming(7,4) | SF7 | |
+| `M2` | CSS | — | Hamming(7,4) | SF6 | |
+| `M3` | CSS | — | Hamming(7,4) | SF5 | |
 | `M4` | OFDM | QPSK | 1/2 | 16 | robust floor; handshake transport |
 | `M5` | OFDM | QPSK | 1/2 | 8 | |
 | `M6` | OFDM | QPSK | 1/2 | 4 | |
@@ -406,20 +406,53 @@ inverted.
 - TX level normalization targets consistent RMS across frame types
   ([DSP.md](DSP.md))
 
-## Reserved CSS Tier (`M0–M3`) — Forward Specification
+## CSS Deep Tier (`M0–M3`)
 
-Not built in v1. Reserved so the wire format never changes when added:
+Modem layer built (ROADMAP 6.1, `src/dsp/css.{hpp,cpp}`); PHY/link
+integration and activation are ROADMAP 6.2.
 
-- `waveform=1` in the PHY header selects CSS payload transport
-- planned shape: LoRa-style CSS, SF5–SF8 over the family band, non-coherent
-  dechirp-FFT demodulation, Hamming-style light FEC, ~30–300 bps,
-  floors −9 → −14 dB
-- handshake would move to CSS `M0` when both peers advertise the capability
-  bit (`CAP_CSS_TIER`), restoring deep-weak-signal connect below the OFDM
-  pilot floor
-- ladder, AMC, ARQ, and framing already treat modes as opaque table entries,
-  so the tier lands as: new mode-table rows + one new modulator/demodulator
-  pair + arbitration in the sync engine
+**Symbol layer.** LoRa-style chirp spread spectrum: a symbol is the base
+up-chirp cyclically shifted by the symbol value, `2^SF` chips per symbol
+carrying SF bits, SF8 (`M0`, deepest) … SF5 (`M3`). The chip rate is the
+family bandwidth snapped so a chip is an exact integer number of 12 kHz
+baseband samples: WIDE 2400 Hz (5 samples/chip), MID 1000 Hz (12),
+NARROW 480 Hz (25), ULTRA 3000 Hz (4). `kModes.spread` holds the SF.
+
+**Demodulation.** Non-coherent matched-filter bank over all `2^SF` cyclic
+shifts, computed as one FFT cross-correlation
+(`IFFT(FFT(sym)·conj(FFT(base)))`, magnitude sampled at the chip-aligned
+lags). This is the AWGN-optimal detector; the classic dechirp +
+chip-rate-decimate + small FFT was measured ~2–3 dB worse at the
+oversampled rate (large shifts alias across the chip-rate Nyquist, and
+split-bin folding doubles the noise). Symbol quality proxy: peak/mean
+magnitude ratio over the lag bank (~0.5·2^SF on a clean channel).
+
+**Bit layer.** Bin index = `fromGray(bits)` so an adjacent-bin demod error
+costs exactly one data bit; Hamming(7,4) per nibble; depth-7 block
+interleaver spreads each codeword across 7 symbols, so one wholly wrong
+symbol costs each touched codeword at most one (corrected) bit for
+SF ≤ 7.
+
+**Measured AWGN floors** (dB SNR, 3 kHz noise reference; one-shot FER
+≤ ~15% at the floor, `cssFloorDb`, bertool `--css`, 2026-07-29 —
+`docs/conformance/skw_css_awgn.csv`). The CSS band is the noise
+bandwidth, so narrow families reach deepest:
+
+| Family | `M0`/SF8 | `M1`/SF7 | `M2`/SF6 | `M3`/SF5 |
+|---|---:|---:|---:|---:|
+| WIDE | −13.0 | −10.5 | −8.0 | −5.0 |
+| MID | −16.5 | −14.0 | −12.0 | −9.0 |
+| NARROW | −19.5 | −17.5 | −15.0 | −12.0 |
+| ULTRA | −11.5 | −9.5 | −6.5 | −4.0 |
+
+The original forward estimate ("floors −9 → −14 dB") predates the
+per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`
+(FER ≈ 0 at −14 dB). CFO tolerance: ±half the connected-preamble capture
+range (chirp CFO↔delay coupling; gray+Hamming absorb the residual).
+
+Still forward (6.2): `waveform=1` PHY header transport, sync arbitration,
+`CAP_CSS_TIER` negotiation, handshake-on-CSS `M0`, `kFloors`/AMC
+activation (`kModes[0..3].active` stays false until then).
 
 ## VHF-FM Band Profile — Forward Specification
 

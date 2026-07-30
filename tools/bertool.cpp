@@ -7,7 +7,11 @@
 // Usage:
 //   bertool [--trials N] [--offsets "0,3,10"] [--families wide,narrow]
 //           [--modes 4,8,13] [--preset good|moderate|poor|awgn]
-//           [--csv path] [--seed S]
+//           [--csv path] [--seed S] [--css]
+//
+// --css sweeps the CSS deep tier (M0-M3) instead of the OFDM ladder:
+// aligned modem-level FER (no PHY sync - that is ROADMAP 6.2), offsets
+// relative to the per-family cssFloorDb table.
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -15,6 +19,8 @@
 
 #include "core/config.hpp"
 #include "core/constants.hpp"
+#include "dsp/css.hpp"
+#include "fec/crc.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
 #include "sim/chansim.hpp"
@@ -32,6 +38,7 @@ struct Args {
   std::string preset = "moderate";
   std::string csv;
   uint64_t seed = 1000;
+  bool css = false;
 };
 
 std::vector<std::string> split(const std::string& s, char d) {
@@ -71,6 +78,87 @@ struct ConfigResult {
   }
 };
 
+// One aligned CSS frame trial (24-byte payload + CRC-32), success = CRC
+// clean after modulate -> chansim -> matched-filter demod.
+bool cssFrameTrial(Family fam, int mode, const ChansimParams& cp) {
+  std::vector<uint8_t> payload(24);
+  uint64_t s = cp.seed * 2654435761u + 1;
+  for (auto& b : payload) {
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    b = uint8_t(s >> 32);
+  }
+  const uint32_t crc = crc32(payload);
+  for (int i = 0; i < 4; ++i) payload.push_back(uint8_t(crc >> (8 * i)));
+  auto tx = cssModulatePayload(fam, mode, payload);
+  auto rx = Chansim::run(cp, tx);
+  rx.resize(tx.size());
+  auto got = cssDemodPayload(fam, mode, rx, payload.size());
+  if (got.size() != payload.size()) return false;
+  uint32_t want = 0;
+  for (int i = 0; i < 4; ++i) {
+    want |= uint32_t(got[got.size() - 4 + size_t(i)]) << (8 * i);
+  }
+  got.resize(got.size() - 4);
+  return crc32(got) == want;
+}
+
+// CSS deep-tier sweep (ROADMAP 6.1 gate): FER vs SNR for M0-M3 at
+// offsets around the per-family design floors.
+int cssSweep(const Args& a, FILE* csv) {
+  if (csv) fprintf(csv, "family,mode,sf,snr3k,trials,fails,fer\n");
+  printf("%-7s %-4s %-3s %7s %7s | %5s %7s\n", "family", "mode", "sf",
+         "floor", "snr", "fails", "FER");
+  int gateFails = 0;
+  for (Family fam : a.families) {
+    for (int mode : a.modes) {
+      if (cssSf(mode) == 0) continue;  // CSS modes only
+      const double floor = cssFloorDb(fam, mode);
+      for (double off : a.offsets) {
+        ChansimParams base = presetParams(a.preset);
+        int fails = 0;
+        for (int t = 0; t < a.trials; ++t) {
+          ChansimParams cp = base;
+          cp.snr3kDb = floor + off;
+          cp.seed = a.seed + uint64_t(t) * 7919 + uint64_t(mode) * 131 +
+                    uint64_t(fam) * 100003 +
+                    uint64_t(std::llround(off * 2.0 + 64.0)) * 15485863ull;
+          if (!cssFrameTrial(fam, mode, cp)) ++fails;
+        }
+        const double fer = double(fails) / a.trials;
+        printf("%-7s M%-3d %-3d %7.1f %7.1f | %5d %6.1f%%\n",
+               plan(fam).name, mode, cssSf(mode), floor, floor + off, fails,
+               100.0 * fer);
+        fflush(stdout);
+        if (csv) {
+          fprintf(csv, "%s,%d,%d,%.1f,%d,%d,%.4f\n", plan(fam).name, mode,
+                  cssSf(mode), floor + off, a.trials, fails, fer);
+          fflush(csv);
+        }
+        // Floors are AWGN-referenced; only gate the AWGN preset.
+        if (a.preset == "awgn") {
+          auto gate = [&](double p) {
+            return p + 1.3 * std::sqrt(p * (1.0 - p) / a.trials);
+          };
+          const bool bad =
+              (off < 0.5 && off > -0.5 && fer > gate(0.15)) ||
+              (off >= 2.5 && fer > gate(0.04 + 1.0 / a.trials));
+          if (bad) {
+            printf("FAIL: %s M%d @ %.1f dB FER=%.1f%%\n", plan(fam).name,
+                   mode, floor + off, 100 * fer);
+            ++gateFails;
+          }
+        }
+      }
+    }
+  }
+  printf(gateFails ? "== %d CSS conformance failures ==\n"
+                   : "== all CSS points pass ==\n",
+         gateFails);
+  return gateFails ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -102,6 +190,7 @@ int main(int argc, char** argv) {
     } else if (!strcmp(argv[i], "--preset")) a.preset = need("--preset");
     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
+    else if (!strcmp(argv[i], "--css")) a.css = true;
     else {
       fprintf(stderr, "unknown arg %s\n", argv[i]);
       return 2;
@@ -109,6 +198,16 @@ int main(int argc, char** argv) {
   }
 
   FILE* csv = a.csv.empty() ? nullptr : fopen(a.csv.c_str(), "w");
+
+  if (a.css) {
+    // The OFDM mode list default does not apply to the CSS tier.
+    const std::vector<int> ofdmDefault = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    if (a.modes == ofdmDefault) a.modes = {0, 1, 2, 3};
+    const int rc = cssSweep(a, csv);
+    if (csv) fclose(csv);
+    return rc;
+  }
+
   if (csv) {
     fprintf(csv,
             "family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer\n");

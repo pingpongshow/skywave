@@ -88,6 +88,7 @@ add_library(skywave_core STATIC
   src/dsp/chirp.cpp
   src/dsp/zc.cpp
   src/dsp/morse.cpp
+  src/dsp/css.cpp
   src/phy/framer.cpp
   src/phy/equalizer.cpp
   src/phy/receiver.cpp
@@ -180,6 +181,7 @@ if(BUILD_TESTS)
   skw_test(test_audio_rings)
   skw_test(test_wav)
   skw_test(test_dsp)
+  skw_test(test_css)
   skw_test(test_crc_whiten)
   skw_test(test_ldpc)
   skw_test(test_chirp)
