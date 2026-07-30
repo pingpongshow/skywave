@@ -26,6 +26,9 @@ inline int16_t seqDiff(uint16_t a, uint16_t b) {
 class ArqTx {
  public:
   ArqTx(int window, int maxRetries) : window_(window), maxRetries_(maxRetries) {}
+  // MAC profile changes mid-session resize the window (mode ladder
+  // moves); shrinking only limits NEW sends, in-flight frames drain.
+  void setWindow(int w) { window_ = w; }
 
   // ACK timeout = burst_airtime + expected_ack_airtime + 3 s, [4, 45].
   void setTimeout(double sec);

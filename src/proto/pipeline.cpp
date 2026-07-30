@@ -113,11 +113,11 @@ void ProtoTx::submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes) {
 }
 
 void ProtoTx::maybeSeal(double now) {
-  while (coalesce_.size() >= kCoalesceMaxBytes) {
+  const size_t cap = coalesceMaxBytes();
+  while (coalesce_.size() >= cap) {
     std::vector<uint8_t> chunk(coalesce_.begin(),
-                               coalesce_.begin() + kCoalesceMaxBytes);
-    coalesce_.erase(coalesce_.begin(),
-                    coalesce_.begin() + kCoalesceMaxBytes);
+                               coalesce_.begin() + long(cap));
+    coalesce_.erase(coalesce_.begin(), coalesce_.begin() + long(cap));
     seal(kSvcStream, chunk);
   }
   if (!coalesce_.empty() && now >= deadline_) {

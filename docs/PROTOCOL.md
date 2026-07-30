@@ -241,11 +241,19 @@ Negotiated at `START`; the AMC may clamp downward at runtime:
 |---|---:|---:|
 | `M4–M6` | 2 | 1 |
 | `M7–M9` | 4 | 2 |
-| `M10–M13` | 8 | 4 |
+| `M10–M12` | 8 | 4 |
+| `M13–M14` | 16 | 4 |
 
 Multi-frame bursts use the PHY **burst container**
 ([WAVEFORM.md](WAVEFORM.md)) — one preamble/sync/header for the whole
-burst, link frames packed back-to-back inside.
+burst, link frames packed back-to-back inside. The window follows the
+COMMITTED mode across `MODE_CHANGE` (resizing mid-session; shrink only
+limits new sends). At `M13+` the receiver additionally BATCHES feedback:
+one cumulative ACK per 12 received data frames, with an airtime-scaled
+tail flush when the sender goes quiet — at 25 kbps the reverse channel
+would otherwise consume ~25% of the airtime. Sender ACK timeouts scale
+to the batch. Data codeword targets fill the 4095-byte PHY cap at
+`M13+` (per-burst preamble overhead dominates top-rung throughput).
 
 ### TX Frequency Alignment
 

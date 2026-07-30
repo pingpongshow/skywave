@@ -31,7 +31,7 @@ using namespace skw;
 namespace {
 
 constexpr size_t kRoundSamples =
-    size_t(kFftAudio) + size_t(kCpSamplesAudio[1]);  // worker chunk granule
+    size_t(kFftAudio) + 192;  // worker chunk granule (fixed)
 constexpr double kRoundSec = double(kRoundSamples) / kFsAudio;
 
 // The test's own raw client sockets must not SIGPIPE the test binary

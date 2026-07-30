@@ -10,31 +10,39 @@
 
 namespace skw {
 
+// Band profiles (WAVEFORM.md): `hf` (v1) and `vhf-fm` (Phase 7) share
+// every numerology value below - sample domain, OFDM grid, CP set,
+// preamble geometry - and differ only in the PROFILE TABLE at the end
+// of this header (family plans, center bin, floor tables, capability
+// gates). The active profile is selected once at startup.
+enum class Band : uint8_t { Hf = 0, VhfFm = 1 };
+
 // ---------------------------------------------------------------- sample domain
 inline constexpr int    kFsAudio        = 48000;  // external real passband rate
 inline constexpr int    kFsBaseband     = 12000;  // internal complex rate
 inline constexpr int    kDecimation     = 4;      // 48k -> 12k
-inline constexpr double kCenterHz       = 1500.0; // waveform center (audio)
 
 // ---------------------------------------------------------------------- OFDM grid
 inline constexpr int    kFftAudio       = 1280;   // at 48 kHz
 inline constexpr int    kFftBaseband    = kFftAudio / kDecimation;  // 320
 inline constexpr double kSubcarrierHz   = double(kFsAudio) / kFftAudio; // 37.5
-inline constexpr int    kCenterBin      = 40;     // 40 * 37.5 = 1500 Hz
 static_assert(kFftBaseband == 320);
-static_assert(kCenterBin * kSubcarrierHz == kCenterHz);
+// HF waveform center: bin 40 = 1500 Hz (the profile table holds it; the
+// named constant remains for HF-pinned static_asserts only).
+inline constexpr int kHfCenterBin = 40;
 
 enum class CpMode : uint8_t { Short = 0, Medium = 1, Long = 2 };
-// CP lengths in audio-rate samples (divide by kDecimation for baseband).
-inline constexpr std::array<int, 3> kCpSamplesAudio = {96, 192, 288};
-static_assert(kCpSamplesAudio[0] % kDecimation == 0 &&
-              kCpSamplesAudio[1] % kDecimation == 0 &&
-              kCpSamplesAudio[2] % kDecimation == 0);
+// CP length sets in audio-rate samples (divide by kDecimation for
+// baseband); PER BAND PROFILE - HF spans 2/4/6 ms for millisecond delay
+// spreads, VHF-FM 0.67/2/4 ms (its multipath is microseconds; the CP is
+// sync-slack, and the tighter SHORT buys ~5% symbol rate at the top).
+inline constexpr std::array<int, 3> kHfCpSamplesAudio = {96, 192, 288};
+inline constexpr std::array<int, 3> kVhfCpSamplesAudio = {32, 96, 192};
 inline constexpr CpMode kCpDefault = CpMode::Medium;
 
-inline constexpr double symbolRate(CpMode cp) {
-  return double(kFsAudio) / (kFftAudio + kCpSamplesAudio[size_t(cp)]);
-}
+// Profile accessors defined after the BandProfile block below.
+inline int cpSamplesAudio(CpMode cp);
+inline double symbolRate(CpMode cp);
 
 // ------------------------------------------------------------------- families
 enum class Family : uint8_t { Wide = 0, Mid = 1, Narrow = 2, Ultra = 3 };
@@ -57,26 +65,33 @@ inline constexpr std::array<FamilyPlan, kNumFamilies> kFamilies = {{
     {"NARROW",     34,   46,   1275.0,    1725.0,  false},
     {"ULTRA",       5,   76,    200.0,    2850.0,  true},
 }};
-inline constexpr const FamilyPlan& plan(Family f) {
-  return kFamilies[size_t(f)];
-}
-// Carrier-count invariants from WAVEFORM.md.
-static_assert(plan(Family::Wide).carriers() == 64);
-static_assert(plan(Family::Mid).carriers() == 27);
-static_assert(plan(Family::Narrow).carriers() == 13);
-static_assert(plan(Family::Ultra).carriers() == 72);
-// Odd-count families center exactly on bin 40 (1500 Hz).
-static_assert((plan(Family::Mid).firstBin + plan(Family::Mid).lastBin) / 2 ==
-              kCenterBin);
-static_assert((plan(Family::Narrow).firstBin + plan(Family::Narrow).lastBin) /
-                  2 == kCenterBin);
+// VHF-FM profile (WAVEFORM.md, Phase 7): ONE wide family on the flat
+// 9600-capable data-port path - 176 carriers, ~300-6900 Hz, centered
+// 3.6 kHz. Every Family index resolves to the same plan (the 2-bit wire
+// family field stays valid; bands never interoperate on one channel).
+inline constexpr std::array<FamilyPlan, kNumFamilies> kVhfFamilies = {{
+    {"VHF", 8, 183, 400.0, 6800.0, false},
+    {"VHF", 8, 183, 400.0, 6800.0, false},
+    {"VHF", 8, 183, 400.0, 6800.0, false},
+    {"VHF", 8, 183, 400.0, 6800.0, false},
+}};
+// Carrier-count invariants from WAVEFORM.md (pinned to the HF table).
+static_assert(kFamilies[0].carriers() == 64);
+static_assert(kFamilies[1].carriers() == 27);
+static_assert(kFamilies[2].carriers() == 13);
+static_assert(kFamilies[3].carriers() == 72);
+static_assert(kVhfFamilies[0].carriers() == 176);
+// Odd-count HF families center exactly on bin 40 (1500 Hz).
+static_assert((kFamilies[1].firstBin + kFamilies[1].lastBin) / 2 ==
+              kHfCenterBin);
+static_assert((kFamilies[2].firstBin + kFamilies[2].lastBin) / 2 ==
+              kHfCenterBin);
 
 // --------------------------------------------------------------------- pilots
 inline constexpr int    kPilotSpacing   = 8;    // 1-in-8 carriers per symbol
 inline constexpr double kPilotBoostDb   = 2.0;
 
 // ------------------------------------------------------------------- preamble
-inline constexpr double kChirpRepSec        = 0.160;
 inline constexpr int    kChirpRepsFast      = 2;  // up-up
 inline constexpr int    kChirpRepsRobust    = 4;  // up-down-up-down
 inline constexpr int    kChirpRepsCalling   = 4;  // up-up-up-up
@@ -88,9 +103,15 @@ inline constexpr double kCfoSearchStepHz    = 12.5;
 
 // ------------------------------------------------------------------ mode ladder
 enum class Waveform : uint8_t { Ofdm = 0, Css = 1 /* reserved */ };
-enum class Constellation : uint8_t { Qpsk = 0, Qam16 = 1, Qam64 = 2 };
+enum class Constellation : uint8_t { Qpsk = 0, Qam16 = 1, Qam64 = 2, Qam256 = 3 };
 inline constexpr int bitsPerSymbol(Constellation c) {
-  return c == Constellation::Qpsk ? 2 : c == Constellation::Qam16 ? 4 : 6;
+  switch (c) {
+    case Constellation::Qpsk: return 2;
+    case Constellation::Qam16: return 4;
+    case Constellation::Qam64: return 6;
+    case Constellation::Qam256: return 8;
+  }
+  return 2;
 }
 
 struct CodeRate {
@@ -106,7 +127,7 @@ struct ModeDef {
   bool active;      // false = reserved (CSS tier, v1)
 };
 
-inline constexpr int kNumModes  = 14;   // M0..M13
+inline constexpr int kNumModes  = 15;   // M0..M14 (M14: VHF-FM 256QAM)
 inline constexpr int kFirstMode = 4;    // lowest active mode in v1
 inline constexpr std::array<ModeDef, kNumModes> kModes = {{
     // M0-M3: CSS deep tier. `spread` holds the spreading factor SF
@@ -128,22 +149,19 @@ inline constexpr std::array<ModeDef, kNumModes> kModes = {{
     {Waveform::Ofdm, Constellation::Qam16, {3, 4},  1, true},  // M11
     {Waveform::Ofdm, Constellation::Qam64, {2, 3},  1, true},  // M12
     {Waveform::Ofdm, Constellation::Qam64, {5, 6},  1, true},  // M13
+    // M14: 256QAM r5/6 - the VHF-FM top rung (WAVEFORM.md Phase 7).
+    // Active in the table; unreachable on HF (floor sentinels below)
+    // and above kInitialModeCap, so only deliberate AMC promotion on a
+    // rich flat channel ever lands here.
+    {Waveform::Ofdm, Constellation::Qam256, {5, 6}, 1, true},  // M14
 }};
 
 // Average data carriers per symbol = carriers * (spacing-1)/spacing.
-inline constexpr double avgDataCarriers(Family f) {
-  return plan(f).carriers() * double(kPilotSpacing - 1) / kPilotSpacing;
-}
+inline double avgDataCarriers(Family f);
 // Gross (uncoded) waveform bit rate for a mode, bits/s, at a given CP.
-inline constexpr double grossRate(Family f, int mode, CpMode cp) {
-  const ModeDef& m = kModes[size_t(mode)];
-  return avgDataCarriers(f) * bitsPerSymbol(m.constellation) *
-         symbolRate(cp) / m.spread;
-}
+inline double grossRate(Family f, int mode, CpMode cp);
 // Net (post-FEC) payload rate, bits/s.
-inline constexpr double netRate(Family f, int mode, CpMode cp) {
-  return grossRate(f, mode, cp) * kModes[size_t(mode)].rate.ratio();
-}
+inline double netRate(Family f, int mode, CpMode cp);
 
 // AMC design floors (dB SNR, 3 kHz noise reference), per family per
 // mode. M4-M13 per WAVEFORM.md tables; M0-M3 are the measured CSS AWGN
@@ -153,20 +171,18 @@ using FloorTable = std::array<double, kNumModes>;
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
     {{-13.0, -10.5, -8.0, -5.0,
-      -8.5, -6.0, -3.5, -1.0, 2.0, 5.0, 8.0, 12.0, 16.0, 20.0}},
+      -8.5, -6.0, -3.5, -1.0, 2.0, 5.0, 8.0, 12.0, 16.0, 20.0, 99.0}},
     // MID
     {{-16.5, -14.0, -12.0, -9.0,
-      -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5}},
+      -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5, 99.0}},
     // NARROW
     {{-19.5, -17.5, -15.0, -12.0,
-      -15.0, -12.5, -10.0, -7.5, -4.5, -1.5, 1.5, 5.5, 9.5, 13.5}},
+      -15.0, -12.5, -10.0, -7.5, -4.5, -1.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,
-      -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5}},
+      -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5, 99.0}},
 }};
-inline constexpr double floorDb(Family f, int mode) {
-  return kFloors[size_t(f)][size_t(mode)];
-}
+inline double floorDb(Family f, int mode);  // reads the active profile
 
 // Sentinel: no fading conformance point exists for this mode (near-flat
 // outage tail); the mode is AWGN/near-static only, gated by AMC.
@@ -190,24 +206,117 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // M2/M3 = kFadingNA: 1 ms delay spread is 2.4 of their chips and
     // the shallow spreading leaves a flat outage tail - ARQ territory)
     {{-3.0, 0.0, kFadingNA, kFadingNA,
-      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 16.0, 26.0, kFadingNA}},
+      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 16.0, 26.0, kFadingNA, kFadingNA}},
     // MID
     {{-10.0, -7.0, -5.0, -3.0,
-      -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5}},
+      -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5, kFadingNA}},
     // NARROW (M13 = kFadingNA: 64QAM r5/6 over a flat-Rayleigh one-shot
     // frame has a near-flat outage tail - no 10% point exists at sane
     // SNR; AMC admits it only on near-static channels)
     {{-11.0, -9.0, -8.0, -7.0,
-      -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0}},
+      -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0, kFadingNA}},
     // ULTRA (robust tier ~3 dB worse than WIDE: outermost carriers ride
     // the TX band-FIR transition - candidate for a wider FIR margin.
     // M6/M7 provisional: slow outage tails, see ROADMAP 1.13 known
     // issues)
     {{-4.0, -2.0, kFadingNA, kFadingNA,
-      4.0, 6.5, 16.0, 12.5, 8.5, 13.5, 14.5, 18.5, 24.5, 28.5}},
+      4.0, 6.5, 16.0, 12.5, 8.5, 13.5, 14.5, 18.5, 24.5, 28.5, kFadingNA}},
 }};
-inline constexpr double fadingFloorDb(Family f, int mode) {
-  return kFadingFloors[size_t(f)][size_t(mode)];
+inline double fadingFloorDb(Family f, int mode);  // active profile
+
+// VHF-FM floor tables: the data-port channel is flat and near-static
+// (Rician K -> inf approximation), so the fading table IS the AWGN
+// table. Values scale from the WIDE ladder by the wider noise
+// collection (+10log10(6600/2400) ~ +4.4 dB against the 3 kHz
+// reference); calibrated with bertool --band vhf-fm (7.2/7.3). M0-M3
+// reserved: the CSS deep tier is HF-only.
+inline constexpr FloorTable kVhfFloorRow = {
+    kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    -4.0, -1.5, 1.0, 3.5, 6.5, 9.5, 12.5, 16.5, 20.5, 24.5, 33.0};
+inline constexpr std::array<FloorTable, kNumFamilies> kVhfFloors = {
+    {kVhfFloorRow, kVhfFloorRow, kVhfFloorRow, kVhfFloorRow}};
+
+// ------------------------------------------------------------- band profiles
+// The active profile is set ONCE at startup (before any DSP object is
+// constructed) from `[modem] band`; everything numerology-shaped that
+// differs between bands routes through it.
+struct BandProfile {
+  const char* name;
+  const std::array<FamilyPlan, kNumFamilies>* families;
+  int centerBin;  // audio-grid bin the converters shift to DC
+  const std::array<FloorTable, kNumFamilies>* floors;        // AWGN
+  const std::array<FloorTable, kNumFamilies>* fadingFloors;  // designated
+  bool cssTier;   // CSS deep tier available on this band
+  bool masking;   // carrier masking available (wire bitmap: <= 72 carriers)
+  // Chirp rep duration: HF needs 160 ms of integration to detect at the
+  // deep floors; the SNR-rich VHF path uses 40 ms reps, cutting the
+  // per-frame preamble overhead 4x (throughput lives on it at M13/M14).
+  double chirpRepSec;
+  CpMode cpDefault;  // SHORT on the microsecond-spread VHF channel
+  const std::array<int, 3>* cpSamplesAudio;
+  int zcSymbolsFast;    // sync-block lengths (SNR-rich VHF trims both)
+  int zcSymbolsRobust;
+  // TX PAPR soft-clip ceiling over frame RMS. 8 dB protects HF audio
+  // chains and is EVM-safe through 64QAM; 256QAM (M14) needs ~11 dB or
+  // content-dependent clip noise tips whole frames over - and every
+  // identical retransmission with them.
+  double txPaprCeilingDb;
+  // Fast-header spreading: HF needs x2 (decode to ~-1 dB); the VHF fast
+  // tier starts at +6.5 dB, so x1 halves the header airtime safely.
+  int headerSpreadFast;
+};
+inline constexpr BandProfile kHfProfile = {
+    "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
+    true,     true,          0.160,           CpMode::Medium,
+    &kHfCpSamplesAudio,      3,               6,             8.0,  2};
+inline constexpr BandProfile kVhfFmProfile = {
+    "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
+    false,    false,         0.040,           CpMode::Short,
+    &kVhfCpSamplesAudio,     2,               4,             11.0, 1};
+
+inline const BandProfile*& activeProfileSlot() {
+  static const BandProfile* p = &kHfProfile;
+  return p;
+}
+inline const BandProfile& activeProfile() { return *activeProfileSlot(); }
+inline void setActiveBand(Band b) {
+  activeProfileSlot() = b == Band::VhfFm ? &kVhfFmProfile : &kHfProfile;
+}
+inline Band activeBand() {
+  return activeProfileSlot() == &kVhfFmProfile ? Band::VhfFm : Band::Hf;
+}
+
+inline const FamilyPlan& plan(Family f) {
+  return (*activeProfile().families)[size_t(f)];
+}
+inline int cpSamplesAudio(CpMode cp) {
+  return (*activeProfile().cpSamplesAudio)[size_t(cp)];
+}
+inline double symbolRate(CpMode cp) {
+  return double(kFsAudio) / (kFftAudio + cpSamplesAudio(cp));
+}
+inline int zcSymbols(bool robust) {
+  return robust ? activeProfile().zcSymbolsRobust
+                : activeProfile().zcSymbolsFast;
+}
+inline int centerBin() { return activeProfile().centerBin; }
+inline double centerHz() { return centerBin() * kSubcarrierHz; }
+inline double floorDb(Family f, int mode) {
+  return (*activeProfile().floors)[size_t(f)][size_t(mode)];
+}
+inline double fadingFloorDb(Family f, int mode) {
+  return (*activeProfile().fadingFloors)[size_t(f)][size_t(mode)];
+}
+inline double avgDataCarriers(Family f) {
+  return plan(f).carriers() * double(kPilotSpacing - 1) / kPilotSpacing;
+}
+inline double grossRate(Family f, int mode, CpMode cp) {
+  const ModeDef& m = kModes[size_t(mode)];
+  return avgDataCarriers(f) * bitsPerSymbol(m.constellation) *
+         symbolRate(cp) / m.spread;
+}
+inline double netRate(Family f, int mode, CpMode cp) {
+  return grossRate(f, mode, cp) * kModes[size_t(mode)].rate.ratio();
 }
 
 // PHY frame_type value marking a MAC burst container (PROTOCOL.md "MAC
@@ -241,7 +350,6 @@ inline constexpr double kTxScaleMin        = 0.30;
 inline constexpr double kTxScaleMax        = 1.15;
 inline constexpr double kTxPeakPreHeadroom = 1.90;
 inline constexpr double kTxFinalHeadroom   = 0.50;
-inline constexpr double kTxPaprCeilingDb   = 8.0;
 
 // ----------------------------------------------------------------- link timers
 inline constexpr double kHandshakeTurnaroundSec = 6.0;

@@ -63,7 +63,7 @@ TEST_CASE(conformance_net_rates_geometry) {
       tp.payload = payload;
       auto g = computeGeometry(tp);
       double paySec = double(g.payloadSymbols) *
-                      double(kFftBaseband + kCpSamplesAudio[1] / kDecimation) /
+                      double(kFftBaseband + cpSamplesAudio(CpMode(1)) / kDecimation) /
                       kFsBaseband;
       double eff = double(payload.size() - 30) * 8.0 / paySec;
       double table = netRate(fam, mode, CpMode::Medium);

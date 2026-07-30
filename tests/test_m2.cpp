@@ -371,7 +371,7 @@ TEST_CASE(m3_burst_container_throughput) {
   tp.payload = payload;
   auto g = computeGeometry(tp);
   const double paySamples =
-      double(kFftBaseband + kCpSamplesAudio[1] / kDecimation);
+      double(kFftBaseband + cpSamplesAudio(CpMode(1)) / kDecimation);
   // Payload-SECTION rate vs the table NET rate, with the structural
   // codeword-padding allowance (0.80, as in the conformance geometry
   // gate). Piggyback bytes ride the header section and are excluded.

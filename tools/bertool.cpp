@@ -39,6 +39,7 @@ struct Args {
   std::string csv;
   uint64_t seed = 1000;
   bool css = false;
+  Band band = Band::Hf;
 };
 
 std::vector<std::string> split(const std::string& s, char d) {
@@ -56,6 +57,7 @@ std::vector<std::string> split(const std::string& s, char d) {
 ChansimParams presetParams(const std::string& name) {
   if (name == "good") return ccirGood();
   if (name == "poor") return ccirPoor();
+  if (name == "vhf") return vhfFlat();
   if (name == "awgn") {
     ChansimParams p;
     p.fading = false;
@@ -191,10 +193,22 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
     else if (!strcmp(argv[i], "--css")) a.css = true;
+    else if (!strcmp(argv[i], "--band")) {
+      auto bb = bandFromString(need("--band"));
+      if (!bb) { fprintf(stderr, "bad band\n"); return 2; }
+      a.band = *bb;
+    }
     else {
       fprintf(stderr, "unknown arg %s\n", argv[i]);
       return 2;
     }
+  }
+
+  setActiveBand(a.band);
+  if (a.band == Band::VhfFm) {
+    // One family, no CSS tier; the flat channel is its own preset.
+    a.families = {Family::Wide};
+    if (a.preset == "moderate") a.preset = "vhf";
   }
 
   FILE* csv = a.csv.empty() ? nullptr : fopen(a.csv.c_str(), "w");
@@ -244,7 +258,7 @@ int main(int argc, char** argv) {
       const double paySec =
           double(geo.payloadSymbols) *
           double(kFftBaseband +
-                 kCpSamplesAudio[size_t(tp.cpMode)] / kDecimation) /
+                 cpSamplesAudio(tp.cpMode) / kDecimation) /
           double(kFsBaseband);
       const double netEff =
           paySec > 0 ? (payloadLen - 30) * 8.0 / paySec : 0.0;

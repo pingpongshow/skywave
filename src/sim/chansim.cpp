@@ -45,6 +45,14 @@ ChansimParams ccirPoor() {
   return p;
 }
 
+ChansimParams vhfFlat() {
+  ChansimParams p;
+  p.fading = false;
+  p.delaySpreadMs = 0.0;
+  p.dopplerSpreadHz = 0.0;
+  return p;
+}
+
 Chansim::Chansim(const ChansimParams& p) : p_(p) {
   delaySamples_ = int(std::lround(p.delaySpreadMs * 1e-3 * kFsBaseband));
   history_.assign(size_t(std::max(delaySamples_, 1)), cfloat(0, 0));
@@ -52,8 +60,11 @@ Chansim::Chansim(const ChansimParams& p) : p_(p) {
   // Gaussian shaping FIR at the fade rate. The PROCESS PSD is |H(f)|^2,
   // whose sigma is sigma_H / sqrt(2); the CCIR "frequency spread" is the
   // two-sigma width of the PSD, so sigma_H = (spread/2) * sqrt(2).
+  // The 0.05 Hz floor also guards static presets (dopplerSpreadHz = 0
+  // with fading off): the FIR length scales as 1/doppler and a 1 mHz
+  // floor builds a ~500x-cost filter that is then never used.
   const double sigmaF =
-      std::max(p.dopplerSpreadHz / 2.0 * std::sqrt(2.0), 1e-3);
+      std::max(p.dopplerSpreadHz / 2.0 * std::sqrt(2.0), 0.05);
   const double sigmaT = kFadeRate / (2.0 * M_PI * sigmaF);  // in fade samples
   const int half = int(std::ceil(4.0 * sigmaT));
   std::vector<cfloat> taps(size_t(2 * half + 1));

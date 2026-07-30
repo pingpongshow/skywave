@@ -8,8 +8,10 @@
 namespace skw {
 namespace {
 
+// Rep period on the detector grid (profile-dependent rep duration).
+int repGrid() { return chirpRepSamples() / ChirpDetector::kGridStep; }
+
 constexpr int kEdgeMs = 2;
-constexpr int kRepGrid = 480;         // 1920 / kGridStep
 constexpr int kSlot0TolGrid = 3;      // start-position window
 constexpr int kSameSlopeTolGrid = 6;  // same-slope slot jitter
 constexpr double kCfoCaptureMaxHz = 55.0;
@@ -29,10 +31,10 @@ constexpr double kEmaAlpha = 5e-4;    // noise-floor tracker (~1.6 s)
 
 std::vector<cfloat> makeRep(Family family, bool up) {
   const auto& p = plan(family);
-  const double f0 = (up ? p.chirpStartHz : p.chirpEndHz) - kCenterHz;
-  const double f1 = (up ? p.chirpEndHz : p.chirpStartHz) - kCenterHz;
+  const double f0 = (up ? p.chirpStartHz : p.chirpEndHz) - centerHz();
+  const double f1 = (up ? p.chirpEndHz : p.chirpStartHz) - centerHz();
   const int n = chirpRepSamples();
-  const double T = kChirpRepSec;
+  const double T = activeProfile().chirpRepSec;
   const double rate = (f1 - f0) / T;
   std::vector<cfloat> rep(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
@@ -89,15 +91,16 @@ ChirpDetector::ChirpDetector(Family family)
   emaNoiseNcc_ = 1.0 / chirpRepSamples();
   const auto& p = plan(family);
   const double bw = p.chirpEndHz - p.chirpStartHz;
-  crossTolGrid_ = int(2.0 * kCfoCaptureMaxHz * kChirpRepSec / bw *
+  crossTolGrid_ = int(2.0 * kCfoCaptureMaxHz *
+                        activeProfile().chirpRepSec / bw *
                       kFsBaseband / kGridStep) + 6;
   // 4-rep suppression spans +-2 reps: +-1/2-rep partial alignments (which
   // can pass slot-validity at the floor with one lucky noise slot) are
   // vetoed by direct comparison against the true start's higher score;
   // +-3-rep partials contain only one real slot and die on validity.
-  suppress4_ = 2 * kRepGrid + crossTolGrid_ + kSlot0TolGrid + 8;
+  suppress4_ = 2 * repGrid() + crossTolGrid_ + kSlot0TolGrid + 8;
   // Fast suppression spans its own +-1-rep partials.
-  suppressFast_ = kRepGrid + crossTolGrid_ + kSlot0TolGrid + 8;
+  suppressFast_ = repGrid() + crossTolGrid_ + kSlot0TolGrid + 8;
   auto up = makeRep(family, true);
   auto down = makeRep(family, false);
   refUp_.resize(up.size());
@@ -162,7 +165,7 @@ void ChirpDetector::process(std::span<const cfloat> in,
     bufStart_ += int64_t(drop);
   }
   const size_t keepGrid =
-      size_t(4 * kRepGrid + 2 * crossTolGrid_ + 2 * suppress4_ + 128);
+      size_t(4 * repGrid() + 2 * crossTolGrid_ + 2 * suppress4_ + 128);
   if (grid_.size() > keepGrid * 2) {
     size_t drop = grid_.size() - keepGrid;
     grid_.erase(grid_.begin(), grid_.begin() + long(drop));
@@ -219,7 +222,7 @@ ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,
     const int tol = (i == 0) ? kSlot0TolGrid
                              : (up == slope0 ? kSameSlopeTolGrid
                                              : crossTolGrid_);
-    const int64_t want = g0 + int64_t(i) * kRepGrid;
+    const int64_t want = g0 + int64_t(i) * repGrid();
     float best = 0.0f;
     int64_t bestG = want;
     for (int64_t d = -tol; d <= tol; ++d) {
@@ -285,8 +288,8 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
   // Decision lag: own-pattern horizon + suppression, and the containment
   // checks (slot 3 of a would-be calling signature at full CFO shift).
   const int64_t lag =
-      std::max<int64_t>(kRepGrid + kSameSlopeTolGrid + suppressFast_,
-                        3 * kRepGrid + crossTolGrid_ + 8);
+      std::max<int64_t>(repGrid() + kSameSlopeTolGrid + suppressFast_,
+                        3 * repGrid() + crossTolGrid_ + 8);
 
   while (nextFast_ + lag <= newest) {
     const int64_t g0 = nextFast_++;
@@ -301,7 +304,7 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
     // (an emitted signature's sub-patterns), never earlier ones (or a
     // later cursor's emission would veto the true earlier start).
     const int64_t dRef = g0 - lastEmitStart_;
-    if (dRef > 0 && dRef <= 2 * kRepGrid + suppress4_) continue;
+    if (dRef > 0 && dRef <= 2 * repGrid() + suppress4_) continue;
 
     const float thr2 = float(kScoreFactor2 * emaNoiseNcc_);
     const float here = fastScores_.at(g0);
@@ -342,10 +345,10 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
       }
       return m;
     };
-    if (oppositeMax(g0 + 2 * kRepGrid) >= contFloor ||
-        oppositeMax(g0 + 3 * kRepGrid) >= contFloor ||
-        oppositeMax(g0 - kRepGrid) >= contFloor ||
-        oppositeMax(g0 - 2 * kRepGrid) >= contFloor) {
+    if (oppositeMax(g0 + 2 * repGrid()) >= contFloor ||
+        oppositeMax(g0 + 3 * repGrid()) >= contFloor ||
+        oppositeMax(g0 - repGrid()) >= contFloor ||
+        oppositeMax(g0 - 2 * repGrid()) >= contFloor) {
       continue;
     }
     // Large-CFO containment: during calling acquisition the opposite-slope
@@ -365,19 +368,19 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
       bool contained = false;
       for (int d = -dmax; d <= dmax && !contained; ++d) {
         // Pair as head: partners at +2/+3 reps, shifted +2d.
-        if (narrowMax(g0 + 2 * kRepGrid + 2 * d) >= jointFloor &&
-            narrowMax(g0 + 3 * kRepGrid + 2 * d) >= jointFloor) {
+        if (narrowMax(g0 + 2 * repGrid() + 2 * d) >= jointFloor &&
+            narrowMax(g0 + 3 * repGrid() + 2 * d) >= jointFloor) {
           contained = true;
         }
         // Pair as tail: partners at -1/-2 reps, shifted -2d.
-        if (narrowMax(g0 - kRepGrid - 2 * d) >= jointFloor &&
-            narrowMax(g0 - 2 * kRepGrid - 2 * d) >= jointFloor) {
+        if (narrowMax(g0 - repGrid() - 2 * d) >= jointFloor &&
+            narrowMax(g0 - 2 * repGrid() - 2 * d) >= jointFloor) {
           contained = true;
         }
         // Pair as the U-U middle of an inverted CSS signature (D U U D):
         // opposite-slope partners at -1 and +2 reps, common shift.
-        if (narrowMax(g0 - kRepGrid + 2 * d) >= jointFloor &&
-            narrowMax(g0 + 2 * kRepGrid + 2 * d) >= jointFloor) {
+        if (narrowMax(g0 - repGrid() + 2 * d) >= jointFloor &&
+            narrowMax(g0 + 2 * repGrid() + 2 * d) >= jointFloor) {
           contained = true;
         }
       }
@@ -391,7 +394,7 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
 // partial alignments are vetoed by score comparison against the true start.
 void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
   const int64_t newest = gridStartIdx_ + int64_t(grid_.size()) - 1;
-  const int64_t horizon = 3 * kRepGrid + crossTolGrid_;
+  const int64_t horizon = 3 * repGrid() + crossTolGrid_;
 
   while (next4_ + horizon + suppress4_ <= newest) {
     const int64_t g0 = next4_++;
@@ -408,7 +411,7 @@ void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
       best4Scores_.v.push_back(b4);
     }
     const int64_t dRef = g0 - lastEmitStart_;
-    if (dRef > 0 && dRef <= 2 * kRepGrid + suppress4_) continue;
+    if (dRef > 0 && dRef <= 2 * repGrid() + suppress4_) continue;
 
     const float thr4 = float(kScoreFactor4 * emaNoiseNcc_);
     const float here = best4Scores_.at(g0);
@@ -452,7 +455,7 @@ void ChirpDetector::emitDetection(int64_t g0, ChirpSig sig, bool inverted,
   double meanUp = 0, meanDown = 0, meanAll = 0;
   int nUp = 0, nDown = 0;
   for (size_t i = 0; i < ps.slots.size(); ++i) {
-    double start = ps.slots[i].gridF - double(i) * kRepGrid;
+    double start = ps.slots[i].gridF - double(i) * repGrid();
     meanAll += start;
     if (ps.slots[i].up) { meanUp += start; ++nUp; }
     else { meanDown += start; ++nDown; }
@@ -466,7 +469,7 @@ void ChirpDetector::emitDetection(int64_t g0, ChirpSig sig, bool inverted,
   double cfoCoarse = 0.0;
   if (nUp > 0 && nDown > 0) {
     double d = (meanUp / nUp - meanDown / nDown) / 2.0 * kGridStep;
-    cfoCoarse = -d / kFsBaseband * bw / kChirpRepSec;
+    cfoCoarse = -d / kFsBaseband * bw / activeProfile().chirpRepSec;
   }
 
   // Fine CFO from same-slope inter-rep correlation phase (ambiguity
@@ -490,7 +493,7 @@ void ChirpDetector::emitDetection(int64_t g0, ChirpSig sig, bool inverted,
         }
       }
     }
-    double gapT = bestGap * kChirpRepSec;
+    double gapT = bestGap * activeProfile().chirpRepSec;
     double phase = std::atan2(rotSum.imag(), rotSum.real());
     double base = phase / (2.0 * M_PI * gapT);
     double amb = 1.0 / gapT;

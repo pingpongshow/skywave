@@ -216,7 +216,7 @@ class LinkEngine {
   bool isInitiator_ = false;
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
-  CpMode cpMode_ = kCpDefault;    // committed session CP
+  CpMode cpMode_ = activeProfile().cpDefault;  // committed session CP
   // TX frequency alignment (PROTOCOL.md): split correction -reported/2,
   // slewed <= 2 Hz per adjustment, clamped +-30 Hz per side.
   double txShiftHz_ = 0.0;
@@ -235,6 +235,10 @@ class LinkEngine {
   int callTxCount_ = 0;
   bool lastRxWasCss_ = false;
   std::vector<uint8_t> lastStartAckBody_;  // duplicate-START re-ack
+  double deepIdleSec_ = 120.0;  // idle window for CSS-mode sessions
+  int dataSinceAck_ = 0;        // ACK batching (M13+)
+  double lastDataRxAt_ = 0.0;
+  double ackFlushSec_ = 0.5;
   ChirpSig hsSig() const {
     return hsOnCss_ ? ChirpSig::Css : ChirpSig::Calling;
   }

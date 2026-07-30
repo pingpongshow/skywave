@@ -151,11 +151,14 @@ std::optional<Family> familyFromString(std::string s) {
   return std::nullopt;
 }
 
-std::string toString(Band b) { return b == Band::Hf ? "hf" : "?"; }
+std::string toString(Band b) {
+  return b == Band::Hf ? "hf" : "vhf-fm";
+}
 
 std::optional<Band> bandFromString(std::string s) {
   s = lower(std::move(s));
   if (s == "hf") return Band::Hf;
+  if (s == "vhf-fm" || s == "vhffm") return Band::VhfFm;
   return std::nullopt;
 }
 

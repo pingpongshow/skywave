@@ -61,14 +61,14 @@ TEST_CASE(zc_sequence_properties) {
 
 TEST_CASE(zc_symbol_shape) {
   auto sym = makeZcSymbol(Family::Wide);
-  CHECK_EQ(int(sym.size()), kZcSymbolSamples);
+  CHECK_EQ(int(sym.size()), zcSymbolSamples());
   // Unit RMS over the core; CP repeats the tail.
   double p = 0;
-  for (int i = kZcCpBaseband; i < kZcSymbolSamples; ++i) {
+  for (int i = zcCpBaseband(); i < zcSymbolSamples(); ++i) {
     p += std::norm(sym[size_t(i)]);
   }
   CHECK_NEAR(std::sqrt(p / kFftBaseband), 1.0, 1e-4);
-  for (int i = 0; i < kZcCpBaseband; ++i) {
+  for (int i = 0; i < zcCpBaseband(); ++i) {
     CHECK_NEAR(std::abs(sym[size_t(i)] -
                         sym[size_t(i + kFftBaseband)]), 0.0, 1e-6);
   }
@@ -175,7 +175,7 @@ TEST_CASE(zc_channel_estimate_two_tap) {
   double mse = 0;
   for (int i = 0; i < n; ++i) {
     int audioBin = plan(f).firstBin + i;
-    int bin = audioBin - kCenterBin;  // signed baseband bin
+    int bin = audioBin - centerBin();  // signed baseband bin
     double ph = -2.0 * M_PI * double(bin) * d / kFftBaseband;
     std::complex<double> want =
         1.0 + double(a) * std::complex<double>(std::cos(ph), std::sin(ph));

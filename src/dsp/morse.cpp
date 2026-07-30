@@ -90,7 +90,7 @@ std::vector<cfloat> renderMorseBaseband(const std::string& text, int wpm,
   const auto keys = keyUnits(text);
   const double ditSec = 1.2 / double(wpm);
   const size_t ditN = size_t(ditSec * kFsBaseband);
-  const double fBb = audioToneHz - kCenterHz;
+  const double fBb = audioToneHz - centerHz();
   // Raised-cosine keying edges: 5 ms or a quarter dit, whichever is
   // shorter (fast CW must still reach full amplitude).
   const size_t ramp = std::min(size_t(0.005 * kFsBaseband), ditN / 4);

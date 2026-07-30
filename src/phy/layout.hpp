@@ -66,7 +66,11 @@ struct SymbolLayout {
 // only; header symbols always use the full carrier set so any receiver
 // (including monitors) can decode the self-describing header.
 struct CarrierMask {
-  std::array<uint8_t, 9> bits;
+  // In-memory capacity covers the widest profile family (VHF-FM: 176
+  // carriers -> 22 bytes). The 9-byte WIRE mask (MaskUpdateBody) is
+  // unchanged: masking is negotiated only on HF, whose families stay
+  // <= 72 carriers.
+  std::array<uint8_t, 22> bits;
   CarrierMask() { bits.fill(0xFF); }
   bool usable(int c) const {
     return (bits[size_t(c >> 3)] >> (c & 7)) & 1;
@@ -124,7 +128,7 @@ inline int sourceSymbolsPerGroup(Family f, int symIdx, int spread,
 
 // Map a family carrier index to a baseband FFT bin (0..319).
 inline int carrierToBasebandBin(Family f, int carrierIdx) {
-  int b = plan(f).firstBin + carrierIdx - kCenterBin;
+  int b = plan(f).firstBin + carrierIdx - centerBin();
   return b >= 0 ? b : kFftBaseband + b;
 }
 

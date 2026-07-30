@@ -41,11 +41,6 @@ FsmConfig fsmConfigFor(const HandshakePolicy& p) {
     // ladder so a deep connect keeps its odds.
     c.callAttempts = 8;
     c.startAttempts = 8;
-    // Idle-disconnect must survive routine deep-tier decode droughts: a
-    // single DATA+ACK retry cycle spans ~2 frame airtimes, and only a
-    // DECODED frame refreshes the idle clock at ~50% per-frame FER.
-    c.idleDisconnectSec =
-        std::max(c.idleDisconnectSec, 10.0 * c.timings.callSec);
   }
   return c;
 }
@@ -61,7 +56,9 @@ ChirpSig sigForMode(int mode) {
 int macWindow(int mode) {
   if (mode <= 6) return 2;
   if (mode <= 9) return 4;
-  return 8;
+  // M13+ window 16: the VHF-FM top rungs need >= 2 full containers in
+  // flight to hide the ACK round trip (PROTOCOL.md MAC profiles).
+  return mode <= 12 ? 8 : 16;
 }
 
 // CPMODE AUTO thresholds: smallest CP covering the measured spread with
@@ -87,7 +84,10 @@ LinkEngine::LinkEngine(EngineConfig cfg)
     : cfg_(std::move(cfg)),
       fsm_(fsmConfigFor(cfg_.policy)),
       arqTx_(2, cfg_.arqMaxRetries),
-      arqRx_(8) {}
+      arqRx_(8) {
+  deepIdleSec_ =
+      std::max(120.0, 10.0 * fsmConfigFor(cfg_.policy).timings.callSec);
+}
 
 bool LinkEngine::idleClean() const {
   return outQueue_.empty() && protoTx_.idle() && arqTx_.inFlight() == 0 &&
@@ -646,6 +646,9 @@ void LinkEngine::drainFsmActions(double now) {
         txMask_ = CarrierMask();
         rxMask_ = CarrierMask();
         pendingMaskEpoch_ = -1;
+        fsm_.setIdleDisconnectSec(
+            kModes[size_t(mode_)].waveform == Waveform::Css ? deepIdleSec_
+                                                            : 120.0);
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
@@ -868,8 +871,14 @@ void LinkEngine::updateArqTimeout() {
   // Segment budget first: exact codeword fill for the on-air shape a
   // full data burst takes at this mode (solo frame, or an F-entry burst
   // container when aggregation applies).
+  arqTx_.setWindow(macWindow(mode_));  // profile follows the mode
   const int fpb = cfg_.burstAggregation ? framesPerBurst(mode_) : 1;
-  dataBudget_ = dataPayloadBudget(mode_, fpb, (mode_ <= 7 ? 1 : 2) * fpb);
+  // Codeword target: the top rungs (M13+) fill the 4095-byte PHY cap -
+  // per-burst preamble/sync/header overhead is what caps VHF-FM
+  // throughput, so bursts must be as long as the wire allows.
+  const int cwTarget =
+      mode_ >= 13 ? 6 * fpb : (mode_ <= 7 ? 1 : 2) * fpb;
+  dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
@@ -885,12 +894,24 @@ void LinkEngine::updateArqTimeout() {
   // M4, M4 for the OFDM robust tier, the session mode above.
   ta.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
   ta.sig = sigForMode(ta.mode);
-  arqTx_.setTimeout(frameAirtimeSec(tp) + frameAirtimeSec(ta) + 3.0);
+  // Batched-ACK modes wait up to a 4-burst batch before feedback.
+  const double batch = mode_ >= 13 ? 4.0 : 1.0;
+  const double dataAir = frameAirtimeSec(tp);
+  arqTx_.setTimeout(batch * dataAir + frameAirtimeSec(ta) + 3.0);
+  // The flush must NOT fire between back-to-back containers of a
+  // healthy stream - only when the sender actually went quiet.
+  ackFlushSec_ = std::max(0.4, 1.6 * dataAir);
 }
 
 void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   mode_ = mode;
   cpMode_ = cp;
+  // Deep-tier sessions survive routine multi-minute decode droughts
+  // (only a DECODED frame refreshes the idle clock at ~50% frame FER);
+  // OFDM sessions keep the tight 120 s hang detection.
+  fsm_.setIdleDisconnectSec(
+      kModes[size_t(mode_)].waveform == Waveform::Css ? deepIdleSec_
+                                                      : 120.0);
   updateArqTimeout();
   if (amc_) amc_->onModeApplied(uint8_t(mode), now);
 }
@@ -978,7 +999,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           MaskUpdateBody mu;
           mu.epoch = uint8_t(pendingMaskEpoch_);
           mu.family = uint8_t(cfg_.policy.family);
-          mu.mask = pendingRxMask_.bits;
+          std::copy(pendingRxMask_.bits.begin(),
+                    pendingRxMask_.bits.begin() + 9, mu.mask.begin());
           queueControl(LinkType::MaskUpdate, mu.pack(),
                        sigForMode(mode_),
                        std::min(mode_, 8));
@@ -1000,7 +1022,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           MaskUpdateBody mu;
           mu.epoch = uint8_t(pendingMaskEpoch_);
           mu.family = uint8_t(cfg_.policy.family);
-          mu.mask = pendingRxMask_.bits;
+          std::copy(pendingRxMask_.bits.begin(),
+                    pendingRxMask_.bits.begin() + 9, mu.mask.begin());
           queueControl(LinkType::MaskUpdate, mu.pack(),
                        sigForMode(mode_),
                        std::min(mode_, 8));
@@ -1107,6 +1130,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
   }
+  if (!ackPending_ && dataSinceAck_ > 0 &&
+      fsm_.state() == FsmState::Connected &&
+      now - lastDataRxAt_ > ackFlushSec_) {
+    ackPending_ = true;  // tail flush: batch closed by silence
+    dataSinceAck_ = 0;
+  }
   if (ackPending_ && fsm_.state() == FsmState::Connected) {
     ackPending_ = false;
     // At most one ACK in the queue, ahead of bulk DATA but behind other
@@ -1194,6 +1223,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
            outQueue_.front().sig == group[0].sig) {
       group.push_back(std::move(outQueue_.front()));
       outQueue_.pop_front();
+    }
+    if (getenv("SKW_PROTO_DEBUG")) {
+      fprintf(stderr, "%s emit group=%zu queue=%zu\n",
+              cfg_.policy.ownCall.c_str(), group.size(), outQueue_.size());
     }
     if (group.size() > 1) {
       std::vector<uint8_t> payload;
@@ -1523,7 +1556,18 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             p[0], std::span<const uint8_t>(p.data() + 1, p.size() - 1));
       }
       drainFileRx();
-      ackPending_ = true;
+      // ACK batching (M13+): one cumulative ACK per 4 data bursts keeps
+      // the reverse channel from eating ~25% of the airtime at the
+      // VHF-FM top rungs. Lower modes ACK per burst as before; the idle
+      // flush in tick() covers message tails shorter than a batch.
+      ++dataSinceAck_;
+      lastDataRxAt_ = now;
+      // Batch = 3 containers (12 frames): the ACK rides back while the
+      // sender still holds one container of window - no stall.
+      if (mode_ < 13 || dataSinceAck_ >= 12) {
+        ackPending_ = true;
+        dataSinceAck_ = 0;
+      }
       break;
     }
     case LinkType::Ack: {
@@ -1609,7 +1653,8 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (!mu || fsm_.state() != FsmState::Connected) return;
       // The peer's RX sees interference on these carriers: zero them in
       // OUR transmissions from now on, and confirm.
-      txMask_.bits = mu->mask;
+      txMask_ = CarrierMask();  // wire mask covers the HF 72-carrier max
+      std::copy(mu->mask.begin(), mu->mask.end(), txMask_.bits.begin());
       static const bool maskDbg = getenv("SKW_MASK_DEBUG") != nullptr;
       if (maskDbg) {
         fprintf(stderr, "%s rxMASKUPD epoch=%d masked=%d\n",

@@ -31,7 +31,8 @@ enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2, Css = 3 };
 std::vector<bool> chirpPattern(ChirpSig sig);
 
 inline int chirpRepSamples() {
-  return int(kChirpRepSec * kFsBaseband);  // 1920
+  // Profile-dependent: 1920 (HF, 160 ms) or 480 (VHF-FM, 40 ms).
+  return int(activeProfile().chirpRepSec * kFsBaseband);
 }
 
 // Baseband preamble for a family/signature: reps back-to-back, raised-cosine

@@ -38,6 +38,10 @@ struct ChansimParams {
 ChansimParams ccirGood();      // 0.5 / 0.1
 ChansimParams ccirModerate();  // 1.0 / 0.5
 ChansimParams ccirPoor();      // 2.0 / 1.0
+// VHF-FM data-port channel (WAVEFORM.md Phase 7): flat and near-static
+// (Rician K -> inf approximation) - no multipath, no Doppler process;
+// AWGN plus whatever CFO/clock impairments the caller sets.
+ChansimParams vhfFlat();
 
 class Chansim {
  public:

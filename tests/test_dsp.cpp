@@ -139,7 +139,7 @@ TEST_CASE(downconverter_tone_snr) {
     }
     std::vector<cfloat> out;
     dc.process(in, out);
-    double snr = toneSnrDb(out, f - kCenterHz, kFsBaseband, 3000);
+    double snr = toneSnrDb(out, f - centerHz(), kFsBaseband, 3000);
     CHECK(snr > 60.0);
   }
 }

@@ -1,29 +1,51 @@
 #include "dsp/updown.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/constants.hpp"
 
 namespace skw {
 namespace {
+// All converter filters derive from the ACTIVE band profile's widest
+// family half-band (HF: ULTRA +-1350 -> the original fixed numbers;
+// VHF-FM: +-3300). The formulas below reduce exactly to the v1 HF
+// values.
+double maxHalfBandHz() {
+  double h = 0.0;
+  for (int i = 0; i < kNumFamilies; ++i) {
+    const FamilyPlan& p = (*activeProfile().families)[size_t(i)];
+    h = std::max(h, p.carriers() * kSubcarrierHz / 2.0);
+  }
+  return h;
+}
 // RX stage 1 (at 48 kHz, decimating to 24 kHz): pass the full shifted band,
 // stop the first alias region (fold at 12 kHz).
 std::vector<float> rxStage1Taps() {
-  return designKaiserLowpass(48000.0, 2000.0, 9500.0, 70.0);
+  const double half = maxHalfBandHz();
+  return designKaiserLowpass(48000.0, half + 650.0,
+                             std::min(9500.0, 12000.0 - half - 350.0), 70.0);
 }
 // RX stage 2 (at 24 kHz, decimating to 12 kHz): the sharp image-reject and
-// anti-alias filter. Pass +-1400 (covers ULTRA +-1350), stop 1650.
+// anti-alias filter (HF: pass 1400 covers ULTRA's +-1350, stop 1650).
 std::vector<float> rxStage2Taps() {
-  return designKaiserLowpass(24000.0, 1400.0, 1650.0, 70.0);
+  const double half = maxHalfBandHz();
+  return designKaiserLowpass(24000.0, half + 50.0, half + 300.0, 70.0);
 }
 // TX stage 1 (at 24 kHz, from 12 kHz): kill the zero-stuff image around
 // +-(12000 - f). Gain 2 restores amplitude after x2 upsampling.
 std::vector<float> txStage1Taps() {
-  return designKaiserLowpass(24000.0, 1500.0, 10000.0, 70.0, 2.0);
+  const double half = maxHalfBandHz();
+  return designKaiserLowpass(24000.0, half + 150.0,
+                             std::min(10000.0, 12000.0 - half - 350.0), 70.0,
+                             2.0);
 }
 // TX stage 2 (at 48 kHz, from 24 kHz): image around +-(24000 - f).
 std::vector<float> txStage2Taps() {
-  return designKaiserLowpass(48000.0, 1500.0, 22000.0, 70.0, 2.0);
+  const double half = maxHalfBandHz();
+  return designKaiserLowpass(48000.0, half + 150.0,
+                             std::min(22000.0, 24000.0 - half - 350.0), 70.0,
+                             2.0);
 }
 }  // namespace
 
@@ -41,7 +63,7 @@ cfloat Nco::next() {
 void Nco::reset() { phase_ = 0.0; }
 
 Downconverter::Downconverter()
-    : nco_(-kCenterHz, kFsAudio),
+    : nco_(-centerHz(), kFsAudio),
       stage1_(rxStage1Taps(), 2),
       stage2_(rxStage2Taps(), 2) {
   // Stage-1 delay (48k samples) /4 -> 12k samples; stage-2 delay (24k) /2.
@@ -67,7 +89,7 @@ void Downconverter::process(std::span<const float> in48k,
 Upconverter::Upconverter()
     : stage1_(txStage1Taps(), 2),
       stage2_(txStage2Taps(), 2),
-      nco_(kCenterHz, kFsAudio) {
+      nco_(centerHz(), kFsAudio) {
   delay48k_ = stage1_.groupDelayOutput() * 2.0 + stage2_.groupDelayOutput() * 1.0;
 }
 

@@ -12,7 +12,7 @@ namespace skw {
 
 enum class PttMethod : uint8_t { None, Rts, Dtr, Vox, Tcp };
 enum class HarqMode : uint8_t { Auto, Chase, Ir };
-enum class Band : uint8_t { Hf };  // vhf-fm reserved (WAVEFORM.md)
+// Band lives in core/constants.hpp (it selects the numerology profile).
 
 struct Config {
   // [station]

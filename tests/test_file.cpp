@@ -205,7 +205,10 @@ TEST_CASE(file_two_modem_transfer) {
   std::vector<std::string> evA, evB;
   std::optional<ReceivedFile> got;
   int n = 0, chatsSent = 0;
-  for (int i = 0; i < 9000 && !got; ++i) {
+  // Loop until the file AND all interleaved chats are through: a faster
+  // AMC ramp can finish the file before iteration-paced chats flush.
+  for (int i = 0;
+       i < 9000 && (!got || chatsSent < 5 || stream.size() < 25); ++i) {
     if (i % 40 == 0 && chatsSent < 5) {
       p.a.sendData(chat);  // interleave stream traffic mid-file
       ++chatsSent;
@@ -215,13 +218,15 @@ TEST_CASE(file_two_modem_transfer) {
     stream.insert(stream.end(), d.begin(), d.end());
     for (auto& e : p.a.takeEvents()) evA.push_back(e);
     for (auto& e : p.b.takeEvents()) evB.push_back(e);
-    got = p.b.takeReceivedFile();
+    if (!got) got = p.b.takeReceivedFile();
     if (p.a.state() != FsmState::Connected) break;
   }
   CHECK(got.has_value());
   CHECK(got->crcOk);
   CHECK(got->data == blob);
   CHECK(got->meta.name == "pass.bin");
+  std::printf("  interleaved stream: %zu bytes (expect %zu)\n",
+              stream.size(), chat.size() * 5);
   CHECK_EQ(int(stream.size()), int(chat.size() * 5));
   // Receiver surfaced EVT:FILE_RX; sender finishes with EVT:TXCOMPLETE
   // once the pipeline fully drains (give it a few more exchanges).
@@ -314,7 +319,7 @@ TEST_CASE(file_resume_after_link_death) {
   std::optional<ReceivedFile> got;
   for (int i = 0; i < 6000 && !got; ++i) {
     p.step();
-    got = p.b.takeReceivedFile();
+    if (!got) got = p.b.takeReceivedFile();
     if (p.a.state() != FsmState::Connected) break;
   }
   CHECK(got.has_value());

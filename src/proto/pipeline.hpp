@@ -19,6 +19,8 @@
 #include <span>
 #include <vector>
 
+#include "core/constants.hpp"
+
 namespace skw {
 
 inline constexpr uint8_t kProtoMarkerStored = 0x00;
@@ -29,7 +31,14 @@ inline constexpr uint8_t kSvcStream = 0x01;
 inline constexpr uint8_t kSvcFile = 0x02;
 inline constexpr size_t kProtoDecompressCap = 8u << 20;  // 8 MiB
 inline constexpr double kCoalesceWindowSec = 0.25;
-inline constexpr size_t kCoalesceMaxBytes = 4096;  // window-full seal
+// Window-full seal cap: TX-local segmentation policy (the receiver
+// reassembles whatever message sizes arrive). The VHF-FM profile uses
+// larger messages so tail segments do not eat container slots at
+// 25+ kbps; HF keeps small messages for latency under loss.
+inline constexpr size_t kCoalesceMaxBytes = 4096;
+inline size_t coalesceMaxBytes() {
+  return activeBand() == Band::VhfFm ? 16384 : kCoalesceMaxBytes;
+}
 inline constexpr size_t kCompressMinSaving = 8;    // bytes, PROTOCOL.md
 
 // Single-shot zstd. zstdUnpack returns nullopt on malformed input,

@@ -21,9 +21,12 @@ namespace skw {
 
 using cfloat = std::complex<float>;
 
-inline constexpr int kZcCpBaseband =
-    kCpSamplesAudio[size_t(CpMode::Medium)] / kDecimation;          // 48
-inline constexpr int kZcSymbolSamples = kFftBaseband + kZcCpBaseband;  // 368
+// ZC symbols carry the profile's MEDIUM CP (HF: 48 baseband -> 368
+// samples/symbol; VHF-FM: 24 -> 344).
+inline int zcCpBaseband() {
+  return cpSamplesAudio(CpMode::Medium) / kDecimation;
+}
+inline int zcSymbolSamples() { return kFftBaseband + zcCpBaseband(); }
 
 // Frequency-domain ZC sequence, length = family carrier count.
 std::vector<cfloat> zcFreqSequence(Family family);
@@ -40,6 +43,11 @@ struct ZcSyncResult {
   double cfoHz = 0.0;       // fused CFO (prior x measurement, by variance)
   double cfoSigmaHz = 0.0;  // estimated std dev of cfoHz
   float quality = 0.0f;     // coherent-combining quality in [0, 1]
+  // Per-carrier noise variance estimated from the spread of the block's
+  // per-symbol channel estimates (same normalization as `channel`).
+  // Seeds the tracker so SHORT frames (ACKs, keepalives) report honest
+  // SNR instead of the tracker's crude initial guess.
+  double noiseVar = 0.0;
   // Per-active-carrier complex channel gain, averaged over the block's
   // symbols (index 0 = family's first active carrier).
   std::vector<cfloat> channel;

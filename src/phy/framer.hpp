@@ -37,7 +37,7 @@ std::optional<PhyHeader> parsePhyHeader(std::span<const uint8_t> bytes);
 
 // Header transport parameters by class (fixed, never negotiated).
 inline int headerSpread(bool robust) {
-  return robust ? kHeaderSpreadRobust : kHeaderSpreadFast;
+  return robust ? kHeaderSpreadRobust : activeProfile().headerSpreadFast;
 }
 inline bool robustHeaderForSig(ChirpSig sig) {
   return sig != ChirpSig::Fast;

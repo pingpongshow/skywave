@@ -42,6 +42,11 @@ inline cfloat mapSymbol(Constellation c, uint32_t bits) {
       float q = grayAxis(bits & 7, 3);
       return cfloat(i, q) / std::sqrt(42.0f);
     }
+    case Constellation::Qam256: {
+      float i = grayAxis((bits >> 4) & 15, 4);
+      float q = grayAxis(bits & 15, 4);
+      return cfloat(i, q) / std::sqrt(170.0f);
+    }
   }
   return {0, 0};
 }

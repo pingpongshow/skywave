@@ -28,7 +28,7 @@ std::vector<uint8_t> readSymbols(Family fam, Constellation c, int spread,
                                  CpMode cp, std::span<const cfloat> x,
                                  int symIdx0, int nSymbols) {
   Fft fft(kFftBaseband);
-  const int cpLen = kCpSamplesAudio[size_t(cp)] / kDecimation;
+  const int cpLen = cpSamplesAudio(cp) / kDecimation;
   const int symLen = kFftBaseband + cpLen;
   const int bps = bitsPerSymbol(c);
   const int G = spreadGroupSymbols(fam, spread);

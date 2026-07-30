@@ -72,7 +72,7 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
   // proportional first cut), so take the neighborhood max plus a floor.
   const double fd = robust_ ? 1.0 : 0.5;
   const double Ts =
-      double(kFftBaseband + kCpSamplesAudio[1] / kDecimation) / kFsBaseband;
+      double(kFftBaseband + cpSamplesAudio(CpMode(1)) / kDecimation) / kFsBaseband;
   const double arg = 2.0 * std::pow(M_PI * fd * Ts, 2.0);
   rho_ = std::exp(-arg);
   double seedPow = 0.0;
@@ -365,7 +365,7 @@ void demapLlr(Constellation c, cfloat z, float a, float nvar,
   // normalized metric.
   const cfloat est = z / a;
   const float scale = a / std::max(nvar, 1e-9f);
-  float d[64];
+  float d[256];
   for (int v = 0; v < m; ++v) {
     d[v] = std::norm(est - mapSymbol(c, uint32_t(v))) * scale;
   }

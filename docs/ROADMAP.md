@@ -766,13 +766,76 @@ others `[P]` across tracks.*
 
 *Exit gate: **Milestone M7**.*
 
-- [ ] **7.1 Profile table + flat-channel preset** — `vhf-fm` numerology
-  per WAVEFORM.md forward spec; Rician/near-AWGN chansim preset.
-- [ ] **7.2 Ladder + CCA + sync tuning** — top-heavy ladder (evaluate
-  256QAM rung), carrier-detect busy logic, retuned chirp/thresholds.
-- [ ] **7.3 Validation** — bertool conformance for the profile; all
-  Phase-2/3/4 scenarios under `band = vhf-fm`.
+**Expansion (2026-07-30, planning pass before implementation).** The
+forward spec sketched a NEW numerology (150 Hz spacing, 80-point FFT,
+short symbols) and labeled it "targets, not commitments". Implementing
+that forks every DSP path (framer, receiver, tracker, sync) behind
+runtime numerology — an enormous regression surface for zero gate
+benefit. DESIGN DECISION: the `vhf-fm` profile keeps the proven
+320-point / 37.5 Hz / 12 kHz numerology and expresses the wideband path
+as a PROFILE TABLE exactly as ARCHITECTURE.md promised — one wide
+family (176 carriers, audio bins 8–183 ≈ 300–6900 Hz, center 3.6 kHz),
+a per-band center shift in the audio converters, per-band floor tables,
+and SHORT CP default (VHF delay spreads are microseconds; the 27 ms
+symbol is fine because the channel is static — throughput comes from
+carrier COUNT, not symbol rate). M13 at SHORT CP nets ~27 kbps ≥ the
+25 kbps gate. The 256QAM rung is evaluated and DEFERRED: the gate is met
+without it, and 256QAM through consumer soundcard/FM-discriminator
+chains has no realistic SNR margin. Sub-steps:
+
+- [x] **7.1 Band profile plumbing** — `BandProfile` table (family plans,
+  center bin, floor tables, capability gates) selected once at startup;
+  `plan()`/`floorDb()`/`fadingFloorDb()`/center consult the active
+  profile (HF static_asserts stay pinned to the HF table); `Band::VhfFm`
+  + `band = vhf-fm` INI value; converters use the profile center.
+  Profile gates: CSS tier and carrier masking are HF-only (masking's
+  9-byte wire bitmap caps at 72 carriers; a flat channel needs neither).
+- [x] **7.2 VHF family + chansim preset + tuning** — 176-carrier family
+  table row, chirp sweep 400–6800 Hz, `vhfFlat()` chansim preset
+  (near-AWGN: Rician K→∞ approximation of the discriminator path),
+  bertool `--band vhf-fm`, measured AWGN floor row (flat channel ⇒
+  fading table = AWGN table), SHORT-CP default under the profile. CCA:
+  the worker's existing level-based floor+6 dB busy logic IS the
+  carrier-detect style the spec asks for — verified, not replaced.
+- [x] **7.3 Validation (M7)** — bertool conformance for the profile;
+  connect / bulk / disconnect, AMC ramp, and file-transfer scenarios
+  under `band = vhf-fm`; sustained NET throughput measurement.
   *Gate: **M7** — ≥ 25 kbps net sustained over the flat-channel sim.*
+  ✓ 2026-07-30 — profile table live (`kVhfFmProfile`: 176-carrier
+  family, center 3600 Hz, CP set 0.67/2/4 ms, 40 ms chirp reps, ZC 2/4,
+  fast-header spread x1, PAPR 11 dB, CSS/masking gated off); bertool
+  `--band vhf-fm` all points pass incl. M14 at its measured 33 dB knee
+  (archived docs/conformance/skw_vhf_flat.csv); test_vhf: activation,
+  connect/bulk/disconnect, AMC ramp M10->M14 in 47 s, 8 KiB file, and
+  the M7 gate = 25.5 kbps sustained at pinned M14 (everything included:
+  preamble/sync/header, containers, batched ACKs, turnarounds, ARQ).
+  Suites 37/37 + crypto 38/38.
+  DEVIATIONS: (1) The planned "256QAM deferral" REVERSED by measurement:
+  M13 tops at ~20 kbps against per-burst overhead within the 4095-byte
+  PHY cap, so M14 (256QAM r5/6) was added - active in the shared table,
+  floor-sentineled on HF, above kInitialModeCap. (2) OFDM payload
+  codewords now ride ONE continuous bit stream per frame (per-codeword
+  symbol alignment wasted 21% at 176 carriers; HF gains ~3%) - internal
+  PHY packing change, both ends updated. (3) MAC: window 16 at M13+,
+  ACK batching (one cumulative ACK per 12 data frames at M13+ with an
+  airtime-scaled tail flush), ARQ window resizes with mode changes
+  (was fixed at connect - a live bug that capped pipelining), codeword
+  target fills the PHY cap at M13+. (4) TX PAPR ceiling is per-profile:
+  8 dB clip noise tipped 256QAM frames content-dependently, INCLUDING
+  every identical retransmission (with HARQ-chase accumulating the
+  mismatched rv-byte priors - a poisoned-store guard now resets chase
+  after 4 failed combines). (5) ZC sync now measures per-carrier noise
+  from its per-symbol estimate spread and seeds the tracker: the old
+  10-dB-below-signal guess froze AMC's effective SNR at ~16 dB via
+  short ACK frames (all bands benefit). (6) CarrierMask in-memory
+  capacity 9->22 bytes (176 carriers): the 72-carrier assumption read
+  OUT OF BOUNDS under VHF; the 9-byte HF wire mask is unchanged.
+  (7) idle-disconnect scales with the SESSION mode (deep CSS links get
+  10x CALL airtime; OFDM keeps 120 s - the first cut keyed on config
+  and broke HF hang detection). (8) chansim's Gaussian fade FIR now
+  floors sigma at 0.05 Hz (doppler=0 presets built a ~500x-cost filter
+  it never used). (9) proto coalesce cap is TX-local band policy
+  (16 KiB on vhf-fm - tail segments were eating container slots).
 
 ---
 

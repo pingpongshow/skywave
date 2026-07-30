@@ -15,10 +15,9 @@
 namespace skw {
 namespace {
 
-// Worker hop: one OFDM symbol at MEDIUM CP in audio samples keeps latency
-// bounded and gives the DSP a natural processing granule.
-constexpr size_t kChunkSamples =
-    size_t(kFftAudio) + size_t(kCpSamplesAudio[1]);
+// Worker hop: ~one OFDM symbol of audio keeps latency bounded and gives
+// the DSP a natural processing granule (fixed size; profile-agnostic).
+constexpr size_t kChunkSamples = size_t(kFftAudio) + 192;
 
 // RX capture-window retry ladder (baseband seconds after the detected
 // preamble start): the frame length is unknown until the self-describing
@@ -64,19 +63,24 @@ ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
 ModemWorker::~ModemWorker() { stop(); }
 
 void ModemWorker::rebuildEngine() {
+  // Numerology profile FIRST: every DSP object constructed below reads
+  // the active band's family plans and center.
+  setActiveBand(cfg_.band);
+  const BandProfile& prof = activeProfile();
   EngineConfig ec;
   ec.policy.ownCall = cfg_.callsign;
   ec.policy.family = cfg_.family;
   ec.policy.maxMode = uint8_t(cfg_.maxMode);
   uint16_t caps = kCapZstd | kCapBurstMac;
   if (cfg_.resume) caps |= kCapResume;
-  if (cfg_.carrierMasking) caps |= kCapMasking;
+  if (cfg_.carrierMasking && prof.masking) caps |= kCapMasking;
   if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
-  if (cfg_.cssTier) caps |= kCapCssTier;
-  ec.policy.cssEnable = cfg_.cssTier;
+  const bool css = cfg_.cssTier && prof.cssTier;
+  if (css) caps |= kCapCssTier;
+  ec.policy.cssEnable = css;
   ec.policy.caps = caps;
   ec.arqMaxRetries = cfg_.maxRetries;
-  ec.maskingEnabled = cfg_.carrierMasking;
+  ec.maskingEnabled = cfg_.carrierMasking && prof.masking;
   ec.cpAuto = cfg_.cpMode < 0;
   ec.cwId = cfg_.cwId;
   ec.cwWpm = cfg_.cwWpm;
@@ -752,7 +756,7 @@ std::string ModemWorker::audioLevel() {
 
 std::string ModemWorker::freqInfo() {
   std::lock_guard lock(modemMutex_);
-  return "CENTER=" + fmt1(kCenterHz) +
+  return "CENTER=" + fmt1(centerHz()) +
          " SHIFT=" + fmt1(engine_->txShiftHz()) +
          " CFO=" + fmt1(engine_->lastRxCfoHz());
 }

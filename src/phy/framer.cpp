@@ -162,7 +162,7 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
                       const CarrierMask* mask) {
   const int bps = bitsPerSymbol(constellation);
   Fft fft(kFftBaseband);
-  const int cpLen = kCpSamplesAudio[size_t(cp)] / kDecimation;
+  const int cpLen = cpSamplesAudio(cp) / kDecimation;
   const int G = spreadGroupSymbols(family, spread, mask);
 
   size_t bitPos = 0;
@@ -241,7 +241,7 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
   FrameGeometry g;
   auto pre = makeChirpPreamble(p.family, p.sig);
   g.preambleSamples = int(pre.size());
-  g.zcSymbols = robustHeaderForSig(p.sig) ? kZcSymbolsRobust : kZcSymbolsFast;
+  g.zcSymbols = zcSymbols(robustHeaderForSig(p.sig));
 
   const bool robust = robustHeaderForSig(p.sig);
   const int hSpread = headerSpread(robust);
@@ -260,30 +260,31 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
   const size_t piggy =
       std::min(p.payload.size(), size_t(kHeaderPiggybackBytes));
   size_t remaining = (p.payload.size() - piggy) * 8;
-  // Payload symbols: each codeword is emitted as its own group-aligned
-  // run (mirrors buildFrameBaseband's per-codeword appendOfdmSymbols).
-  const int pG = spreadGroupSymbols(p.family, md.spread, p.mask);
-  int psym = 0;
+  // Payload symbols: ONE continuous coded bit stream across codewords
+  // (mirrors buildFrameBaseband).
+  long totalCoded = 0;
   while (remaining > 0) {
     const LdpcCode& pcode =
         LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
     ++g.payloadCodewords;
     remaining -= std::min(remaining, size_t(pcode.k()));
-    int pbits = pcode.n();
-    while (pbits > 0) {
-      pbits -= sourceSymbolsPerGroup(p.family, g.headerSymbols + psym,
-                                     md.spread, p.mask) *
-               bitsPerSymbol(md.constellation);
-      psym += pG;
-    }
+    totalCoded += pcode.n();
+  }
+  const int pG = spreadGroupSymbols(p.family, md.spread, p.mask);
+  int psym = 0;
+  while (totalCoded > 0) {
+    totalCoded -= sourceSymbolsPerGroup(p.family, g.headerSymbols + psym,
+                                        md.spread, p.mask) *
+                  bitsPerSymbol(md.constellation);
+    psym += pG;
   }
   g.payloadSymbols = psym;
 
   const int hdrSymSamples =
-      kFftBaseband + kCpSamplesAudio[size_t(CpMode::Medium)] / kDecimation;
+      kFftBaseband + cpSamplesAudio(CpMode::Medium) / kDecimation;
   const int paySymSamples =
-      kFftBaseband + kCpSamplesAudio[size_t(p.cpMode)] / kDecimation;
-  g.totalSamples = g.preambleSamples + g.zcSymbols * kZcSymbolSamples +
+      kFftBaseband + cpSamplesAudio(p.cpMode) / kDecimation;
+  g.totalSamples = g.preambleSamples + g.zcSymbols * zcSymbolSamples() +
                    g.headerSymbols * hdrSymSamples +
                    g.payloadSymbols * paySymSamples;
   return g;
@@ -400,23 +401,32 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
   // ZC block and chirp are unit-RMS; OFDM symbols are scaled to unit RMS
   // in appendOfdmSymbols (ofdmTimeScale), so the frame is level-uniform
   // and the ZC-seeded channel estimate matches the pilot convention.
-  const int zcCount = robust ? kZcSymbolsRobust : kZcSymbolsFast;
+  const int zcCount = zcSymbols(robust);
   auto zc = makeZcBlock(p.family, zcCount);
   frame.insert(frame.end(), zc.begin(), zc.end());
 
   int sym = appendOfdmSymbols(p.family, Constellation::Qpsk,
                               headerSpread(robust), CpMode::Medium,
                               fb.headerCoded, 0, frame);
-  for (const auto& cw : fb.payloadCoded) {
-    sym += appendOfdmSymbols(p.family, md.constellation, md.spread, p.cpMode,
-                             cw, sym, frame, p.mask);
+  // Payload codewords ride ONE continuous bit stream (no per-codeword
+  // symbol alignment): at 176 carriers a 1944-bit codeword spans 1.58
+  // symbols and per-codeword rounding wasted ~21% of the payload air.
+  {
+    std::vector<uint8_t> allBits;
+    for (const auto& cw : fb.payloadCoded) {
+      allBits.insert(allBits.end(), cw.begin(), cw.end());
+    }
+    if (!allBits.empty()) {
+      sym += appendOfdmSymbols(p.family, md.constellation, md.spread,
+                               p.cpMode, allBits, sym, frame, p.mask);
+    }
   }
 
   // PAPR soft clip at +8 dB over current RMS.
   double pow = 0;
   for (const auto& v : frame) pow += std::norm(v);
   double rms = std::sqrt(pow / double(frame.size()));
-  const float ceiling = float(rms * std::pow(10.0, kTxPaprCeilingDb / 20.0));
+  const float ceiling = float(rms * std::pow(10.0, activeProfile().txPaprCeilingDb / 20.0));
   for (auto& v : frame) {
     float mag = std::abs(v);
     if (mag > ceiling) v *= ceiling / mag;

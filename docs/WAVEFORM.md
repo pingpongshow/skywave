@@ -136,15 +136,16 @@ puncturing (for HARQ-IR) follow standard 802.11n procedure.
 
 ## Mode Ladder
 
-One ladder shape for all families; only the rate numbers differ. `M0–M3` are
-**reserved** for a future non-coherent CSS tier (see final section) and are
-inactive in v1. The ladder is ordered strictly by robustness.
+One ladder shape for all families; only the rate numbers differ. `M0–M3`
+are the CSS deep tier (Phase 6, gated on `CAP_CSS_TIER`); `M14` is the
+VHF-FM 256QAM top rung (Phase 7, unreachable on HF). The ladder is
+ordered strictly by robustness.
 
 ### Common Mode Definitions
 
 | Mode | Waveform | Constellation | LDPC rate | Spread | Notes |
 |---|---|---|---|---:|---|
-| `M0` | CSS | — | Hamming(7,4) | SF8 | deep tier; modem built, inactive until 6.2 |
+| `M0` | CSS | — | LDPC 1/2 (soft) | SF8 | deep tier; CAP_CSS_TIER-gated |
 | `M1` | CSS | — | Hamming(7,4) | SF7 | |
 | `M2` | CSS | — | Hamming(7,4) | SF6 | |
 | `M3` | CSS | — | Hamming(7,4) | SF5 | |
@@ -157,7 +158,8 @@ inactive in v1. The ladder is ordered strictly by robustness.
 | `M10` | OFDM | 16QAM | 1/2 | 1 | |
 | `M11` | OFDM | 16QAM | 3/4 | 1 | |
 | `M12` | OFDM | 64QAM | 2/3 | 1 | |
-| `M13` | OFDM | 64QAM | 5/6 | 1 | top mode |
+| `M13` | OFDM | 64QAM | 5/6 | 1 | HF top mode |
+| `M14` | OFDM | 256QAM | 5/6 | 1 | VHF-FM only (floor sentinels on HF) |
 
 ### ULTRA Rates and Floors (opt-in tier)
 
@@ -493,34 +495,49 @@ the CALL arrived on; the committed session extends the AMC ladder to
 `M0` (kFadingNA rungs probe-gated); all session control (ACK, MODE, KEY,
 DISC, keepalive) rides the session's CSS mode below `M4`.
 
-## VHF-FM Band Profile — Forward Specification
+## VHF-FM Band Profile (Phase 7)
 
-Not built in v1; reserved so it lands as a profile table, not a redesign.
+Implemented as a **profile table** (`kVhfFmProfile`), selected by
+`[modem] band = vhf-fm` once at startup. The forward spec's 150 Hz
+numerology sketch was evaluated and REJECTED in favor of keeping the
+proven 320-point / 37.5 Hz grid (see ROADMAP Phase 7 expansion):
+throughput comes from carrier COUNT on the wideband path, and every DSP
+subsystem is reused unchanged.
 
 **Works today, no profile needed:** Skywave over a VHF/UHF FM rig's voice
 audio path (mic/speaker, ~300–3000 Hz) is just the `HF` profile on a
-benign channel — it connects and rides the ladder to `M13`. The dedicated
-profile targets the *wideband* FM path instead.
+benign channel. The dedicated profile targets the *wideband* data port.
 
-Planned shape (targets, not commitments):
+Profile contents:
 
-- **channel**: the flat ~300–6900 Hz audio of a 9600-capable FM rig's data
-  port (discriminator/flat path), or SDR audio of similar width; still
-  48 kHz soundcard I/O and the 12 kHz complex internal domain
-- **numerology**: ~150 Hz subcarrier spacing (VHF multipath is microseconds,
-  not milliseconds — short symbols win), CP ≈ 0.25–0.5 ms, ~45 carriers,
-  ~6.75 kHz occupied, center ~3.6 kHz
-- **ladder**: no deep-spread tier (the channel is SNR-rich or dead); ladder
-  emphasis shifts to the top — including a possible 256QAM extension rung —
-  targeting ~25–35 kbps net at the top
-- **CCA**: carrier-detect / RSSI-style busy logic replaces the HF spectral
-  busy fusion
-- **sync**: same chirp + ZC machinery, retuned spans and thresholds
-- **everything above the PHY** — link, ARQ, AMC shape, services, crypto,
-  voice, interfaces — is unchanged and shared
-
-Config surface: `[modem] band = hf` (reserved key, `hf` is the only v1
-value; `vhf-fm` arrives with the profile).
+- **channel**: the flat ~300–6900 Hz audio of a 9600-capable FM rig's
+  data port; 48 kHz soundcard I/O, same 12 kHz complex domain shifted to
+  a **3.6 kHz center** (bin 96)
+- **family**: ONE plan — `VHF`, 176 carriers (audio bins 8–183,
+  ~6.6 kHz occupied); every 2-bit wire family index resolves to it
+- **CP set**: 0.67 / 2 / 4 ms (SHORT default — VHF multipath is
+  microseconds; CP is sync slack, and the tight SHORT buys symbol rate)
+- **ladder**: full OFDM ladder plus **`M14` = 256QAM r5/6**, the top
+  rung added after the Phase-7 evaluation (M13 alone cannot clear
+  25 kbps against per-burst overhead within the 4095-byte PHY cap).
+  Measured flat-channel floors (AWGN ≡ fading, `kVhfFloors`):
+  −4 … 24.5 (M4–M13), 33.0 (M14). M14 is table-active but unreachable
+  on HF (floor sentinels) and above `kInitialModeCap`
+- **CSS tier / masking**: OFF (profile gates) — the deep tier is HF
+  physics, and the 9-byte wire mask bitmap covers ≤ 72 carriers
+- **sync**: same chirp + ZC machinery with **40 ms chirp reps** (4× less
+  preamble overhead; the SNR-rich path needs no deep integration),
+  ZC block 2/4 symbols, fast-header spread ×1 (fast tier floors ≥
+  +6.5 dB)
+- **TX**: PAPR ceiling 11 dB (256QAM EVM budget; 8 dB clip noise tipped
+  whole frames content-dependently — including every identical
+  retransmission)
+- **CCA**: the worker's level-based floor+6 dB busy logic (RSSI-style,
+  as specified)
+- **throughput (M7 gate)**: ≥ 25 kbps net sustained measured end-to-end
+  over the flat-channel sim at pinned `M14` — 25.5 kbps including
+  preamble/sync/header, MAC container packing, batched ACKs,
+  turnarounds, ARQ (`test_vhf`)
 
 ## Conformance Targets
 

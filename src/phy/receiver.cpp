@@ -34,7 +34,7 @@ struct SymbolWalker {
   // false on running out of samples.
   bool collect(Constellation cst, int spread, CpMode cp, int bits,
                std::vector<float>& llr) {
-    const int cpLen = kCpSamplesAudio[size_t(cp)] / kDecimation;
+    const int cpLen = cpSamplesAudio(cp) / kDecimation;
     const int symLen = kFftBaseband + cpLen;
     const int bps = bitsPerSymbol(cst);
     const int G = spreadGroupSymbols(family, spread, mask);
@@ -507,6 +507,13 @@ const std::vector<float>* HarqChase::infoPriors(uint64_t key) const {
 }
 
 int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
+  // Poisoned-store guard: retransmissions differ in the rv byte, so a
+  // store that keeps failing to combine-decode accumulates mismatched
+  // priors. After several failed combines, restart clean.
+  if (auto it = store_.find(key);
+      it != store_.end() && it->second.count >= 4) {
+    store_.erase(it);
+  }
   if (store_.size() > 64) {
     // Bounded store: drop the oldest half on overflow.
     uint64_t median = stampCtr_ - 32;
@@ -563,7 +570,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
 
   // 2) ZC refinement.
   const bool robust = robustHeaderForSig(hit.sig);
-  const int zcCount = robust ? kZcSymbolsRobust : kZcSymbolsFast;
+  const int zcCount = zcSymbols(robust);
   const int reps = int(chirpPattern(hit.sig).size());
   const double zcCoarse =
       hit.startSample + double(reps) * chirpRepSamples();
@@ -572,13 +579,13 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   stage(RxStage::HeaderFail);
 
   // Integer symbol grid; fold the fractional remainder into H.
-  const double firstSym = zc.blockStart + double(zcCount) * kZcSymbolSamples;
+  const double firstSym = zc.blockStart + double(zcCount) * zcSymbolSamples();
   const int64_t t0 = int64_t(std::llround(firstSym));
   const double delta = double(t0) - firstSym;
   std::vector<cfloat> h0 = zc.channel;
   const int n = plan(family).carriers();
   for (int c = 0; c < n; ++c) {
-    int bin = plan(family).firstBin + c - kCenterBin;  // signed
+    int bin = plan(family).firstBin + c - centerBin();  // signed
     double ph = 2.0 * M_PI * double(bin) * delta / kFftBaseband;
     h0[size_t(c)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
   }
@@ -588,7 +595,12 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   double h0pow = 0;
   for (const auto& v : h0) h0pow += std::norm(v);
   h0pow /= std::max(n, 1);
-  ChannelTracker tracker(family, robust, std::move(h0), h0pow * 0.1);
+  // ZC-measured noise seed when available: short frames (ACKs) never
+  // converge the tracker, and a crude 10-dB-below-signal guess froze
+  // AMC's effective SNR at ~16 dB on rich channels.
+  const double nv0 =
+      zc.noiseVar > 0.0 ? zc.noiseVar : h0pow * 0.1;
+  ChannelTracker tracker(family, robust, std::move(h0), nv0);
 
   SymbolWalker walker{family, sig, zc.cfoHz, t0, 0, &tracker};
 
@@ -643,6 +655,26 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     restInfoBits.reserve(restBits);
     size_t remaining = restBits;
     size_t cw = 0;
+    // Continuous payload stream: collect ALL codewords' coded bits in
+    // one walk (TX packs them without per-codeword symbol alignment),
+    // then slice per codeword.
+    std::vector<int> cwN;
+    {
+      size_t rem = restBits;
+      while (rem > 0) {
+        const int n = payloadCodewordN(rem, md.rate);
+        cwN.push_back(n);
+        rem -= std::min(rem, size_t(n) * size_t(md.rate.num) /
+                                 size_t(md.rate.den));
+      }
+    }
+    long totalCoded = 0;
+    for (int n : cwN) totalCoded += n;
+    std::vector<float> allLlr;
+    const bool haveAll = walker.collect(md.constellation, md.spread,
+                                        hdr->cpMode, int(totalCoded),
+                                        allLlr);
+    size_t llrOff = 0;
     // IR (rate-stepdown): an r1/2 frame may be a step-down retransmission
     // of an earlier rate>1/2 attempt - add that attempt's stored
     // systematic priors; a failing rate>1/2 payload stores its systematic
@@ -662,12 +694,13 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     while (remaining > 0 && (ok || harq)) {
       const LdpcCode& pcode =
           LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
-      std::vector<float> llr;
-      if (!walker.collect(md.constellation, md.spread, hdr->cpMode,
-                          pcode.n(), llr)) {
+      if (!haveAll) {
         ok = false;
         break;
       }
+      std::vector<float> llr(allLlr.begin() + long(llrOff),
+                             allLlr.begin() + long(llrOff + size_t(pcode.n())));
+      llrOff += size_t(pcode.n());
       std::vector<uint8_t> info;
       std::vector<float> sys;
       bool dec = decodeCodeword(pcode, llr, info, priors, priorOff,

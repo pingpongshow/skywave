@@ -24,7 +24,7 @@ int zcRoot(Family f) {
 // FFT bin of the 320-point transform.
 int carrierToBin(Family f, int carrierIdx) {
   int audioBin = plan(f).firstBin + carrierIdx;
-  int b = audioBin - kCenterBin;  // baseband bin, may be negative
+  int b = audioBin - centerBin();  // baseband bin, may be negative
   return b >= 0 ? b : kFftBaseband + b;
 }
 
@@ -61,8 +61,8 @@ std::vector<cfloat> makeZcSymbol(Family family) {
   for (auto& c : core) c *= scale;
 
   std::vector<cfloat> sym;
-  sym.reserve(size_t(kZcSymbolSamples));
-  sym.insert(sym.end(), core.end() - kZcCpBaseband, core.end());  // CP
+  sym.reserve(size_t(zcSymbolSamples()));
+  sym.insert(sym.end(), core.end() - zcCpBaseband(), core.end());  // CP
   sym.insert(sym.end(), core.begin(), core.end());
   return sym;
 }
@@ -82,7 +82,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                       double priorCfoSigmaHz, int nSymbols,
                       int searchRadius) {
   ZcSyncResult res;
-  const int symLen = kZcSymbolSamples;
+  const int symLen = zcSymbolSamples();
   const int core = kFftBaseband;
   const auto ref = makeZcSymbol(family);  // CP + core, unit RMS
 
@@ -105,12 +105,12 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
   for (int off = -searchRadius; off <= searchRadius; ++off) {
     double m = 0;
     for (int s = 0; s < nSymbols; ++s) {
-      const int base = c0 + off + s * symLen + kZcCpBaseband;
+      const int base = c0 + off + s * symLen + zcCpBaseband();
       if (base < 0 || base + core > int(x.size())) continue;
       cfloat acc(0, 0);
       for (int i = 0; i < core; ++i) {
         acc += x[size_t(base + i)] *
-               std::conj(ref[size_t(kZcCpBaseband + i)]);
+               std::conj(ref[size_t(zcCpBaseband() + i)]);
       }
       m += std::norm(acc);
     }
@@ -141,11 +141,11 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
   std::vector<cfloat> m(static_cast<size_t>(nSymbols), cfloat(0, 0));
   int mCount = 0;
   for (int s = 0; s < nSymbols; ++s) {
-    const int base = t0 + s * symLen + kZcCpBaseband;
+    const int base = t0 + s * symLen + zcCpBaseband();
     if (base < 0 || base + mLen > int(x.size())) continue;
     cfloat acc(0, 0);
     for (int i = 0; i < mLen; ++i) {
-      acc += x[size_t(base + i)] * std::conj(ref[size_t(kZcCpBaseband + i)]);
+      acc += x[size_t(base + i)] * std::conj(ref[size_t(zcCpBaseband() + i)]);
     }
     m[size_t(s)] = acc;
     ++mCount;
@@ -217,9 +217,10 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
   std::vector<cfloat> sym(static_cast<size_t>(core));
   std::vector<cfloat> bins(static_cast<size_t>(core));
   std::vector<cfloat> acc(size_t(n), cfloat(0, 0));
+  std::vector<std::vector<cfloat>> perSym;
   int used = 0;
   for (int s = 0; s < nSymbols; ++s) {
-    const int base = t0 + s * symLen + kZcCpBaseband;
+    const int base = t0 + s * symLen + zcCpBaseband();
     if (base < 0 || base + core > int(x.size())) continue;
     for (int i = 0; i < core; ++i) {
       double ph =
@@ -228,10 +229,13 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                        cfloat(float(std::cos(ph)), float(std::sin(ph)));
     }
     fft.forward(sym.data(), bins.data());
+    std::vector<cfloat> est(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-      acc[size_t(i)] += bins[size_t(carrierToBin(family, i))] /
-                        seq[size_t(i)];
+      est[size_t(i)] =
+          bins[size_t(carrierToBin(family, i))] / seq[size_t(i)];
+      acc[size_t(i)] += est[size_t(i)];
     }
+    perSym.push_back(std::move(est));
     ++used;
   }
   if (used == 0) return res;
@@ -241,6 +245,17 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
   // fft(g * ifft(X)) = g * X, so each per-symbol estimate is g * H.
   const float g = float(kFftBaseband) / std::sqrt(float(n));
   for (auto& h : acc) h /= float(used) * g;
+  // Noise from the inter-symbol spread of the estimates (the symbols are
+  // identical, so any spread is noise + residual CFO).
+  if (used >= 2) {
+    double var = 0.0;
+    for (const auto& est : perSym) {
+      for (int i = 0; i < n; ++i) {
+        var += std::norm(est[size_t(i)] / g - acc[size_t(i)]);
+      }
+    }
+    res.noiseVar = var / (double(used - 1) * double(n));
+  }
 
   // 4) Timing refinement from the channel estimate's impulse response:
   //    IFFT the per-carrier estimate and pick the peak. This integrates
@@ -289,7 +304,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
     const double tau = double(firstLag) - 2.0;
     res.blockStart += tau;
     for (int i = 0; i < n; ++i) {
-      int bin = plan(family).firstBin + i - kCenterBin;
+      int bin = plan(family).firstBin + i - centerBin();
       double ph = 2.0 * M_PI * double(bin) * tau / kFftBaseband;
       acc[size_t(i)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
     }

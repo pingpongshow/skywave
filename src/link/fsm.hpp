@@ -72,6 +72,11 @@ class SessionFsm {
   explicit SessionFsm(FsmConfig cfg) : cfg_(cfg) {}
 
   FsmState state() const { return state_; }
+  // The engine scales the idle-disconnect window with the SESSION mode:
+  // deep-tier (CSS) links have routine multi-minute decode droughts;
+  // OFDM sessions keep the tight default.
+  void setIdleDisconnectSec(double s) { cfg_.idleDisconnectSec = s; }
+  double idleDisconnectSec() const { return cfg_.idleDisconnectSec; }
   FsmDiscCause lastDiscCause() const { return discCause_; }
   std::optional<FsmAction> nextAction();  // drain output queue
 
