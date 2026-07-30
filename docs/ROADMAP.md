@@ -749,9 +749,18 @@ others `[P]` across tracks.*
   test_advisor adds off-vs-shadow decision-sequence equivalence, the
   assist single-step property under continuous max bias, determinism,
   clamps, and gating tests.
-- [ ] **6.4 Packaging + release** — install targets, third-party notices,
+- [x] **6.4 Packaging + release** — install targets, third-party notices,
   versioning, release checklist, docs refresh pass.
   *Gate: **M6** — clean-machine install; full nightly suite green.*
+  ✓ 2026-07-30 — THIRD_PARTY.md (all linked/vendored components + the
+  802.11n LDPC table provenance), docs/RELEASE.md (versioning policy +
+  ordered gate sequence + cut procedure), THIRD_PARTY installed with
+  docs, README refresh (M0-M3 no longer "reserved"). M6 evidence: fresh
+  `git clone` -> configure -> build (0 errors) -> full suite 36/36;
+  staged `cmake --install --prefix` runs `skywave --version` standalone.
+  Milestone M6's -13 dB CCIR Moderate CSS connect+transfer rides MID per
+  the 6.2 deviation (WIDE is not physical for one-shot fading at -13);
+  Advisor non-degradation per 6.3 (whole suite runs under shadow).
 
 ## Phase 7 — VHF-FM Band Profile
 
