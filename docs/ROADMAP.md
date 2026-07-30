@@ -1022,3 +1022,17 @@ doc was updated)*
   Test payloads in `test_m2`/`test_system`/`test_m3_ramp` switched to
   xorshift noise so ARQ/PHY stress stays independent of compression;
   `test_proto` covers compressible traffic explicitly.
+- **Release testing / 2026-07-30** — 2 h endurance soak (ST3, real
+  virtual-audio devices) failed at cycle 79 after a 50 s data freeze:
+  the Phase-7 M13+ deep-pipe MAC (window 16, 6-codeword containers,
+  batched ACKs, batch-scaled timeouts) had leaked onto the HF band
+  profile, where a 512 B soak cycle is 1–2 frames — delivery feedback
+  hung on the tail flush and one lost flush-ACK stalled the sender for
+  the batch-scaled timeout. Fix: the entire deep-pipe MAC profile is
+  now scoped to `activeBand() == VhfFm` (macWindow, cwTarget, receiver
+  ACK batching, sender timeout scale); HF M13 keeps window 8 with
+  2-codeword containers and per-burst ACKs. Scoping only the ACK path
+  without the window was itself a livelock: 4 HF containers in flight
+  against a 1-container timeout budget times out its own head-of-line
+  burst (caught by `test_file` TXCOMPLETE drain). PROTOCOL.md MAC
+  profile table updated to band-scope the `M13+` row.

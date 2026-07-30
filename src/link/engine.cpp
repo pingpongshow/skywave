@@ -56,9 +56,12 @@ ChirpSig sigForMode(int mode) {
 int macWindow(int mode) {
   if (mode <= 6) return 2;
   if (mode <= 9) return 4;
-  // M13+ window 16: the VHF-FM top rungs need >= 2 full containers in
-  // flight to hide the ACK round trip (PROTOCOL.md MAC profiles).
-  return mode <= 12 ? 8 : 16;
+  // M13+ window 16 on VHF-FM only: the top rungs there need >= 2 full
+  // containers in flight to hide the ACK round trip (PROTOCOL.md MAC
+  // profiles). On HF the ARQ timeout budgets one container of airtime,
+  // so a deeper window would time out its own head-of-line burst.
+  if (mode >= 13 && activeBand() == Band::VhfFm) return 16;
+  return 8;
 }
 
 // CPMODE AUTO thresholds: smallest CP covering the measured spread with
@@ -877,7 +880,9 @@ void LinkEngine::updateArqTimeout() {
   // per-burst preamble/sync/header overhead is what caps VHF-FM
   // throughput, so bursts must be as long as the wire allows.
   const int cwTarget =
-      mode_ >= 13 ? 6 * fpb : (mode_ <= 7 ? 1 : 2) * fpb;
+      (mode_ >= 13 && activeBand() == Band::VhfFm)
+          ? 6 * fpb
+          : (mode_ <= 7 ? 1 : 2) * fpb;
   dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
@@ -895,7 +900,8 @@ void LinkEngine::updateArqTimeout() {
   ta.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
   ta.sig = sigForMode(ta.mode);
   // Batched-ACK modes wait up to a 4-burst batch before feedback.
-  const double batch = mode_ >= 13 ? 4.0 : 1.0;
+  const double batch =
+      (activeBand() == Band::VhfFm && mode_ >= 13) ? 4.0 : 1.0;
   const double dataAir = frameAirtimeSec(tp);
   arqTx_.setTimeout(batch * dataAir + frameAirtimeSec(ta) + 3.0);
   // The flush must NOT fire between back-to-back containers of a
@@ -1563,8 +1569,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       ++dataSinceAck_;
       lastDataRxAt_ = now;
       // Batch = 3 containers (12 frames): the ACK rides back while the
-      // sender still holds one container of window - no stall.
-      if (mode_ < 13 || dataSinceAck_ >= 12) {
+      // sender still holds one container of window - no stall. Batched
+      // feedback is a VHF-FM sustained-bulk optimization ONLY: on HF
+      // M13 the traffic is interactive/small and a lost tail-flush ACK
+      // stalls the sender for the batch-scaled timeout (observed as a
+      // 50 s data freeze in the real-device soak).
+      if (activeBand() != Band::VhfFm || mode_ < 13 ||
+          dataSinceAck_ >= 12) {
         ackPending_ = true;
         dataSinceAck_ = 0;
       }
