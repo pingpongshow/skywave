@@ -1036,3 +1036,17 @@ doc was updated)*
   against a 1-container timeout budget times out its own head-of-line
   burst (caught by `test_file` TXCOMPLETE drain). PROTOCOL.md MAC
   profile table updated to band-scope the `M13+` row.
+- **Release testing / 2026-07-30** — ASan and TSan are BLOCKED BY THE
+  HOST TOOLCHAIN, not by the code: both fail inside sanitizer runtime
+  init BEFORE `main()`, in the same dyld walk
+  (`__sanitizer::get_dyld_hdr -> dyld_shared_cache_iterate_text`) —
+  ASan spins forever in `InitializeShadowMemory` (process sample: 100%
+  of 40+ min in ASan init, even `test_core` run solo;
+  `MallocNanoZone=0` does not help) and TSan SIGSEGVs in
+  `CheckAndProtect` (crash report: faulting frames entirely inside
+  `libclang_rt.tsan_osx_dynamic`). Apple clang 17.0.0 compiler-rt vs
+  Darwin 25.6 dyld shared-cache incompatibility. UBSan needs no such
+  platform init and runs clean: FULL suite green under
+  `-fsanitize=undefined` (37/37). Release gate 2 therefore ships with
+  UBSan coverage only; rerun the ASan/TSan sweeps when the host Xcode
+  toolchain is updated.
