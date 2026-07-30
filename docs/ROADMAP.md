@@ -1164,7 +1164,18 @@ doc was updated)*
      (analogue of the fixed M14 PAPR content-dependence). Deep-tier
      DATA (as opposed to handshake/control) through real audio chains
      needs a dedicated validation pass before relying on CSS payload
-     transport OTA.
+     transport OTA. RELATED intermittent repro at OFDM M8: real-device
+     impaired soak (`st3_hardware.py --impair preset=moderate,snr=18`)
+     ran 14 healthy cycles then one 512 B cycle delivered nothing for
+     180 s with FFAIL=0 and RETRY=0 at measured 12 dB - same
+     stall-not-degradation signature, intermittent rather than
+     deterministic.
+  Real-device impairment tap (SKW_TX_IMPAIR + st3_hardware --impair)
+  VALIDATED over the BlackHole/VB-Cable path: PASS at good/25 dB
+  fading (link correctly measures ~23 dB, settles M10), PASS at
+  awgn/20 + 1.5 Hz CFO + 120 ppm clock skew (receiver tracks CFO
+  exactly, zero drops), moderate/18 runs healthily (M8, FFAIL=0)
+  until the intermittent stall above.
   Scenario calibration: floor scenario now connects clean then
   degrades, runs one-way at a +9 dB set-point (the ST2 radio chain's
   bandpass costs ~6 dB vs clean-baseband bertool floors), deep-tier
