@@ -108,6 +108,8 @@ std::optional<uint8_t> Amc::probeWanted(double now) const {
 }
 
 AmcDecision Amc::evaluate(double now) {
+  const int bias = advisorBias_;  // one-shot advisor influence
+  advisorBias_ = 0;
   const double eff = effectiveSnrDb(now);
   const double retry = retryRatio();
   degraded_ = false;
@@ -127,7 +129,8 @@ AmcDecision Amc::evaluate(double now) {
   // Demote: SNR under the demote margin, retry ratio, or failure streak.
   const bool floorBreak =
       operatingFloorDb(mode_) < 90.0 &&
-      eff < operatingFloorDb(mode_) + cfg_.demoteMarginDb;
+      eff < operatingFloorDb(mode_) + cfg_.demoteMarginDb +
+                (bias < 0 ? 0.5 : 0.0);
   const bool retryBreak = windowFill_ >= 8 && retry > cfg_.demoteRetryMin;
   const bool failBreak = failStreak_ >= cfg_.demoteFailStreak;
   if (floorBreak || retryBreak || failBreak) {
@@ -150,7 +153,10 @@ AmcDecision Amc::evaluate(double now) {
     promoteStreak_ = 0;
     return {};
   }
-  if (++promoteStreak_ < cfg_.promoteConsecutive) return {};
+  if (promoteStreak_ + (bias > 0 ? 1 : 0) + 1 < cfg_.promoteConsecutive) {
+    ++promoteStreak_;
+    return {};
+  }
   promoteStreak_ = 0;
   return {AmcDecision::Kind::Promote, next};
 }

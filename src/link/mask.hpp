@@ -4,6 +4,7 @@
 // engine runs the MASK_UPDATE/ACK exchange.
 #pragma once
 
+#include <algorithm>
 #include <vector>
 
 #include "phy/layout.hpp"
@@ -31,9 +32,19 @@ class MaskDetector {
   bool ratioExceeded(double now) const;  // > 30% qualify: AMC should demote
   void reset();
 
+  // Advisor assist hook (LINK_ADAPTATION.md): bounded threshold bias on
+  // top of the configured belowMedianDb; clamped to +-1.5 dB.
+  void setThresholdBiasDb(double d) {
+    thresholdBiasDb_ = std::clamp(d, -1.5, 1.5);
+  }
+  double effectiveThresholdDb() const {
+    return cfg_.belowMedianDb + thresholdBiasDb_;
+  }
+
  private:
   Family family_;
   MaskDetectorConfig cfg_;
+  double thresholdBiasDb_ = 0.0;   // advisor assist, clamped
   std::vector<double> ema_;        // per-carrier SNR EMA (dB)
   std::vector<double> belowSince_; // -1 = currently healthy
   bool seeded_ = false;

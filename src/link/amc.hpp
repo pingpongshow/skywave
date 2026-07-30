@@ -5,6 +5,7 @@
 // observations and executes the returned decisions via MODE_CHANGE (3.2).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 
@@ -69,6 +70,11 @@ class Amc {
   // NA-mode gate is a chicken-and-egg: evaluate() can never return
   // Promote to trigger the probe that would make it eligible.
   std::optional<uint8_t> probeWanted(double now) const;
+  // Advisor assist hook (LINK_ADAPTATION.md): a single-step bias
+  // consumed by the NEXT evaluate() only. +1 credits one promote
+  // streak evaluation; -1 widens the demote margin by 0.5 dB for that
+  // evaluation. Never moves more than the ladder's normal single step.
+  void applyAdvisorBias(int bias) { advisorBias_ = std::clamp(bias, -1, 1); }
   double effectiveSnrDb(double now) const;
   double retryRatio() const;
   bool degraded() const { return degraded_; }
@@ -91,6 +97,7 @@ class Amc {
   uint8_t selectivity_ = 0;
   double pilotStability_ = 0.0;
   bool probeClean_ = false;
+  int advisorBias_ = 0;  // one-shot, consumed by evaluate()
   int failStreak_ = 0;
   // Sliding 16-frame result window (bit i: retransmit flag).
   uint32_t retryBits_ = 0;

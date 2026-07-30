@@ -731,10 +731,24 @@ others `[P]` across tracks.*
   estimate is power-based from the sync region (peak/median saturates
   at ~12 dB on chirp correlation sidelobes and starved AMC promotion).
   *Gate: two-modem connect + transfer at −13 dB (WIDE, CCIR Moderate).*
-- [ ] **6.3 Advisor layer** — bounded framework, AMC/CFO/mask domains,
+- [x] **6.3 Advisor layer** — bounded framework, AMC/CFO/mask domains,
   off/shadow/assist modes, env controls.
   *Gate: shadow non-degradation on the Phase-3 ramp; assist bounded-step
   property tests.*
+  ✓ 2026-07-30 — `src/link/advisor.{hpp,cpp}`: closed-form least-squares
+  trend predictors over short bounded histories (deterministic, no
+  learned state). AMC domain: SNR-slope step bias (+/-1, retry-vetoed)
+  consumed as a ONE-SHOT `Amc::applyAdvisorBias` (one promote-streak
+  credit or +0.5 dB demote margin for a single evaluation); CFO domain:
+  drift-rate prediction, assist counteracts drift <=0.5 Hz per eval
+  inside the existing global clamp; mask domain: churn-driven threshold
+  bias via `MaskDetector::setThresholdBiasDb`, clamped +-1.5 dB. Env
+  controls per CONFIGURATION.md (`SKW_ADVISOR`, per-domain conf floors),
+  default `shadow`. Gate evidence: the WHOLE suite (incl. the Phase-3
+  ramp) runs under default shadow and is green (36/37 both flavors);
+  test_advisor adds off-vs-shadow decision-sequence equivalence, the
+  assist single-step property under continuous max bias, determinism,
+  clamps, and gating tests.
 - [ ] **6.4 Packaging + release** — install targets, third-party notices,
   versioning, release checklist, docs refresh pass.
   *Gate: **M6** — clean-machine install; full nightly suite green.*

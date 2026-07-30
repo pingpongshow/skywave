@@ -151,10 +151,16 @@ Signals that bypass normal evaluation cadence:
 ## Advisor Layer (Phase 6)
 
 A bounded, deterministic, dependency-free predictive helper (successor to
-the reference design's ML assist):
+the reference design's ML assist), implemented in `src/link/advisor.*` as
+closed-form least-squares trends over short bounded histories:
 
-- domains: AMC step bias, CFO search shaping, mask threshold tuning
-- modes: `off` / `shadow` (log only) / `assist` (apply when confident)
+- domains: AMC step bias (SNR slope ≥ ±1.5 dB/min, retry-vetoed, applied
+  as a one-shot single-evaluation bias), CFO drift shaping (predicted
+  oscillator drift counteracted ≤ 0.5 Hz per evaluation inside the global
+  TX-shift clamp), mask threshold tuning (proposal churn hardens the
+  below-median threshold, clamped ±1.5 dB)
+- modes: `off` / `shadow` (log only) / `assist` (apply when the domain's
+  confidence — trend fit quality × magnitude — clears its floor)
 - constraints: single-step influence only, clamped to legal ranges, never
   overrides handshake mode selection, no effect on voice
 - control: environment variables only (`SKW_ADVISOR=off|shadow|assist`,

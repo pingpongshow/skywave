@@ -99,6 +99,7 @@ add_library(skywave_core STATIC
   src/link/handshake.cpp
   src/link/arq.cpp
   src/link/arbiter.cpp
+  src/link/advisor.cpp
   src/link/engine.cpp
   src/link/amc.cpp
   src/link/chanmem.cpp
@@ -229,6 +230,7 @@ if(BUILD_TESTS)
       DISABLED $<NOT:$<BOOL:$ENV{SKW_HARDWARE_TESTS}>>)
   endif()
   skw_test(test_amc)
+  skw_test(test_advisor)
   skw_test(test_harq)
   skw_test(test_chanmem)
   skw_test(test_probe)

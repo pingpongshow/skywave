@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "core/log.hpp"
 #include "dsp/morse.hpp"
 
 namespace skw {
@@ -991,6 +992,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         CarrierMask want = maskDet_->proposal(now);
         if (!(want == rxMask_) &&
             want.maskedCount(cfg_.policy.family) > 0) {
+          advisor_.onMaskChange(now);  // churn evidence (mask domain)
           pendingRxMask_ = want;
           pendingMaskEpoch_ = (maskEpoch_ + 1) & 0x0F;
           maskEpoch_ = pendingMaskEpoch_;
@@ -1018,6 +1020,38 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       lastCpChange_ = now;
       requestModeChange(mode_, cpWant_, now);
     } else if (amc_ && isInitiator_ && pendingMode_ < 0) {
+      // Advisor (LINK_ADAPTATION.md, 6.3): bounded + deterministic.
+      // Shadow computes and logs only; assist applies single-step
+      // influence when confidence clears the per-domain floor. Never
+      // touches handshake mode selection or voice.
+      if (advisor_.mode() != AdvisorMode::Off) {
+        advisor_.onSnr(amc_->effectiveSnrDb(now), now);
+        const auto amcAdv = advisor_.adviseAmc(amc_->retryRatio());
+        const auto cfoAdv = advisor_.adviseCfo(now);
+        const auto maskAdv = advisor_.adviseMask(now);
+        SKW_DEBUG(
+            "advisor t=%.0f amc{bias=%d conf=%.2f} cfo{drift=%.2f "
+            "conf=%.2f} mask{d=%.1f conf=%.2f}%s",
+            now, amcAdv.stepBias, amcAdv.confidence, cfoAdv.driftHzPerMin,
+            cfoAdv.confidence, maskAdv.thresholdDeltaDb, maskAdv.confidence,
+            advisor_.mode() == AdvisorMode::Assist ? " (assist)" : "");
+        if (advisor_.assistAmc(amcAdv) && amcAdv.stepBias != 0) {
+          amc_->applyAdvisorBias(amcAdv.stepBias);
+        }
+        if (advisor_.assistCfo(cfoAdv) && lastCfoAssistAt_ > 0.0) {
+          // Counteract measured oscillator drift between reports: one
+          // bounded step per evaluation cadence, inside the existing
+          // global TX-shift clamp.
+          const double dtMin = (now - lastCfoAssistAt_) / 60.0;
+          const double step =
+              std::clamp(cfoAdv.driftHzPerMin * dtMin * 0.5, -0.5, 0.5);
+          txShiftHz_ = std::clamp(txShiftHz_ - step, -30.0, 30.0);
+        }
+        lastCfoAssistAt_ = now;
+        if (advisor_.assistMask(maskAdv) && maskDet_) {
+          maskDet_->setThresholdBiasDb(maskAdv.thresholdDeltaDb);
+        }
+      }
       auto d = amc_->evaluate(now);
       static const bool amcDbg = getenv("SKW_AMC_DEBUG") != nullptr;
       if (amcDbg) {
@@ -1273,6 +1307,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
   probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
     amc_->onLocalSnr(q.snrDb);
+    advisor_.onCfo(q.cfoHz, now);
   }
   switch (f.env.type) {
     case LinkType::Call: {

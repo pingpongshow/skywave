@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "link/advisor.hpp"
 #include "link/amc.hpp"
 #include "link/arq.hpp"
 #include "link/mask.hpp"
@@ -182,6 +183,8 @@ class LinkEngine {
   ArqTx arqTx_;
   ArqRx arqRx_;
   std::optional<Amc> amc_;
+  Advisor advisor_{AdvisorConfig::fromEnv()};
+  double lastCfoAssistAt_ = 0.0;
   HarqChase harq_;  // chase soft-combining across retransmissions
   ProbeGate probeGate_;
   // Carrier masking (per direction): txMask_ = what the PEER asked us to
