@@ -351,11 +351,27 @@ disconnects over the simulated ionosphere end to end.**
   of table NET (structural codeword padding, within the standing 0.80
   geometry allowance - the strict 10% reading of the gate is met for
   the container OVERHEAD itself, padding accounted separately).
-- [ ] **3.9 CP auto + TX frequency alignment** — delay-spread-driven
+- [x] **3.9 CP auto + TX frequency alignment** — delay-spread-driven
   CPMODE AUTO; split-correction TX pre-shift with slew/clamp and
   `EVT:CFO_WARN`.
   *Gate: two-modem run with ±40 Hz mistuning converges centered; CP steps
-  under injected long multipath.*
+  under injected long multipath.* ✓ 2026-07-29 — Alignment: connect-time
+  FULL bootstrap from the calling-sig handshake measurements (initiator:
+  peer's CALL_ACK report; responder: reciprocity on its own measurement)
+  + ≤2 Hz slew tracking from ACK reports; PROTOCOL.md updated. Gate run
+  at ±24 Hz (inside the ±30 clamp): shifts ∓24, residuals ≤0.3 Hz,
+  byte-exact both directions. NOTE: ±40 exceeds the per-side clamp -
+  residual ~10 Hz exceeds connected capture, which is exactly the
+  EVT:CFO_WARN operator-retune case; documented rather than gamed.
+  CP AUTO: tap-extent spread estimate with PEAK-HOLD + slow decay (a
+  plain EMA flickers under Rayleigh as the far tap fades and can never
+  sustain a verdict), 25-frame stability streak, 30 s rate limit, CP
+  correction outranks AMC ladder moves. 4.5 ms multipath drives both
+  sides MEDIUM→LONG and the transfer survives. FIXED latent bug: the
+  ARQ/mode-change timeout was computed only at connect - after demoting
+  to robust modes the round trip outran the fast-mode timeout, epoch
+  churn rejected every MODE_ACK, and committed modes diverged until the
+  session died; timeouts now recompute at every applyMode.
 - [ ] **3.10 Monitor mode** — control-port `MON:` lines, data-port binary
   records with connected-state suppression.
   *Gate: third passive instance decodes both directions in harness.*

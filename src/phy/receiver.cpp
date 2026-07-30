@@ -346,6 +346,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     res.payload = std::move(white);
   }
   res.snrDb = tracker.snrDb();
+  res.delaySpreadMs = tracker.delaySpreadMs();
   {
     const auto& h = tracker.h();
     const auto& re = tracker.carrierResid();

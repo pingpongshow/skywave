@@ -110,6 +110,24 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
   residEma_.assign(size_t(n), -1.0);
 }
 
+double ChannelTracker::delaySpreadMs() const {
+  const int T = numTaps_;
+  const int n = plan(family_).carriers();
+  const double spacing = double(kFftBaseband) / (2.0 * n);
+  double peak = 0;
+  for (const auto& v : g_) peak = std::max(peak, std::norm(v));
+  if (peak <= 0) return 0.0;
+  int first = -1, last = -1;
+  for (int t = 0; t < T; ++t) {
+    if (std::norm(g_[size_t(t)]) >= 0.1 * peak) {
+      if (first < 0) first = t;
+      last = t;
+    }
+  }
+  if (first < 0) return 0.0;
+  return double(last - first) * spacing / kFsBaseband * 1000.0;
+}
+
 double ChannelTracker::snrDb() const {
   double p = 0;
   for (const auto& v : h_) p += std::norm(v);

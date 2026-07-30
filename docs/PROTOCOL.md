@@ -234,8 +234,14 @@ station therefore steers its **transmit** signal onto the peer's frequency
 grid:
 
 - `CALL_ACK` and every `ACK` carry the receiver's measured CFO
-- **split correction**: each transmitter shifts by −(reported CFO)/2,
-  slewed at ≤ 2 Hz per adjustment, clamped to ±30 Hz per side. The full
+- **connect-time bootstrap**: connected-signature frames capture only a
+  few Hz of CFO, so the correction must land before data traffic starts.
+  The calling-signature handshake measures the offset (±50 Hz capture):
+  at CONNECTED, the initiator applies the peer's `CALL_ACK` report in
+  full and the responder applies its own measurement via reciprocity
+  (if I hear you X high, you hear me X low), both clamped ±30 Hz
+- **split correction**: thereafter each transmitter tracks by −(reported
+  CFO)/2, slewed at ≤ 2 Hz per adjustment, clamped to ±30 Hz per side. The full
   correction has to move the audio spectrum relative to *someone's* filter
   — a one-sided shift of the whole offset would push one station's edge
   carriers into its own TX filter skirt. Splitting the offset caps each

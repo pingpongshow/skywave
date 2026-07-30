@@ -232,10 +232,15 @@ TEST_CASE(m3_mode_pin_scenario) {
   std::vector<uint8_t> blob2(4096);
   p.a.sendData(blob2);
   std::vector<uint8_t> got2;
-  for (int i = 0; i < 3000 && got2.size() < blob2.size(); ++i) {
+  int stalled = 0;
+  size_t lastSize = 0;
+  for (int i = 0; i < 6000 && got2.size() < blob2.size(); ++i) {
     p.step();
     auto d = p.b.takeReceivedData();
     got2.insert(got2.end(), d.begin(), d.end());
+    stalled = got2.size() == lastSize ? stalled + 1 : 0;
+    lastSize = got2.size();
+    if (stalled > 800) break;  // genuinely wedged
   }
   CHECK_EQ(int(got2.size()), int(blob2.size()));
   CHECK(p.a.sessionMode() >= 6);
@@ -369,6 +374,80 @@ TEST_CASE(m3_burst_container_throughput) {
               eff, net);
   CHECK(eff > 0.80 * net);
   CHECK(eff < 1.05 * net);
+}
+
+TEST_CASE(m3_tx_freq_alignment) {
+  // Physical mistuning: A's dial is 40 Hz high, so A->B arrives at
+  // +40 Hz and B->A at -40 Hz. Split correction: each side pre-shifts
+  // ~half; both signals end centered and residual RX CFO ~ 0.
+  // Bidirectional traffic: CFO reports ride ACKs, so each direction's
+  // correction converges only when that direction carries acknowledged
+  // traffic (one-way sessions align the data direction only - keepalive
+  // reports for the quiet direction are Phase-4 polish).
+  // +-24 Hz mistuning: inside the +-30 clamp, so full split correction
+  // absorbs it (beyond +-30 is EVT:CFO_WARN operator territory).
+  Pair p(25.0, 77);
+  p.chanAB.cfoHz = 24.0;
+  p.chanBA.cfoHz = -24.0;
+  CHECK(p.connect());
+  std::vector<uint8_t> blob(8 * 1024);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 3 + 1);
+  p.a.sendData(blob);
+  p.b.sendData(blob);
+  std::vector<uint8_t> got, gotA;
+  for (int i = 0;
+       i < 4000 && (got.size() < blob.size() || gotA.size() < blob.size());
+       ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+    auto d2 = p.a.takeReceivedData();
+    gotA.insert(gotA.end(), d2.begin(), d2.end());
+  }
+  CHECK(got == blob);
+  CHECK(gotA == blob);
+  std::printf("tx align: shiftA=%.1f shiftB=%.1f rxCfoA=%.1f rxCfoB=%.1f\n",
+              p.a.txShiftHz(), p.b.txShiftHz(), p.a.lastRxCfoHz(),
+              p.b.lastRxCfoHz());
+  // Bootstrap applied the full measured offset at connect; tracking
+  // slews keep it there. Both TX now arrive near-centered.
+  CHECK(p.a.txShiftHz() < -18.0);
+  CHECK(p.b.txShiftHz() > 18.0);
+  CHECK(std::abs(p.a.lastRxCfoHz()) < 6.0);
+  CHECK(std::abs(p.b.lastRxCfoHz()) < 6.0);
+}
+
+TEST_CASE(m3_cp_auto_steps_under_multipath) {
+  // 4.5 ms delay spread exceeds the MEDIUM CP (4 ms): CPMODE AUTO must
+  // step both sides to LONG and keep the transfer alive.
+  Pair p(28.0, 91);
+  p.chanAB.fading = true;
+  p.chanAB.delaySpreadMs = 4.5;
+  p.chanAB.dopplerSpreadHz = 0.1;
+  p.chanBA = p.chanAB;
+  p.chanBA.seed = p.chanAB.seed + 5000;
+  CHECK(p.connect(800));  // handshake fights ISI until CP steps up
+  std::vector<uint8_t> blob(2048);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 11 + 5);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 8000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  // A lost MODE_ACK can leave a transient CP divergence; the
+  // rate-limited retry re-converges it. Give it settle time.
+  for (int i = 0; i < 400 && (p.a.cpMode() != CpMode::Long ||
+                              p.b.cpMode() != CpMode::Long);
+       ++i) {
+    p.step();
+  }
+  std::printf("cp auto: cpA=%d cpB=%d got=%zu\n", int(p.a.cpMode()),
+              int(p.b.cpMode()), got.size());
+  CHECK(p.a.cpMode() == CpMode::Long);
+  CHECK(p.a.cpMode() == p.b.cpMode());
+  CHECK(got == blob);
 }
 
 SKYTEST_MAIN

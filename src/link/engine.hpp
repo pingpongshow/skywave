@@ -33,6 +33,7 @@ struct EngineConfig {
   int arqMaxRetries = 8;
   bool maskingEnabled = true;  // negotiated via kCapMasking as well
   bool burstAggregation = true;  // MAC burst container (M7+ profiles)
+  bool cpAuto = true;            // delay-spread-driven CPMODE
 };
 
 class LinkEngine {
@@ -57,6 +58,9 @@ class LinkEngine {
   bool pinMode(int mode, double now);
   void unpinMode();
   bool modePinned() const;
+  double txShiftHz() const { return txShiftHz_; }
+  CpMode cpMode() const { return cpMode_; }
+  double lastRxCfoHz() const { return lastRxQuality_.cfoHz; }
 
   // --- scheduling ------------------------------------------------------
   // Advance timers and, if a burst is due, return its baseband samples.
@@ -76,11 +80,13 @@ class LinkEngine {
   void drainFsmActions(double now);
   void pumpData(double now);
   std::vector<cfloat> buildBurst(const OutFrame& f);
+  void applyTxShift(std::vector<cfloat>& burst) const;
   void onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                double now);
 
-  void applyMode(int mode, double now);
-  void requestModeChange(int target, double now);
+  void applyMode(int mode, CpMode cp, double now);
+  void updateArqTimeout();
+  void requestModeChange(int target, CpMode cp, double now);
 
   EngineConfig cfg_;
   SessionFsm fsm_;
@@ -118,10 +124,21 @@ class LinkEngine {
   bool isInitiator_ = false;
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
+  CpMode cpMode_ = kCpDefault;    // committed session CP
+  // TX frequency alignment (PROTOCOL.md): split correction -reported/2,
+  // slewed <= 2 Hz per adjustment, clamped +-30 Hz per side.
+  double txShiftHz_ = 0.0;
+  void onCfoReport(double reportedHz);
+  double spreadEmaMs_ = 0.0;      // delay-spread EMA for CPMODE AUTO
+  bool haveSpread_ = false;
+  int cpWantStreak_ = 0;          // consecutive frames agreeing on a CP
+  CpMode cpWant_ = kCpDefault;
+  double lastCpChange_ = 0.0;
   uint16_t sessionCaps_ = 0;      // committed capability intersection
   bool harqIr() const { return (sessionCaps_ & kCapHarqIr) != 0; }
   // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK).
   int pendingMode_ = -1;
+  CpMode pendingCp_ = kCpDefault;
   uint8_t modeEpoch_ = 0;
   double modeChangeDeadline_ = 0.0;
   int modeChangeTries_ = 0;

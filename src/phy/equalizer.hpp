@@ -48,6 +48,9 @@ class ChannelTracker {
   // INFLATES |H| but explodes the residual; carrier quality must come
   // from residuals, not |H|^2 - LINK_ADAPTATION.md mask detection).
   const std::vector<double>& carrierResid() const { return residEma_; }
+  // Delay-spread estimate (ms) from the tap state: extent of taps above
+  // 10% of the peak power. Drives CPMODE AUTO.
+  double delaySpreadMs() const;
   double cpePhase() const {
     return std::atan2(lastGain_.imag(), lastGain_.real());
   }

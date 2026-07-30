@@ -81,6 +81,7 @@ struct RxFrameResult {
   double cfoHz = 0.0;
   double snrDb = 0.0;              // tracker estimate at end of frame
   std::vector<float> carrierSnrDb;  // per active carrier, at frame end
+  double delaySpreadMs = 0.0;       // tap-extent estimate, at frame end
 };
 
 // Detect and decode the first frame of the given family in rx.

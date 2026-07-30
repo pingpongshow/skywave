@@ -32,6 +32,14 @@ int macWindow(int mode) {
   return 8;
 }
 
+// CPMODE AUTO thresholds: smallest CP covering the measured spread with
+// margin for sync slack (CP lengths 2/4/6 ms at baseband).
+CpMode cpForSpread(double spreadMs) {
+  if (spreadMs < 1.2) return CpMode::Short;
+  if (spreadMs < 3.2) return CpMode::Medium;
+  return CpMode::Long;
+}
+
 int framesPerBurst(int mode) {
   if (mode <= 6) return 1;
   if (mode <= 9) return 2;
@@ -136,6 +144,17 @@ void LinkEngine::drainFsmActions(double /*now*/) {
                      ChirpSig::Fast, std::max(mode_, 8));
         break;
       case FsmAction::IndicateConnected: {
+        // TX-alignment bootstrap: connected fast-signature frames only
+        // capture ~+-5 Hz, so the correction must land BEFORE data
+        // traffic starts. The calling-signature handshake measured the
+        // offset (+-50 Hz capture): the initiator applies the peer's
+        // CALL_ACK report in full; the responder uses reciprocity (if I
+        // hear you +X high, you hear me X low) on its own measurement.
+        // The <=2 Hz slew applies to TRACKING adjustments thereafter.
+        txShiftHz_ = std::clamp(
+            isInitiator_ ? -double(lastCallAck_.cfoHalfHz) * 0.5
+                         : lastRxQuality_.cfoHz,
+            -30.0, 30.0);
         harq_.clear();
         probeGate_ = ProbeGate();
         maskDet_.emplace(cfg_.policy.family);
@@ -150,18 +169,7 @@ void LinkEngine::drainFsmActions(double /*now*/) {
         const int w = macWindow(mode_);
         arqTx_ = ArqTx(w, cfg_.arqMaxRetries);
         arqRx_ = ArqRx(w);
-        // ACK timeout from real airtimes at the session mode.
-        std::vector<uint8_t> seg(dataSegmentBytes(mode_));
-        TxFrameParams tp;
-        tp.family = cfg_.policy.family;
-        tp.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
-        tp.mode = mode_;
-        tp.payload = seg;
-        std::vector<uint8_t> ackSized(kAckBodyBytes + kFrameOverhead);
-        TxFrameParams ta = tp;
-        ta.payload = ackSized;
-        ta.mode = std::min(mode_, 6) <= 6 ? 4 : mode_;
-        arqTx_.setTimeout(frameAirtimeSec(tp) + frameAirtimeSec(ta) + 3.0);
+        updateArqTimeout();
         break;
       }
       case FsmAction::IndicateDisconnected:
@@ -228,31 +236,70 @@ std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
   tp.mode = f.mode;
   tp.frameType = uint8_t(f.env.type);
   tp.seqLow = uint8_t(f.env.sequence & 0xFF);
+  tp.cpMode = cpMode_;
   tp.payload = raw;
   // Spread modes (M4-M7) skip masking: spreading already averages over
   // interference (LINK_ADAPTATION.md).
   if (f.mode >= 8 && txMask_.maskedCount(cfg_.policy.family) > 0) {
     tp.mask = &txMask_;
   }
-  return buildFrameBaseband(tp);
+  auto burst = buildFrameBaseband(tp);
+  applyTxShift(burst);
+  return burst;
 }
 
-void LinkEngine::applyMode(int mode, double now) {
+void LinkEngine::applyTxShift(std::vector<cfloat>& burst) const {
+  if (std::abs(txShiftHz_) < 1e-3) return;
+  for (size_t i = 0; i < burst.size(); ++i) {
+    const double ph = 2.0 * M_PI * txShiftHz_ * double(i) / kFsBaseband;
+    burst[i] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
+  }
+}
+
+void LinkEngine::updateArqTimeout() {
+  // ACK timeout from real airtimes AT THE CURRENT MODE. Computing this
+  // only at connect was a live bug: after demoting to a robust mode the
+  // round trip exceeded the fast-mode timeout, MODE_CHANGE retry cycles
+  // outran their own MODE_ACKs, and the committed modes diverged until
+  // the session died.
+  std::vector<uint8_t> seg(dataSegmentBytes(mode_));
+  TxFrameParams tp;
+  tp.family = cfg_.policy.family;
+  tp.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+  tp.mode = mode_;
+  tp.cpMode = cpMode_;
+  tp.payload = seg;
+  std::vector<uint8_t> ackSized(kAckBodyBytes + kFrameOverhead);
+  TxFrameParams ta = tp;
+  ta.payload = ackSized;
+  ta.mode = mode_ <= 6 ? 4 : mode_;
+  arqTx_.setTimeout(frameAirtimeSec(tp) + frameAirtimeSec(ta) + 3.0);
+}
+
+void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   mode_ = mode;
+  cpMode_ = cp;
+  updateArqTimeout();
   if (amc_) amc_->onModeApplied(uint8_t(mode), now);
 }
 
-void LinkEngine::requestModeChange(int target, double now) {
-  if (pendingMode_ >= 0 || target == mode_) return;
+void LinkEngine::onCfoReport(double reportedHz) {
+  const double target = txShiftHz_ - reportedHz / 2.0;
+  const double step = std::clamp(target - txShiftHz_, -2.0, 2.0);
+  txShiftHz_ = std::clamp(txShiftHz_ + step, -30.0, 30.0);
+}
+
+void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
+  if (pendingMode_ >= 0 || (target == mode_ && cp == cpMode_)) return;
   pendingMode_ = target;
+  pendingCp_ = cp;
   ++modeEpoch_;
   modeChangeTries_ = 0;
   // Demotions transmit at the TARGET (lower) mode so a degraded peer can
   // still decode them; promotions ride the current committed mode.
   const int txMode = std::min(target, mode_);
   queueControl(LinkType::ModeChange,
-               ModeChangeBody{uint8_t(target), uint8_t(kCpDefault),
-                              modeEpoch_}
+               ModeChangeBody{uint8_t(target), uint8_t(cp), modeEpoch_}
                    .pack(),
                txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast, txMode);
   modeChangeDeadline_ = now + arqTx_.timeoutSec();
@@ -264,7 +311,7 @@ bool LinkEngine::pinMode(int mode, double now) {
   }
   if (mode < kFirstMode || mode >= kNumModes) return false;
   amc_->pin(uint8_t(mode), now);
-  requestModeChange(mode, now);
+  requestModeChange(mode, cpMode_, now);
   return true;
 }
 
@@ -291,7 +338,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         const int txMode = std::min(pendingMode_, mode_);
         queueControl(LinkType::ModeChange,
                      ModeChangeBody{uint8_t(pendingMode_),
-                                    uint8_t(kCpDefault), modeEpoch_}
+                                    uint8_t(pendingCp_), modeEpoch_}
                          .pack(),
                      txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                      txMode);
@@ -335,7 +382,15 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         }
       }
     }
-    if (amc_ && isInitiator_ && pendingMode_ < 0) {
+    if (amc_ && isInitiator_ && pendingMode_ < 0 && cfg_.cpAuto &&
+        haveSpread_ && cpWant_ != cpMode_ && cpWantStreak_ >= 25 &&
+        now - lastCpChange_ > 30.0) {
+      // CP correction outranks ladder moves: a CP too short for the
+      // channel is a safety problem, and AMC churn (probe retries)
+      // must not starve it.
+      lastCpChange_ = now;
+      requestModeChange(mode_, cpWant_, now);
+    } else if (amc_ && isInitiator_ && pendingMode_ < 0) {
       auto d = amc_->evaluate(now);
       if (d.kind == AmcDecision::Kind::Promote &&
           probeGate_.required(d.targetMode) &&
@@ -361,7 +416,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
             probeGate_.required(d.targetMode)) {
           probeGate_.consumeClearance();
         }
-        requestModeChange(d.targetMode, now);
+        requestModeChange(d.targetMode,
+                          cfg_.cpAuto && cpWantStreak_ >= 25 ? cpWant_
+                                                             : cpMode_,
+                          now);
       }
     }
   }
@@ -408,12 +466,15 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       tp.mode = group[0].mode;
       tp.frameType = kBurstContainerFrameType;
       tp.seqLow = uint8_t(group[0].env.sequence & 0xFF);
+      tp.cpMode = cpMode_;
       tp.payload = payload;
       if (group[0].mode >= 8 &&
           txMask_.maskedCount(cfg_.policy.family) > 0) {
         tp.mask = &txMask_;
       }
-      return buildFrameBaseband(tp);
+      auto burst = buildFrameBaseband(tp);
+      applyTxShift(burst);
+      return burst;
     }
     f = std::move(group[0]);
   }
@@ -427,6 +488,25 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   if (res && maskDet_ && fsm_.state() == FsmState::Connected &&
       mode_ >= 8 && !res->carrierSnrDb.empty()) {
     maskDet_->onSnapshot(res->carrierSnrDb, now);
+  }
+  if (res && fsm_.state() == FsmState::Connected) {
+    // Peak-hold with slow decay: the CP must cover the WORST spread the
+    // channel presents, and under Rayleigh fading the instantaneous tap
+    // extent collapses whenever the far tap fades - a plain EMA (or any
+    // averaged estimate) flickers and can never sustain a CP verdict.
+    if (!haveSpread_) {
+      spreadEmaMs_ = res->delaySpreadMs;
+      haveSpread_ = true;
+    } else {
+      spreadEmaMs_ =
+          std::max(double(res->delaySpreadMs), spreadEmaMs_ * 0.99);
+    }
+    // CP stability gate: a CP-only change needs the same verdict for a
+    // sustained run of frames (spread estimates are noisy; churn starves
+    // the link with MODE_CHANGE traffic).
+    const CpMode want = cpForSpread(spreadEmaMs_);
+    cpWantStreak_ = want == cpWant_ ? cpWantStreak_ + 1 : 1;
+    cpWant_ = want;
   }
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
@@ -489,6 +569,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto ack = CallAckBody::parse(f.body);
       if (!ack) return;
       lastCallAck_ = *ack;
+      onCfoReport(ack->cfoHalfHz * 0.5);
       fsm_.rxCallAck(now);
       break;
     }
@@ -529,6 +610,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto a = AckBody::parse(f.body);
       if (!a) return;
       if (amc_) amc_->onRemoteSnr(a->snrHalfDb * 0.5, now);
+      onCfoReport(a->cfoHalfHz * 0.5);
       arqTx_.onAck(*a, now);
       break;
     }
@@ -541,13 +623,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
                    mc->targetMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                    std::min(int(mc->targetMode), mode_));
-      applyMode(mc->targetMode, now);
+      applyMode(mc->targetMode, CpMode(mc->cpMode), now);
       break;
     }
     case LinkType::ModeAck: {
       auto ma = ModeAckBody::parse(f.body);
       if (!ma || pendingMode_ < 0 || ma->epoch != modeEpoch_) return;
-      applyMode(pendingMode_, now);
+      applyMode(pendingMode_, pendingCp_, now);
       pendingMode_ = -1;
       break;
     }
