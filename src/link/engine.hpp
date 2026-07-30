@@ -29,6 +29,9 @@
 #include "phy/receiver.hpp"
 #include "proto/filesvc.hpp"
 #include "proto/pipeline.hpp"
+#ifdef SKW_HAVE_CRYPTO
+#include "crypto/session.hpp"
+#endif
 
 namespace skw {
 
@@ -40,6 +43,11 @@ struct EngineConfig {
   bool cpAuto = true;            // delay-spread-driven CPMODE
   bool cwId = false;             // CW ID after disconnect / 10-min
   int cwWpm = 20;
+  // Crypto (SECURITY.md, crypto builds only): request encryption for
+  // outgoing/accepted sessions. A requested-but-unachievable session is
+  // refused - the link NEVER silently falls back to cleartext.
+  bool encryptionRequested = false;
+  std::vector<uint8_t> psk;      // 32 bytes when installed
 };
 
 class LinkEngine {
@@ -68,6 +76,15 @@ class LinkEngine {
   // True while the current connection was established via RESUME.
   bool sessionResumed() const { return resumed_; }
   bool hasResumeContext() const { return resumeCtx_.valid; }
+
+  // --- crypto (5.3) ------------------------------------------------------
+  // SECURITY reporting: AUTH is identity assurance (HMAC verified),
+  // distinct from "encryption active".
+  bool cryptoAuth() const;
+  bool cryptoActive() const;
+  uint16_t cryptoEpoch() const;
+  // Manual KEYROTATE: bumps the epoch on a live encrypted session.
+  bool rotateKeys(double now);
 
   // --- broadcast (4.5) ---------------------------------------------------
   // Connectionless frames: calling signature + robust header + M4.
@@ -240,6 +257,20 @@ class LinkEngine {
   // Fault-mode teardown (ARQ exhaustion, peer's for-cause DISC, idle
   // timeout): keeps the resume token alive; operator DISC does not.
   bool faultDisc_ = false;
+#ifdef SKW_HAVE_CRYPTO
+  // Session crypto. cryptoOn_ = the committed session is encrypted;
+  // sealing applies to DATA payload bodies (handshake and broadcast
+  // frames are never encrypted - SECURITY.md).
+  CryptoSession crypto_;
+  bool cryptoOn_ = false;
+  uint64_t txSeqHi_ = 0, rxSeqHi_ = 0;  // 48-bit extension high-water
+  uint16_t pendingEpoch_ = 0;
+  double epochRotateAt_ = 0.0;
+  KexContext kexCtx() const;
+  std::vector<uint8_t> pendingKexResponse_;  // responder: for START_ACK
+  bool sealPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
+  bool openPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
+#endif
   // CW ID (4.5): queued after teardown and every 10 min in-session;
   // emitted only when nothing else wants the transmitter.
   bool cwPending_ = false;

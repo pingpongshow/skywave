@@ -188,6 +188,89 @@ double LinkEngine::retryRatio() const {
   return amc_ ? amc_->retryRatio() : 0.0;
 }
 
+#ifdef SKW_HAVE_CRYPTO
+bool LinkEngine::cryptoAuth() const { return crypto_.established(); }
+bool LinkEngine::cryptoActive() const { return cryptoOn_; }
+uint16_t LinkEngine::cryptoEpoch() const {
+  return cryptoOn_ ? crypto_.epoch() : 0;
+}
+
+KexContext LinkEngine::kexCtx() const {
+  // Transcript inputs must be IDENTICAL on both sides, so name the roles
+  // rather than "own/peer": the initiator is whoever sent CALL.
+  KexContext c;
+  c.initCall = isInitiator_ ? cfg_.policy.ownCall : lastCall_.srcCall;
+  c.respCall = isInitiator_ ? remoteCall_ : cfg_.policy.ownCall;
+  c.family = uint8_t(cfg_.policy.family);
+  c.initCaps = isInitiator_ ? cfg_.policy.caps : lastCall_.caps;
+  c.respCaps = isInitiator_ ? lastCallAck_.caps : cfg_.policy.caps;
+  return c;
+}
+
+bool LinkEngine::rotateKeys(double now) {
+  if (!cryptoOn_ || !isInitiator_ || fsm_.state() != FsmState::Connected) {
+    return false;
+  }
+  if (pendingEpoch_ != 0) return false;  // one rotation in flight
+  pendingEpoch_ = uint16_t(crypto_.epoch() + 1);
+  // KEY_UPDATE rides the CURRENT epoch's keys (it is a normal control
+  // frame); the local switch happens when the peer's frames arrive under
+  // the new epoch - the grace window covers the crossover either way.
+  queueControl(LinkType::KeyUpdate,
+               KeyUpdateBody{uint8_t(pendingEpoch_ & 0xFF)}.pack(),
+               mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+               std::min(mode_, 8));
+  crypto_.setEpoch(pendingEpoch_);
+  pendingEpoch_ = 0;
+  epochRotateAt_ = now;
+  return true;
+}
+
+// DATA payload sealing. AAD = the envelope's first 8 bytes, so any
+// header tampering (type/flags/session/sequence) breaks authentication.
+bool LinkEngine::sealPayload(const LinkEnvelope& env,
+                             std::vector<uint8_t>& body) {
+  if (!cryptoOn_) return true;
+  std::vector<uint8_t> aad;
+  aad.reserve(kEnvelopeBytes);
+  aad.push_back(uint8_t(env.type));
+  aad.push_back(env.flags);
+  aad.push_back(uint8_t(env.sessionId));
+  aad.push_back(uint8_t(env.sessionId >> 8));
+  aad.push_back(uint8_t(env.sequence));
+  aad.push_back(uint8_t(env.sequence >> 8));
+  aad.push_back(uint8_t(env.ackBase));
+  aad.push_back(uint8_t(env.ackBase >> 8));
+  const uint8_t stream = usesVoiceSequence(env.type) ? 1 : 0;
+  const uint64_t seq = CryptoSession::extendSeq(txSeqHi_, env.sequence);
+  txSeqHi_ = std::max(txSeqHi_, seq);
+  body = crypto_.seal(stream, seq, aad, body);
+  return true;
+}
+
+bool LinkEngine::openPayload(const LinkEnvelope& env,
+                            std::vector<uint8_t>& body) {
+  if (!cryptoOn_) return true;
+  std::vector<uint8_t> aad;
+  aad.reserve(kEnvelopeBytes);
+  aad.push_back(uint8_t(env.type));
+  aad.push_back(env.flags);
+  aad.push_back(uint8_t(env.sessionId));
+  aad.push_back(uint8_t(env.sessionId >> 8));
+  aad.push_back(uint8_t(env.sequence));
+  aad.push_back(uint8_t(env.sequence >> 8));
+  aad.push_back(uint8_t(env.ackBase));
+  aad.push_back(uint8_t(env.ackBase >> 8));
+  const uint8_t stream = usesVoiceSequence(env.type) ? 1 : 0;
+  const uint64_t seq = CryptoSession::extendSeq(rxSeqHi_, env.sequence);
+  auto plain = crypto_.open(stream, seq, aad, body);
+  if (!plain) return false;  // tag/replay failure: drop, never deliver
+  rxSeqHi_ = std::max(rxSeqHi_, seq);
+  body = std::move(*plain);
+  return true;
+}
+#endif  // SKW_HAVE_CRYPTO
+
 bool LinkEngine::sendBroadcast(std::span<const uint8_t> bytes) {
   if (bytes.empty() || bytes.size() > 16 * kBcastMaxPayload) return false;
   const size_t count = (bytes.size() + kBcastMaxPayload - 1) /
@@ -298,6 +381,23 @@ void LinkEngine::drainFsmActions(double now) {
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
+#ifdef SKW_HAVE_CRYPTO
+        if (sessionCaps_ & kCapEncryption) {
+          crypto_.zeroize();
+          cryptoOn_ = false;
+          if (crypto_.setPsk(cfg_.psk)) {
+            if (auto blob = crypto_.makeKexInit(kexCtx())) {
+              s.kexPublic = std::move(*blob);
+            }
+          }
+          if (s.kexPublic.empty()) {
+            // Encryption negotiated but unavailable locally: drop the
+            // bit rather than proceed - never silent cleartext.
+            sessionCaps_ &= uint16_t(~kCapEncryption);
+            s.caps = sessionCaps_;
+          }
+        }
+#endif
         queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
         break;
       }
@@ -318,6 +418,10 @@ void LinkEngine::drainFsmActions(double now) {
         // mode_ was fixed in onFrame when START was evaluated.
         StartAckBody sa;
         sa.finalMode = uint8_t(mode_);
+#ifdef SKW_HAVE_CRYPTO
+        sa.kexResponse = std::move(pendingKexResponse_);
+        pendingKexResponse_.clear();
+#endif
         if (sessionCaps_ & kCapResume) {
           // Mint the resume token here (PROTOCOL.md): both sides hold
           // it; either may initiate the resumed reconnect.
@@ -376,6 +480,10 @@ void LinkEngine::drainFsmActions(double now) {
         amc_.emplace(ac, uint8_t(mode_), 0.0);
         pendingMode_ = -1;
         lastCwAt_ = now;  // CW ID cadence restarts with the session
+#ifdef SKW_HAVE_CRYPTO
+        epochRotateAt_ = now;
+        pendingEpoch_ = 0;
+#endif
         if (resuming_) {
           // RESUME: sequence spaces continue - keep both ARQ engines,
           // drop what the peer confirmed, requeue the rest.
@@ -428,6 +536,16 @@ void LinkEngine::drainFsmActions(double now) {
                            (cause == FsmDiscCause::LocalRequest ||
                             cause == FsmDiscCause::PeerRequest);
         faultDisc_ = false;
+#ifdef SKW_HAVE_CRYPTO
+        // Session keys are wiped at session end; the PSK lives in cfg_
+        // and is re-installed at the next handshake. A crypto state
+        // change also invalidates any resume context (SECURITY.md).
+        if (cryptoOn_) {
+          crypto_.zeroize();
+          cryptoOn_ = false;
+          resumeCtx_.valid = false;
+        }
+#endif
         if (clean) resumeCtx_.valid = false;
         if (cfg_.cwId) cwPending_ = true;  // identify after the session
         if (resumeCtx_.valid && (sessionCaps_ & kCapResume)) {
@@ -469,6 +587,14 @@ void LinkEngine::pumpData(double now) {
                       {r->payload.begin() + (r->payload.empty() ? 0 : 1),
                        r->payload.end()}}
                  .pack();
+#ifdef SKW_HAVE_CRYPTO
+    if (cryptoOn_) {
+      // Retransmissions re-seal under the SAME sequence, so the nonce
+      // and ciphertext are identical - HARQ soft-combining still works.
+      f.env.flags |= kFlagEncrypted;
+      sealPayload(f.env, f.body);
+    }
+#endif
     // HARQ AUTO: IR when both peers advertise it - the retransmission
     // steps down to the same-constellation r1/2 mode (M9->M8, M11->M10)
     // and the receiver seeds systematic priors from the failed attempt.
@@ -501,6 +627,12 @@ void LinkEngine::pumpData(double now) {
     f.env.sequence = *seq;
     f.env.ackBase = arqRx_.ackBase();
     f.body = DataBody{0, std::move(seg->bytes)}.pack();
+#ifdef SKW_HAVE_CRYPTO
+    if (cryptoOn_) {
+      f.env.flags |= kFlagEncrypted;
+      sealPayload(f.env, f.body);
+    }
+#endif
     f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
     f.mode = mode_;
     outQueue_.push_back(std::move(f));
@@ -632,6 +764,14 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         modeChangeDeadline_ = now + arqTx_.timeoutSec();
       }
     }
+#ifdef SKW_HAVE_CRYPTO
+    // Automatic rotation (SECURITY.md): every 2^20 frames or 4 hours.
+    if (cryptoOn_ && isInitiator_ &&
+        (now - epochRotateAt_ > 4.0 * 3600.0 ||
+         crypto_.framesSealed() >= (1u << 20))) {
+      rotateKeys(now);
+    }
+#endif
     probeGate_.tick(now);
     // Carrier-mask exchange (per direction; either side may originate).
     if (maskDet_ && cfg_.maskingEnabled && (sessionCaps_ & kCapMasking) &&
@@ -937,7 +1077,31 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto start = StartBody::parse(f.body);
       if (!start) return;
       auto r = evaluateStart(cfg_.policy, lastCall_, *start, q);
-      const bool ok = std::holds_alternative<StartAckBody>(r);
+      bool ok = std::holds_alternative<StartAckBody>(r);
+#ifdef SKW_HAVE_CRYPTO
+      cryptoOn_ = false;
+      pendingKexResponse_.clear();
+      if (ok && (start->caps & kCapEncryption)) {
+        // Encryption was negotiated: the KEX must succeed or the session
+        // is refused (SECURITY.md - no silent cleartext fallback).
+        crypto_.zeroize();
+        bool kexOk = crypto_.setPsk(cfg_.psk) && !start->kexPublic.empty();
+        if (kexOk) {
+          isInitiator_ = false;
+          if (auto blob = crypto_.acceptKexInit(kexCtx(), start->kexPublic)) {
+            pendingKexResponse_ = std::move(*blob);
+          } else {
+            kexOk = false;  // transcript auth failed
+          }
+        }
+        if (!kexOk) {
+          ok = false;
+        } else {
+          cryptoOn_ = true;
+          txSeqHi_ = rxSeqHi_ = 0;
+        }
+      }
+#endif
       if (ok) {
         mode_ = std::get<StartAckBody>(r).finalMode;
         sessionCaps_ = start->caps;
@@ -949,6 +1113,21 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::StartAck: {
       auto ack = StartAckBody::parse(f.body);
       if (!ack) return;
+#ifdef SKW_HAVE_CRYPTO
+      if (sessionCaps_ & kCapEncryption) {
+        if (ack->kexResponse.empty() ||
+            !crypto_.acceptKexResponse(kexCtx(), ack->kexResponse)) {
+          // Peer could not authenticate: tear down rather than continue
+          // in cleartext.
+          crypto_.zeroize();
+          cryptoOn_ = false;
+          fsm_.rxStartNak(now);
+          return;
+        }
+        cryptoOn_ = true;
+        txSeqHi_ = rxSeqHi_ = 0;
+      }
+#endif
       mode_ = ack->finalMode;
       if (ack->hasResumeToken && (sessionCaps_ & kCapResume)) {
         resumeCtx_.valid = true;
@@ -1027,7 +1206,26 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       break;
     }
     case LinkType::Data: {
+#ifdef SKW_HAVE_CRYPTO
+      std::vector<uint8_t> opened;
+      const uint8_t* bodyPtr = f.body.data();
+      size_t bodyLen = f.body.size();
+      if (cryptoOn_) {
+        if (!(f.env.flags & kFlagEncrypted)) return;  // downgrade attempt
+        opened = f.body;
+        if (!openPayload(f.env, opened)) {
+          ++framesFailed_;  // tag or replay failure
+          return;
+        }
+        bodyPtr = opened.data();
+        bodyLen = opened.size();
+      } else if (f.env.flags & kFlagEncrypted) {
+        return;  // encrypted frame with no session crypto: ignore
+      }
+      auto d = DataBody::parse({bodyPtr, bodyLen});
+#else
       auto d = DataBody::parse(f.body);
+#endif
       if (!d || fsm_.state() != FsmState::Connected) return;
       if (amc_) amc_->onFrameResult(d->rv > 0, true);
       // Stash the proto flags with the payload so they survive the
@@ -1160,6 +1358,18 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       }
       rxMask_ = pendingRxMask_;  // peer now zeroes these toward us
       pendingMaskEpoch_ = -1;
+      break;
+    }
+    case LinkType::KeyUpdate: {
+#ifdef SKW_HAVE_CRYPTO
+      auto ku = KeyUpdateBody::parse(f.body);
+      if (!ku || !cryptoOn_ || isInitiator_) return;
+      // Epoch skew tolerance is 1 (grace window only): the low byte on
+      // the wire resolves against the current epoch.
+      const uint16_t want = uint16_t((crypto_.epoch() & 0xFF00) | ku->newEpoch);
+      if (want != uint16_t(crypto_.epoch() + 1)) return;
+      crypto_.setEpoch(want);
+#endif
       break;
     }
     case LinkType::Keepalive:

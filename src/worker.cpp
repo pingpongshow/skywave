@@ -68,6 +68,24 @@ void ModemWorker::rebuildEngine() {
   ec.cpAuto = cfg_.cpMode < 0;
   ec.cwId = cfg_.cwId;
   ec.cwWpm = cfg_.cwWpm;
+#ifdef SKW_HAVE_CRYPTO
+  // Encryption is advertised only with a usable PSK and hardware AES.
+  if (cfg_.cryptoPsk.size() == kPskBytes * 2) {
+    ec.psk.reserve(kPskBytes);
+    for (size_t i = 0; i + 1 < cfg_.cryptoPsk.size(); i += 2) {
+      auto nib = [](char ch) {
+        return ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10;
+      };
+      ec.psk.push_back(uint8_t(nib(cfg_.cryptoPsk[i]) << 4 |
+                               nib(cfg_.cryptoPsk[i + 1])));
+    }
+  }
+  if (cfg_.cryptoEnabled && ec.psk.size() == kPskBytes &&
+      CryptoSession::available()) {
+    ec.encryptionRequested = true;
+    ec.policy.caps |= kCapEncryption;
+  }
+#endif
   engine_.emplace(std::move(ec));
   if (cfg_.cpMode >= 0) {
     static const char* kCp[] = {"SHORT", "MEDIUM", "LONG"};
@@ -735,6 +753,70 @@ std::string ModemWorker::pttGet(const std::string& key) {
   if (key == "LEAD") return std::to_string(cfg_.pttLeadMs);
   if (key == "TAIL") return std::to_string(cfg_.pttTailMs);
   return "-";
+}
+
+bool ModemWorker::cryptoSupported() {
+#ifdef SKW_HAVE_CRYPTO
+  return CryptoSession::available();
+#else
+  return false;
+#endif
+}
+
+std::string ModemWorker::securityLine() {
+#ifdef SKW_HAVE_CRYPTO
+  std::lock_guard lock(modemMutex_);
+  return std::string("AUTH=") + (engine_->cryptoAuth() ? "ON" : "OFF") +
+         " ENCRYPT=" + (engine_->cryptoActive() ? "ON" : "OFF") +
+         " EPOCH=" + std::to_string(engine_->cryptoEpoch());
+#else
+  return "";
+#endif
+}
+
+bool ModemWorker::setEncryption(bool on) {
+#ifdef SKW_HAVE_CRYPTO
+  std::lock_guard lock(modemMutex_);
+  // Rejected while a session exists, and ON requires an installed PSK
+  // plus AES-NI (SECURITY.md).
+  if (engine_->state() != FsmState::Idle) return false;
+  if (on && (cfg_.cryptoPsk.size() != kPskBytes * 2 ||
+             !CryptoSession::available())) {
+    return false;
+  }
+  cfg_.cryptoEnabled = on;
+  rebuildEngine();
+  return true;
+#else
+  (void)on;
+  return false;
+#endif
+}
+
+bool ModemWorker::setPsk(const std::string& hex) {
+#ifdef SKW_HAVE_CRYPTO
+  std::lock_guard lock(modemMutex_);
+  if (engine_->state() != FsmState::Idle) return false;
+  if (hex.size() != kPskBytes * 2) return false;
+  for (char ch : hex) {
+    if (!std::isxdigit(static_cast<unsigned char>(ch))) return false;
+  }
+  cfg_.cryptoPsk = hex;
+  rebuildEngine();
+  return true;
+#else
+  (void)hex;
+  return false;
+#endif
+}
+
+bool ModemWorker::keyRotate() {
+#ifdef SKW_HAVE_CRYPTO
+  std::lock_guard lock(modemMutex_);
+  return engine_->rotateKeys(nowSec());
+#else
+  return false;
+#endif
 }
 
 bool ModemWorker::pttSet(const std::string& key, const std::string& val) {

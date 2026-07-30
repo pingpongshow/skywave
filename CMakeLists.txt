@@ -57,7 +57,13 @@ if(ENABLE_GUI)
 endif()
 
 # --- skywave core library (everything except main) ---------------------------
+set(SKW_CRYPTO_SOURCES)
+if(ENABLE_CRYPTO)
+  list(APPEND SKW_CRYPTO_SOURCES src/crypto/session.cpp)
+endif()
+
 add_library(skywave_core STATIC
+  ${SKW_CRYPTO_SOURCES}
   src/core/log.cpp
   src/core/config.cpp
   src/dsp/fft.cpp
@@ -95,6 +101,9 @@ add_library(skywave_core STATIC
 )
 target_include_directories(skywave_core PUBLIC src)
 target_link_libraries(skywave_core PUBLIC PkgConfig::PORTAUDIO PkgConfig::ZSTD)
+if(ENABLE_CRYPTO)
+  target_link_libraries(skywave_core PUBLIC PkgConfig::SODIUM)
+endif()
 target_compile_definitions(skywave_core PUBLIC
   SKW_VERSION="${PROJECT_VERSION}"
   $<$<BOOL:${ENABLE_CRYPTO}>:SKW_HAVE_CRYPTO>
@@ -149,6 +158,9 @@ if(BUILD_TESTS)
   skw_test(test_file)
   skw_test(test_bcast)
   skw_test(test_st2)
+  if(ENABLE_CRYPTO)
+    skw_test(test_crypto)
+  endif()
   skw_test(test_amc)
   skw_test(test_harq)
   skw_test(test_chanmem)

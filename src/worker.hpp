@@ -123,6 +123,11 @@ class ModemWorker : public ControlBackend {
   std::string freqInfo() override;
   std::string pttGet(const std::string& key) override;
   bool pttSet(const std::string& key, const std::string& val) override;
+  bool cryptoSupported() override;
+  std::string securityLine() override;
+  bool setEncryption(bool on) override;
+  bool setPsk(const std::string& hex) override;
+  bool keyRotate() override;
 
  private:
   void threadMain();

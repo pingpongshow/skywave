@@ -58,6 +58,16 @@ Applied in the payload pipeline after compression, before segmentation:
 - per-frame overhead: **16 bytes** (tag only)
 - replay: 128-frame sliding window per direction; duplicates and
   out-of-window frames are dropped and counted
+- **the epoch is a nonce field**, so a frame accepted through the
+  rotation grace window must be opened with the previous epoch *number*
+  as well as the previous key — swapping the key alone produces a wrong
+  nonce and a silent authentication failure
+- retransmissions re-seal under the **same** sequence number, so the
+  nonce and resulting ciphertext are byte-identical; HARQ chase
+  combining across attempts is unaffected by encryption
+- a cleartext `DATA` frame inside an encrypted session (and an encrypted
+  frame with no session crypto) is dropped, not interpreted: there is no
+  per-frame downgrade path
 
 Encrypted frames set envelope flag bit 1. Handshake and broadcast frames
 (`CALL`, `CQ`, `BEACON`, `BCAST_DATA`) are never encrypted; `DATA`,
@@ -79,8 +89,14 @@ crypto.
 
 - `ENCRYPTKEY <hex>` loads a 32-byte hex PSK; stored in the INI (`[crypto]
   psk`) — file permissions are the user's responsibility, documented
-- `ENCRYPTION ON` requires PSK present; both commands rejected while
+- `ENCRYPTION ON` requires PSK present **and hardware AES** (the
+  AES-NI runtime check); both commands rejected while
   `CALLING`/`CONNECTING`/`CONNECTED`
+- if encryption is negotiated but the exchange cannot complete (no PSK,
+  auth failure, missing kex material), the session is **refused** —
+  `START_NAK` on the responder side, teardown on the initiator side.
+  Session end zeroizes the keys, which also invalidates any resume
+  context (a crypto state change is a resume invalidator)
 - zeroization: session keys and `K_master` are wiped (`sodium_memzero`) at
   session end; PSK is wiped at process exit
 - library: libsodium for X25519/HKDF primitives and constant-time helpers;

@@ -176,11 +176,27 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
     return be.pttSet(key, tok[1]) ? verb + " " + be.pttGet(key)
                                   : "ERROR:BADARG";
   }
-  // Recognized but unavailable in this build/phase (crypto gated by
-  // SKW_HAVE_CRYPTO; voice is Phase 5): a distinct error keeps clients
-  // from confusing them with typos.
-  if (verb == "ENCRYPTION" || verb == "ENCRYPTKEY" || verb == "KEYROTATE" ||
-      verb == "SECURITY" || verb == "VOICE" || verb == "VOICECODEC" ||
+  if (verb == "SECURITY" || verb == "ENCRYPTION" || verb == "ENCRYPTKEY" ||
+      verb == "KEYROTATE") {
+    if (!be.cryptoSupported()) return "ERROR:UNSUPPORTED";
+    if (verb == "SECURITY") return "SECURITY " + be.securityLine();
+    if (verb == "ENCRYPTION") {
+      if (argc == 0) return "SECURITY " + be.securityLine();
+      auto v = parseOnOff(tok[1]);
+      if (!v) return "ERROR:BADARG";
+      // Refused without a PSK, or while a session is up (SECURITY.md).
+      return be.setEncryption(*v) ? "ENCRYPTION " + onOff(*v)
+                                  : "ERROR:STATE";
+    }
+    if (verb == "ENCRYPTKEY") {
+      if (argc != 1) return "ERROR:BADARG";
+      return be.setPsk(tok[1]) ? "ENCRYPTKEY" : "ERROR:BADARG";
+    }
+    return be.keyRotate() ? "KEYROTATE" : "ERROR:STATE";
+  }
+  // Recognized but unavailable in this build/phase (voice is Phase 5):
+  // a distinct error keeps clients from confusing them with typos.
+  if (verb == "VOICE" || verb == "VOICECODEC" ||
       verb == "VOICESTART" || verb == "VOICESTOP" || verb == "VOICEPTT" ||
       verb == "VOICESTATUS") {
     return "ERROR:UNSUPPORTED";

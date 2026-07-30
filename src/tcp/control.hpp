@@ -62,6 +62,14 @@ struct ControlBackend {
   // PTT config: METHOD/PORT/BAUD/LEAD/TAIL (INTERFACES.md).
   virtual std::string pttGet(const std::string& key) = 0;
   virtual bool pttSet(const std::string& key, const std::string& val) = 0;
+
+  // --- security (crypto builds; non-crypto builds return false/absent
+  // and the dispatcher answers ERROR:UNSUPPORTED) -----------------------
+  virtual bool cryptoSupported() { return false; }
+  virtual std::string securityLine() { return ""; }
+  virtual bool setEncryption(bool /*on*/) { return false; }
+  virtual bool setPsk(const std::string& /*hex*/) { return false; }
+  virtual bool keyRotate() { return false; }
 };
 
 // Uppercases the verb, dispatches, returns the single response line.

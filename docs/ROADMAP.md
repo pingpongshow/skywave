@@ -521,16 +521,52 @@ On-air work is gated by **ST4** (attended rig checklist).
 *Exit gate: **Milestone M5**. Three independent tracks; 5.1–5.3 ordered,
 others `[P]` across tracks.*
 
-- [ ] **5.1 Crypto: KEX + KDF** — X25519 ephemeral + PSK-HMAC transcript
+- [x] **5.1 Crypto: KEX + KDF** — X25519 ephemeral + PSK-HMAC transcript
   auth in START/START_ACK; directional key derivation.
   *Gate: `test_crypto` KEX vectors; tampered-transcript rejection.*
-- [ ] **5.2 Crypto: AEAD framing** — AES-256-GCM, implicit nonces with
+  ✓ 2026-07-29 — `crypto/session` (libsodium, compiled only under
+  `ENABLE_CRYPTO`): KEX blob = E(32) || auth(16 truncated HMAC-SHA256);
+  auth_i covers transcript_i, auth_r the full transcript (callsigns,
+  family, both capability bitmaps, both ephemerals) so a capability
+  downgrade or key substitution in flight fails authentication.
+  `K_master = HKDF(ikm=ss, salt=PSK, info="skw-v1"||transcript_hash)`,
+  directional subkeys + nonce bases per epoch. Gate: RFC 7748 / RFC 5869
+  pinning vectors, role-play key agreement (own TX key ≠ own RX key), and
+  four tamper cases (wrong PSK, mutated caps, flipped ephemeral, forged
+  auth_r) all rejected. Build dir `build-crypto` (`-DENABLE_CRYPTO=ON`).
+- [x] **5.2 Crypto: AEAD framing** — AES-256-GCM, implicit nonces with
   stream id, AAD binding, replay window.
   *Gate: replay/tamper/nonce-uniqueness property tests.*
-- [ ] **5.3 Crypto: epochs + surface** — KEY_UPDATE rotation with grace
+  ✓ 2026-07-29 — nonce = base XOR (stream:u8 || epoch:u16 || seq:u48),
+  no nonce bytes on the wire; `extendSeq` reconstructs the 48-bit
+  sequence from the 16-bit wire field around the high-water mark (both
+  rollover directions). AAD = envelope bytes 0–7, so header tampering
+  breaks the tag. 128-frame sliding replay window per stream. Gate:
+  ciphertext/tag/AAD/sequence tamper all rejected; replay, out-of-order,
+  and too-old frames counted and dropped; data vs voice stream and
+  epoch 1 vs 2 produce distinct ciphertext at the same sequence.
+  Deviation found by the tests: the epoch is a NONCE FIELD, so the
+  grace-window decrypt must use the previous epoch NUMBER together with
+  the previous key — swapping the key alone silently fails.
+- [x] **5.3 Crypto: epochs + surface** — KEY_UPDATE rotation with grace
   window, auto-rotation triggers, `SECURITY/ENCRYPTION/ENCRYPTKEY/
   KEYROTATE`, zeroization.
   *Gate: two-modem `crypto_session` scenario incl. mid-transfer rotation.*
+  ✓ 2026-07-29 — engine: KEX rides START/START_ACK, DATA payload bodies
+  are sealed (`kFlagEncrypted`), retransmissions re-seal under the same
+  sequence so the ciphertext is identical and **HARQ chase combining
+  still works**; a downgrade (cleartext DATA in an encrypted session, or
+  vice versa) is dropped. KEY_UPDATE bumps the epoch initiator-side with
+  the 8-frame grace window covering the crossover; auto-rotation at 2^20
+  frames or 4 h; keys zeroized at session end (which also invalidates
+  resume). Control surface `SECURITY/ENCRYPTION/ENCRYPTKEY/KEYROTATE`
+  through the worker (IDLE-only, PSK + AES-NI required); non-crypto
+  builds answer `ERROR:UNSUPPORTED`. Gate: 12 KiB encrypted bulk across
+  a mid-transfer KEYROTATE arrives byte-exact with both peers at epoch 2;
+  PSK mismatch **refuses the session** rather than falling back to
+  cleartext; a peer without the capability yields an explicit cleartext
+  session. Deviation: `CryptoSession` is movable (not copyable) so the
+  owning `LinkEngine` stays move-assignable.
 - [ ] **5.4 Voice: codec + streaming** — Codec2 wrapper, talkspurt
   streaming (open-ended container), VOICE_DATA packing, PLC, voice
   sequence space.
