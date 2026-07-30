@@ -69,6 +69,7 @@ add_library(skywave_core STATIC
   src/phy/equalizer.cpp
   src/phy/receiver.cpp
   src/sim/chansim.cpp
+  src/sim/radiochain.cpp
   src/link/frame.cpp
   src/link/fsm.cpp
   src/link/handshake.cpp
@@ -140,6 +141,7 @@ if(BUILD_TESTS)
   skw_test(test_tcp)
   skw_test(test_m2)
   skw_test(test_m3_ramp)
+  skw_test(test_system)
   skw_test(test_amc)
   skw_test(test_harq)
   skw_test(test_chanmem)

@@ -68,14 +68,62 @@ A generated table (like the reference design's) mapping every
 requirement row has no passing evidence. Lives at `tests/conformance.yaml`
 with a checker script.
 
-### 5. System / Hardware Harness (post-Phase-2, manual + scripted)
+### 5. System Test Layers (ST1-ST4)
 
-- loopback via virtual audio devices (BlackHole / VB-Cable): full process,
-  real sockets, real PortAudio
-- dual-machine or dual-process real-audio runs driving `STATUS JSON`
-  scraping for long-duration soak (≥ 2 h, zero session drops on clean audio)
-- real-rig checklist: PTT timing scope check, ALC/drive level procedure,
-  on-air two-station test script
+Exhaustive full-stack validation under rig-realistic conditions, attached
+as END-OF-PHASE gates so bugs surface before any on-air test. Each layer
+adds realism the previous one cannot model.
+
+#### ST1 - Audio-domain harness + radio-chain emulator (gate: with M3) ✓
+
+The full DSP stack exercised at the REAL 48 kHz audio domain:
+`engine TX (12 kHz) -> Upconverter -> radio chain -> Downconverter ->
+engine RX`. The radio-chain emulator (`sim/radiochain`) models the whole
+PC -> soundcard -> SSB rig -> ionosphere -> rig -> soundcard path:
+
+| Stage | Effects |
+|---|---|
+| TX rig | PTT lead/tail switching clips, drive-level error, ALC soft compression, TX audio bandpass |
+| Path | Watterson fading / AWGN / carrier-point CFO (chansim through the real converters) |
+| RX rig | RX bandpass, mains hum + harmonic, DC offset, impulse static crashes, soundcard clock ppm |
+
+`test_system` cases: clean-path integration; all-impairments-at-once at
+CCIR Good 18 dB; PTT lead-clip tolerance sweep (10/25/40 ms); hostile-
+audio fuzz (tones / noise / AM / hum - no crashes, no fabricated
+sessions or data); connect-transfer-disconnect soak cycles with
+randomized impairments and per-cycle throughput reporting. CI runs the
+short soak; `SKW_SOAK=N` runs the long-haul stress (run under
+sanitizers for leak/corruption checks).
+
+#### ST2 - Process-level loopback (gate: Phase 4 exit)
+
+The real `skywave` binary end to end - worker threads, telemetry,
+command queue, TCP data/control ports - with an in-process loopback
+audio driver in place of PortAudio, radio-chain emulator interposed.
+Scripted via the control port (`CONNECT`, `STATUS JSON` scraping);
+data through the TCP data port; EVT: notification correctness asserted.
+Fault injection: audio dropouts, ring starvation, mid-frame TX abort,
+simultaneous-TX collisions, client disconnect/reconnect on every port.
+
+#### ST3 - Real/virtual audio devices (gate: Phase 5 exit)
+
+Two `skywave` processes over real audio hardware: BlackHole pair on
+macOS, VB-Cable on Windows, or a physical cable between two interfaces.
+This is the only layer with genuinely INDEPENDENT device clocks (real
+drift, real buffer timing, real underruns). Requirements:
+- scripted two-process connect / bulk / disconnect matrix over the
+  device pair (ctest label `hardware`, skipped when devices absent)
+- >= 2 h soak: zero session drops on clean audio, no leaks (leaks/ASan),
+  ring overflow/underflow counters zero, throughput drift < 10%
+- level calibration path exercised (TXTEST + AUDIOLEVEL against the
+  device loop)
+
+#### ST4 - On-air readiness (gate: pre-release, attended)
+
+- PTT timing scope check (lead/tail vs rig switching, no hot-key clicks)
+- ALC/drive procedure per INTERFACES.md TX Drive Calibration
+- attended two-station RF checklist: handshake at distance, mode ladder
+  behavior, disconnect paths, monitor station copy
 
 ## Failure Artifacts
 

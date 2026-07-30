@@ -400,8 +400,27 @@ disconnects over the simulated ionosphere end to end.**
   selectivity + SNR variance) switching floor tables is the known
   upgrade, listed as debt.
 
+- [x] **3.12 System test layer ST1** — radio-chain emulator + 48 kHz
+  audio-domain full-stack harness (TESTING.md "System Test Layers").
+  *Gate: `test_system` — clean audio path, all-impairments run, PTT
+  clip sweep, hostile-audio fuzz, randomized soak cycles.*
+  ✓ 2026-07-29 — sim/radiochain (PTT clips, ALC, rig bandpasses, hum,
+  DC, impulse static, soundcard ppm, Watterson through the real
+  converters); all five cases green on first full run, including 40 ms
+  PTT lead clipping and the everything-at-once rig gauntlet.
+  `SKW_SOAK=N` scales the soak for long-haul runs.
+
 **Phase 3 complete — Milestone M3. The modem adapts: AMC drives the
-ladder live with HARQ, probes, masking, CP auto, and TX alignment.**
+ladder live with HARQ, probes, masking, CP auto, and TX alignment —
+and survives the emulated rig chain end to end (ST1).**
+
+**System-test gates for the remaining phases (TESTING.md ST layers):**
+Phase 4 exits through **ST2** (process-level loopback: real worker/TCP
+stack over an in-process audio driver + radio chain, scripted via the
+control port, fault injection). Phase 5 exits through **ST3**
+(real/virtual audio devices - BlackHole/VB-Cable - two processes,
+independent clocks, ≥2 h zero-drop soak; ctest label `hardware`).
+On-air work is gated by **ST4** (attended rig checklist).
 
 ## Phase 4 — Services
 
