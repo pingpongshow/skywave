@@ -248,7 +248,9 @@ void ModemWorker::pumpRxLocked(double now) {
       const bool engineEligible =
           listen_ || engine_->state() != FsmState::Idle;
       const bool decoded =
-          engineEligible ? engine_->rxBurst(win, now) : false;
+          engineEligible
+              ? engine_->rxBurst(win, now, it->tries == kRxTries - 1)
+              : false;
       ++it->tries;
       if (decoded || it->tries >= kRxTries) {
         if (monitorOn_ && monitor_) {

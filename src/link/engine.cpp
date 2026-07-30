@@ -102,10 +102,33 @@ LinkEngine::LinkEngine(EngineConfig cfg)
 bool LinkEngine::ccaDataGated(double now) {
   static const bool dbg = getenv("SKW_CCA_DEBUG") != nullptr;
   if (dbg) {
-    fprintf(stderr, "%s cca t=%.1f busy=%d wait=%.1f proceed=%.1f q=%zu inflight=%zu backlog=%zu\n",
-            cfg_.policy.ownCall.c_str(), now, chanBusy_ ? 1 : 0,
+    fprintf(stderr, "%s cca t=%.1f busy=%d txq=%.2f wait=%.1f proceed=%.1f q=%zu inflight=%zu backlog=%zu\n",
+            cfg_.policy.ownCall.c_str(), now, chanBusy_ ? 1 : 0, txQueueSec_,
             ccaWaitStart_, ccaProceedAt_, outQueue_.size(),
             arqTx_.inFlight(), protoTx_.backlogBytes());
+  }
+  // Half-duplex discipline: at most ONE data burst in the worker's TX
+  // path. Stacking bursts into the 8 s ring kept the transmitter keyed
+  // continuously, starved the receiver (a keyed radio is deaf), and
+  // hid the channel from the busy detector.
+  if (txQueueSec_ > 0.35) {
+    txWasDraining_ = true;
+    return true;
+  }
+  if (txWasDraining_) {
+    txWasDraining_ = false;
+    // Our burst just finished airing. If the peer is actively sending
+    // data too, yield a jittered gap so it can key up - without this
+    // the side with more traffic captures the channel and the reverse
+    // direction starves (observed: 0 B delivered B->A over 900 s while
+    // A moved 14 KB).
+    if (now - lastDataRxAt_ < 15.0 && lastDataRxAt_ > 0.0) {
+      ccaRng_ ^= ccaRng_ >> 12;
+      ccaRng_ ^= ccaRng_ << 25;
+      ccaRng_ ^= ccaRng_ >> 27;
+      ccaProceedAt_ = now + 0.25 + 0.5 * double(ccaRng_ % 1000) / 1000.0;
+      return true;
+    }
   }
   if (chanBusy_) {
     ccaProceedAt_ = -1.0;
@@ -1011,6 +1034,12 @@ bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
   ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
+  if (!chanBusy_ && ctrlWaitStart_ >= 0.0 &&
+      now - ctrlWaitStart_ >= 0.0) {
+    // Channel cleared while control was holding: the hold ends now;
+    // the frame flies on this tick's emission pass.
+    ctrlWaitStart_ = -1.0;
+  }
   arqTx_.setExtraDelay(txQueueSec_);
   fsm_.tick(now);
   drainFsmActions(now);
@@ -1050,6 +1079,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       if (pendingMaskEpoch_ >= 0 && now >= maskRetryAt_) {
         if (++maskTries_ >= 4) {
           pendingMaskEpoch_ = -1;  // abandon this mask generation
+          // Cooldown before proposing again: an abandoned exchange
+          // means the reverse channel is in bad shape - immediately
+          // re-proposing produced an endless MASK_UPDATE storm that
+          // occupied the channel and starved data AND teardown
+          // (observed under half-duplex loss).
+          maskCooldownUntil_ = now + 60.0;
         } else {
           MaskUpdateBody mu;
           mu.epoch = uint8_t(pendingMaskEpoch_);
@@ -1065,7 +1100,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           maskRetryAt_ = now + arqTx_.timeoutSec();
         }
       }
-      if (pendingMaskEpoch_ < 0) {
+      if (pendingMaskEpoch_ < 0 && now >= maskCooldownUntil_) {
         CarrierMask want = maskDet_->proposal(now);
         if (!(want == rxMask_) &&
             want.maskedCount(cfg_.policy.family) > 0) {
@@ -1262,8 +1297,31 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                         });
     if (pick == outQueue_.end()) return std::nullopt;
   }
+  // Control feedback must not key over a burst still airing: the peer
+  // is DEAF while transmitting, so an ACK sent into its transmission
+  // is simply lost and the whole window burns an ARQ timeout. Hold
+  // control while the channel is busy - short cap so feedback is never
+  // starved, and NO jitter: feedback should fly the instant the
+  // channel clears. Voice bypasses everything (real-time).
+  if (pick->env.type != LinkType::Data && !usesVoiceSequence(pick->env.type) &&
+      chanBusy_) {
+    if (ctrlWaitStart_ < 0.0) ctrlWaitStart_ = now;
+    if (now - ctrlWaitStart_ < 2.0) return std::nullopt;
+  }
+  // Disarm on emission AND whenever the channel is clear - a stale
+  // armed timestamp would make the cap look already-expired and let
+  // the next control frame key over a live transmission.
+  ctrlWaitStart_ = -1.0;
   OutFrame f = std::move(*pick);
   outQueue_.erase(pick);
+  {
+    static const bool frDbg = getenv("SKW_FRAME_DEBUG") != nullptr;
+    if (frDbg) {
+      fprintf(stderr, "%s TXFRM t=%.1f type=%d seq=%u busy=%d txq=%.2f\n",
+              cfg_.policy.ownCall.c_str(), now, int(f.env.type),
+              unsigned(f.env.sequence), chanBusy_ ? 1 : 0, txQueueSec_);
+    }
+  }
   if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
     // Refresh ACK feedback at transmit time - see the ackPending_ note.
     f.env.ackBase = arqRx_.ackBase();
@@ -1323,14 +1381,16 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   return buildBurst(f);
 }
 
-bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
+bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
+                         bool finalAttempt) {
   lastNow_ = now;
   RxStage stage;
-  auto res =
-      receiveFrame(cfg_.policy.family, samples, &stage, &harq_, &rxMask_);
+  auto res = receiveFrame(cfg_.policy.family, samples, &stage,
+                          finalAttempt ? &harq_ : nullptr, &rxMask_);
   if (res) lastRxWasCss_ = res->sig == ChirpSig::Css;
-  if (res && maskDet_ && fsm_.state() == FsmState::Connected &&
-      mode_ >= 8 && !res->carrierSnrDb.empty()) {
+  if (res && (res->payloadOk || finalAttempt) && maskDet_ &&
+      fsm_.state() == FsmState::Connected && mode_ >= 8 &&
+      !res->carrierSnrDb.empty()) {
     maskDet_->onSnapshot(res->carrierSnrDb, now);
   }
   if (res && fsm_.state() == FsmState::Connected) {
@@ -1355,15 +1415,17 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   if (res) {
     if (res->payloadOk) {
       ++framesOk_;
-    } else {
+    } else if (finalAttempt) {
       ++framesFailed_;
     }
   }
   if (!res || !res->payloadOk) {
-    if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
+    if (amc_ && stage == RxStage::Ok && finalAttempt) {
+      amc_->onFrameResult(false, false);
+    }
     // A PROBE whose header decoded but payload failed still gets its
     // verdict: the probeId rides the PHY header's seqLow.
-    if (res && !res->payloadOk &&
+    if (res && !res->payloadOk && finalAttempt &&
         res->header.frameType == uint8_t(LinkType::Probe) &&
         fsm_.state() == FsmState::Connected) {
       queueControl(LinkType::ProbeAck,
@@ -1401,6 +1463,12 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
 
 void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                          double now) {
+  static const bool frDbg = getenv("SKW_FRAME_DEBUG") != nullptr;
+  if (frDbg) {
+    fprintf(stderr, "%s RXFRM t=%.1f type=%d seq=%u\n",
+            cfg_.policy.ownCall.c_str(), now, int(f.env.type),
+            unsigned(f.env.sequence));
+  }
   lastRxQuality_ = q;
   fsm_.rxTraffic(now);
   probeGate_.onFrameObserved();
@@ -1751,6 +1819,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       }
       rxMask_ = pendingRxMask_;  // peer now zeroes these toward us
       pendingMaskEpoch_ = -1;
+      maskCooldownUntil_ = lastNow_ + 20.0;  // space successive epochs
       break;
     }
     case LinkType::KeyUpdate: {

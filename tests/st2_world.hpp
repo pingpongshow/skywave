@@ -171,6 +171,7 @@ struct World {
   Node a, b;
   Shuttle ab, ba;
   bool starveB = false;  // fault injection: B's worker stops running
+  uint64_t noiseRng = 0x243F6A8885A308D3ull;  // ambient-floor generator
 
   World(double snrDb, uint64_t seed) : a(clk, "W1AW"), b(clk, "K6XYZ") {
     for (Shuttle* s : {&ab, &ba}) {
@@ -209,6 +210,26 @@ struct World {
     for (size_t i = 0; i < want && !sh.outQ.empty(); ++i) {
       blk[i] = sh.outQ.front();
       sh.outQ.pop_front();
+    }
+    // NOTE full-duplex audio: this world does NOT model PTT-muted
+    // receivers (a real single SSB transceiver is deaf while keyed).
+    // A deaf-RX prototype showed the current protocol needs a true
+    // turn-taking MAC to survive that - tracked as pre-OTA work in
+    // ROADMAP. Current validated envelope: full-duplex audio paths
+    // (virtual cables, split TX/RX).
+    // Ambient noise floor (~-60 dBFS): real receivers never output
+    // digital zero. Without it the worker's noise-floor tracker
+    // acquires silence at -inf and the busy detector fires on ANY
+    // nonzero sample - chansim noise tails read as a busy channel and
+    // CCA over-deferred everything (observed: busy=1 pinned for
+    // minutes on an idle link).
+    for (auto& v : blk) {
+      noiseRng ^= noiseRng >> 12;
+      noiseRng ^= noiseRng << 25;
+      noiseRng ^= noiseRng >> 27;
+      v += 1e-3f * (float(uint32_t(noiseRng * 0x2545F4914F6CDD1Dull >> 40)) /
+                        float(1u << 24) -
+                    0.5f);
     }
     to.rxRing.write(blk);
   }

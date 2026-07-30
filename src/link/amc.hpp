@@ -87,6 +87,7 @@ class Amc {
 
   AmcConfig cfg_;
   uint8_t mode_;
+  double lastDemoteAt_ = -1e9;  // promote damping after demotes
   bool pinned_ = false;
   bool degraded_ = false;
   double lastChange_;

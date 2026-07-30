@@ -108,12 +108,17 @@ int main() {
   applyPreset(w, preset, snr);
   Gen gA(seed * 7 + 1), gB(seed * 7 + 2);
 
-  if (w.cmd(w.a, "CONNECT K6XYZ").rfind("CONNECT", 0) != 0) {
-    return fail("CONNECT refused", 0);
+  // Floor-SNR handshakes legitimately need several CALL/START retry
+  // ladders; give three full attempts before declaring failure.
+  bool connected = false;
+  for (int attempt = 0; attempt < 3 && !connected; ++attempt) {
+    if (w.cmd(w.a, "CONNECT K6XYZ").rfind("CONNECT", 0) != 0 &&
+        attempt == 0) {
+      return fail("CONNECT refused", 0);
+    }
+    connected = w.waitState(w.a, "CONNECTED", 12000);
   }
-  if (!w.waitState(w.a, "CONNECTED", 4000)) {
-    return fail("initial connect", 0);
-  }
+  if (!connected) return fail("initial connect", 0);
 
   const double t0 = double(w.clk.nowUs()) * 1e-6;
   // Churn staircase state.

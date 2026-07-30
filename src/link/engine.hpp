@@ -165,8 +165,15 @@ class LinkEngine {
   std::optional<std::vector<cfloat>> tick(double now);
   // Feed a received capture (burst + padding); engine decodes and
   // reacts. Returns true when a frame decoded payload-clean (the
-  // worker's windowed retry stops there).
-  bool rxBurst(std::span<const cfloat> samples, double now);
+  // worker's windowed retry stops there). finalAttempt marks the LAST
+  // ladder try for this capture: only then do failures count (FFAIL,
+  // AMC, mask stats, HARQ accumulation, probe verdicts) - earlier
+  // windows may simply have TRUNCATED the burst, and treating those as
+  // real failures fed ~50% fake FER per container into every adaptive
+  // layer (observed as mode/mask churn strangling two-way traffic on a
+  // clean +25 dB channel).
+  bool rxBurst(std::span<const cfloat> samples, double now,
+               bool finalAttempt = true);
 
  private:
   struct OutFrame {
@@ -268,6 +275,9 @@ class LinkEngine {
   uint64_t ccaRng_ = 0;          // per-station jitter (desyncs peers)
   bool ccaGatedNow_ = false;     // per-tick cached verdict
   double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
+  bool txWasDraining_ = false;   // edge detector: own burst just aired
+  double ctrlWaitStart_ = -1.0;  // control busy-hold (2 s cap, no jitter)
+  double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
   CallAckBody lastCallAck_{};     // initiator: stored for makeStart

@@ -136,6 +136,7 @@ AmcDecision Amc::evaluate(double now) {
   if (floorBreak || retryBreak || failBreak) {
     promoteStreak_ = 0;
     if (mode_ > cfg_.minMode) {
+      lastDemoteAt_ = now;
       return {AmcDecision::Kind::Demote, uint8_t(mode_ - 1)};
     }
     degraded_ = true;  // at the bottom rung and still failing
@@ -143,8 +144,13 @@ AmcDecision Amc::evaluate(double now) {
   }
 
   // Promote: single step, dwell, retry gate, consecutive evaluations.
+  // After any demote, promotion holds for a 30 s damping window: a
+  // fade hovering at a floor boundary otherwise ping-pongs
+  // demote/promote every dwell, and the MODE_CHANGE/MODE_ACK exchanges
+  // themselves consume the channel (observed under bidirectional
+  // fading: a mode flap every ~6 s with data starved behind it).
   if (mode_ >= cfg_.maxMode || now - lastChange_ < cfg_.minDwellSec ||
-      retry > cfg_.promoteRetryMax) {
+      now - lastDemoteAt_ < 30.0 || retry > cfg_.promoteRetryMax) {
     promoteStreak_ = 0;
     return {};
   }

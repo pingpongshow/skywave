@@ -1093,3 +1093,44 @@ doc was updated)*
   scenario delivers byte-exact again and the full suite (incl. the
   VHF 25.5 kbps gate) is green. `SKW_TX_DEBUG` / `SKW_CCA_DEBUG` added
   to the debug env-var set.
+- **Stress campaign / 2026-07-30, discoveries #3-#6** — Bidirectional
+  saturation at +25 dB STATIC still ran at ~1% efficiency after the
+  queue-delay fix; peeling it back found four more real defects, all
+  fixed:
+  1. **Fake FER poisoned every adaptive layer**: the worker's RX window
+     ladder (2.5 s first window) truncates any burst container longer
+     than the window, and each truncated try with a decoded header
+     counted as a REAL frame failure (FFAIL, `Amc::onFrameResult`,
+     mask-detector snapshots, PROBE fail verdicts) - ~50% fake FER per
+     container. Failures now only count on the ladder's FINAL attempt
+     (`LinkEngine::rxBurst(..., finalAttempt)`).
+  2. **HARQ-store pollution**: truncated ladder tries fed junk LLRs
+     into the chase accumulators and tripped the poisoned-store guard,
+     erasing genuine chase state. The HARQ store is now only offered on
+     final attempts.
+  3. **Mask-epoch churn**: an abandoned MASK_UPDATE exchange (4 tries)
+     immediately re-proposed a new epoch forever - an endless control
+     storm that once held a teardown hostage for 40+ s. Abandonment now
+     backs off 60 s; a committed epoch spaces the next by 20 s.
+  4. **AMC flap churn**: promotes had a 6 s dwell but nothing damped
+     the demote->promote ping-pong at a floor boundary; promotion now
+     holds 30 s after any demote.
+  Also: post-burst YIELD on bidirectionally-active links (a jittered
+  0.25-0.75 s gap after each data burst when the peer has recent data;
+  without it the busier side captures the channel - observed 0 B
+  reverse delivery over 900 s), control frames hold while the channel
+  is busy (2 s cap, no jitter - feedback keys the instant the channel
+  clears), and the ST2 world gained an ambient noise floor (~-60 dBFS;
+  exact-zero silence made the busy detector hair-trigger on chansim
+  noise tails).
+  KNOWN LIMITATIONS (flagged for a future phase, required before OTA
+  on a single PTT-muted transceiver):
+  (a) sustained SIMULTANEOUS two-way bulk remains inefficient (it
+  flows byte-exact but at a small fraction of one-way throughput; the
+  session MAC needs designed turn-taking / piggybacked feedback for
+  that traffic pattern - interactive + one-way bulk, the validated
+  regimes, are unaffected);
+  (b) a deaf-RX (PTT-muted receiver) ST2 prototype showed the current
+  protocol loses feedback frames into keyed transmitters - true
+  half-duplex turn-taking is future work; the validated envelope is
+  full-duplex audio paths (virtual cables, split TX/RX radios).
