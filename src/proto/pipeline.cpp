@@ -73,11 +73,17 @@ void ProtoTx::submit(std::span<const uint8_t> bytes, double now) {
   coalesce_.insert(coalesce_.end(), bytes.begin(), bytes.end());
 }
 
-void ProtoTx::seal(std::vector<uint8_t> raw) {
+void ProtoTx::seal(uint8_t svcTag, std::span<const uint8_t> raw) {
+  // Message body = [service tag][bytes]; compression covers the whole
+  // body, the marker byte stays outermost.
+  std::vector<uint8_t> body;
+  body.reserve(1 + raw.size());
+  body.push_back(svcTag);
+  body.insert(body.end(), raw.begin(), raw.end());
   Msg m;
   if (zstd_) {
-    auto z = zstdPack(raw);
-    if (!z.empty() && z.size() + kCompressMinSaving <= raw.size()) {
+    auto z = zstdPack(body);
+    if (!z.empty() && z.size() + kCompressMinSaving <= body.size()) {
       m.flags = kFlagCompressed;
       m.bytes.reserve(1 + z.size());
       m.bytes.push_back(kProtoMarkerZstd);
@@ -86,10 +92,19 @@ void ProtoTx::seal(std::vector<uint8_t> raw) {
       return;
     }
   }
-  m.bytes.reserve(1 + raw.size());
+  m.bytes.reserve(1 + body.size());
   m.bytes.push_back(kProtoMarkerStored);
-  m.bytes.insert(m.bytes.end(), raw.begin(), raw.end());
+  m.bytes.insert(m.bytes.end(), body.begin(), body.end());
   msgs_.push_back(std::move(m));
+}
+
+void ProtoTx::submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes) {
+  // Seal any open stream window first: order across services holds.
+  if (!coalesce_.empty()) {
+    seal(kSvcStream, coalesce_);
+    coalesce_.clear();
+  }
+  seal(svcTag, bytes);
 }
 
 void ProtoTx::maybeSeal(double now) {
@@ -98,10 +113,10 @@ void ProtoTx::maybeSeal(double now) {
                                coalesce_.begin() + kCoalesceMaxBytes);
     coalesce_.erase(coalesce_.begin(),
                     coalesce_.begin() + kCoalesceMaxBytes);
-    seal(std::move(chunk));
+    seal(kSvcStream, chunk);
   }
   if (!coalesce_.empty() && now >= deadline_) {
-    seal(std::move(coalesce_));
+    seal(kSvcStream, coalesce_);
     coalesce_.clear();
   }
 }
@@ -154,10 +169,10 @@ void ProtoRx::onSegment(uint8_t flags, std::span<const uint8_t> bytes) {
   std::span<const uint8_t> body(assembly_.data() + 1,
                                 assembly_.size() - 1);
   if (marker == kProtoMarkerStored) {
-    out_.insert(out_.end(), body.begin(), body.end());
+    deliver(body);
   } else if (marker == kProtoMarkerZstd) {
     if (auto raw = zstdUnpack(body)) {
-      out_.insert(out_.end(), raw->begin(), raw->end());
+      deliver(*raw);
     } else {
       ++bad_;
     }
@@ -165,6 +180,37 @@ void ProtoRx::onSegment(uint8_t flags, std::span<const uint8_t> bytes) {
     ++bad_;
   }
   assembly_.clear();
+}
+
+void ProtoRx::deliver(std::span<const uint8_t> message) {
+  if (message.empty()) {  // missing service tag
+    ++bad_;
+    return;
+  }
+  const uint8_t tag = message[0];
+  auto payload = message.subspan(1);
+  if (tag == kSvcStream) {
+    out_.insert(out_.end(), payload.begin(), payload.end());
+  } else if (tag == kSvcFile) {
+    svcOut_.emplace_back(
+        tag, std::vector<uint8_t>(payload.begin(), payload.end()));
+  } else {
+    ++bad_;  // unknown service
+  }
+}
+
+std::vector<std::vector<uint8_t>> ProtoRx::takeServiceMessages(
+    uint8_t svcTag) {
+  std::vector<std::vector<uint8_t>> out;
+  for (auto it = svcOut_.begin(); it != svcOut_.end();) {
+    if (it->first == svcTag) {
+      out.push_back(std::move(it->second));
+      it = svcOut_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return out;
 }
 
 std::vector<uint8_t> ProtoRx::takeBytes() {
@@ -176,6 +222,7 @@ std::vector<uint8_t> ProtoRx::takeBytes() {
 void ProtoRx::reset() {
   assembly_.clear();
   out_.clear();
+  svcOut_.clear();
   bad_ = 0;
 }
 

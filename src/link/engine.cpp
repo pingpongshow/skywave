@@ -79,6 +79,59 @@ std::vector<uint8_t> LinkEngine::takeReceivedData() {
   return protoRx_.takeBytes();
 }
 
+bool LinkEngine::sendFile(const std::string& name,
+                          std::vector<uint8_t> data, uint64_t mtime) {
+  return fileTx_.start(nextFileId_++, name, std::move(data), mtime);
+}
+
+std::vector<std::string> LinkEngine::takeEvents() {
+  auto out = std::move(events_);
+  events_.clear();
+  return out;
+}
+
+// Feed the proto pipeline from an active file transfer, keeping only a
+// bounded backlog sealed (flow control: the file must not displace
+// interactive stream traffic wholesale, and teardown must not strand
+// megabytes in the pipeline).
+void LinkEngine::pumpFile() {
+  if (!fileTx_.active() || fsm_.state() != FsmState::Connected) return;
+  const size_t cap = 4 * dataBudget_;
+  while (protoTx_.backlogBytes() < cap) {
+    auto msg = fileTx_.nextMessage();
+    if (!msg) {
+      // Fully handed over; completion = pipeline drained + all ACKed.
+      if (protoTx_.idle() && arqTx_.inFlight() == 0) {
+        events_.push_back("EVT:TXCOMPLETE");
+        fileTx_.finish();
+      }
+      return;
+    }
+    protoTx_.submitMessage(kSvcFile, *msg);
+  }
+}
+
+void LinkEngine::drainFileRx() {
+  for (auto& m : protoRx_.takeServiceMessages(kSvcFile)) {
+    fileRx_.onMessage(m);
+  }
+  for (auto& e : fileRx_.takeEvents()) {
+    switch (e.kind) {
+      case FileRxEvent::Kind::Done:
+        events_.push_back("EVT:FILE_RX " + e.name + " " +
+                          std::to_string(e.offset) + " " +
+                          (e.crcOk ? "1" : "0"));
+        break;
+      case FileRxEvent::Kind::Error:
+        events_.push_back("EVT:FILE_ERROR " + e.name + " " + e.reason);
+        break;
+      case FileRxEvent::Kind::Started:
+      case FileRxEvent::Kind::Checkpoint:
+        break;  // internal (resume state); not control-port events
+    }
+  }
+}
+
 void LinkEngine::queueControl(LinkType t, std::vector<uint8_t> body,
                               ChirpSig sig, int mode) {
   OutFrame f;
@@ -177,6 +230,14 @@ void LinkEngine::drainFsmActions(double /*now*/) {
             outQueue_.end());
         protoTx_.reset();
         protoRx_.abortMessage();  // delivered bytes stay drainable
+        // File TX aborts (4.4 session resume will pause + rewind to the
+        // receiver checkpoint instead); RX state is KEPT - it holds the
+        // checkpoint a resumed session continues from.
+        if (fileTx_.active()) {
+          events_.push_back("EVT:FILE_ERROR " + fileTx_.name() +
+                            " disconnected");
+          fileTx_.abort();
+        }
         ackPending_ = false;
         break;
     }
@@ -494,6 +555,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                        std::move(f));
     }
   }
+  pumpFile();
   pumpData(now);
   if (outQueue_.empty()) return std::nullopt;
   OutFrame f = std::move(outQueue_.front());
@@ -692,6 +754,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         protoRx_.onSegment(
             p[0], std::span<const uint8_t>(p.data() + 1, p.size() - 1));
       }
+      drainFileRx();
       ackPending_ = true;
       break;
     }

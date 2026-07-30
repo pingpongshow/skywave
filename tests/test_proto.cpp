@@ -112,7 +112,8 @@ TEST_CASE(proto_coalesce_window) {
   tx.submit(big, 10.0);
   auto s1 = tx.nextSegment(4200, 10.0);  // no window wait
   CHECK(s1.has_value());
-  CHECK_EQ(int(s1->bytes.size()), int(kCoalesceMaxBytes + 1));  // marker
+  // marker + service tag + window
+  CHECK_EQ(int(s1->bytes.size()), int(kCoalesceMaxBytes + 2));
   CHECK(!tx.nextSegment(4200, 10.0).has_value());  // remainder waits
   auto s2 = tx.nextSegment(4200, 10.3);
   CHECK(s2.has_value());
@@ -152,10 +153,14 @@ TEST_CASE(proto_bad_messages) {
   std::vector<uint8_t> mb(1u << 20, 0x55);
   for (int i = 0; i < 9; ++i) rx.onSegment(kFlagMoreFragments, mb);
   CHECK_EQ(int(rx.badMessages()), 3);
+  // Unknown service tag is dropped and counted.
+  rx.onSegment(0, std::vector<uint8_t>{kProtoMarkerStored, 0x7E, 1});
+  CHECK_EQ(int(rx.badMessages()), 4);
   // A valid message afterwards still decodes.
-  rx.onSegment(0, std::vector<uint8_t>{kProtoMarkerStored, 42});
+  rx.onSegment(0,
+               std::vector<uint8_t>{kProtoMarkerStored, kSvcStream, 42});
   CHECK(rx.takeBytes() == std::vector<uint8_t>{42});
-  CHECK_EQ(int(rx.badMessages()), 3);
+  CHECK_EQ(int(rx.badMessages()), 4);
 }
 
 TEST_CASE(proto_exact_codeword_budget) {

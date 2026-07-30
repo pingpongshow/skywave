@@ -27,6 +27,7 @@
 #include "link/handshake.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
+#include "proto/filesvc.hpp"
 #include "proto/pipeline.hpp"
 
 namespace skw {
@@ -48,6 +49,18 @@ class LinkEngine {
   void disconnect(double now);
   void sendData(std::span<const uint8_t> bytes);  // buffered until sent
   std::vector<uint8_t> takeReceivedData();
+
+  // --- file transfer (4.3) ---------------------------------------------
+  // One transfer per direction at a time; false if one is active.
+  bool sendFile(const std::string& name, std::vector<uint8_t> data,
+                uint64_t mtime);
+  bool fileTxActive() const { return fileTx_.active(); }
+  std::optional<ReceivedFile> takeReceivedFile() {
+    return fileRx_.takeCompleted();
+  }
+  uint64_t fileRxCheckpoint() const { return fileRx_.checkpointOffset(); }
+  // Control-port notification lines ("EVT:..."), drained by the caller.
+  std::vector<std::string> takeEvents();
 
   FsmState state() const { return fsm_.state(); }
   FsmDiscCause lastDiscCause() const { return fsm_.lastDiscCause(); }
@@ -156,6 +169,13 @@ class LinkEngine {
   ProtoRx protoRx_;
   double lastNow_ = 0.0;    // for sendData(), which takes no timestamp
   size_t dataBudget_ = 57;  // exact-fill segment size at mode_/profile
+  // File service (4.3).
+  void pumpFile();
+  void drainFileRx();
+  FileTx fileTx_;
+  FileRx fileRx_;
+  uint32_t nextFileId_ = 1;
+  std::vector<std::string> events_;
 };
 
 }  // namespace skw

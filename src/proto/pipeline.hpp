@@ -23,6 +23,10 @@ namespace skw {
 
 inline constexpr uint8_t kProtoMarkerStored = 0x00;
 inline constexpr uint8_t kProtoMarkerZstd = 0x5A;
+// Inner service tag, first byte of every (decompressed) message
+// (PROTOCOL.md "File Transfer"): which service the bytes belong to.
+inline constexpr uint8_t kSvcStream = 0x01;
+inline constexpr uint8_t kSvcFile = 0x02;
 inline constexpr size_t kProtoDecompressCap = 8u << 20;  // 8 MiB
 inline constexpr double kCoalesceWindowSec = 0.25;
 inline constexpr size_t kCoalesceMaxBytes = 4096;  // window-full seal
@@ -56,9 +60,12 @@ struct ProtoSegment {
 class ProtoTx {
  public:
   void setZstd(bool on) { zstd_ = on; }  // committed capability
-  // Buffer app bytes; the coalesce deadline arms at the first byte of an
-  // empty window.
+  // Buffer app STREAM bytes (kSvcStream); the coalesce deadline arms at
+  // the first byte of an empty window.
   void submit(std::span<const uint8_t> bytes, double now);
+  // Enqueue one complete service message (e.g. a kSvcFile record). Any
+  // pending stream window seals first so cross-service order is kept.
+  void submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes);
   // Next wire segment of at most `budget` bytes, or nullopt if the
   // coalesce window is still open and nothing is sealed.
   std::optional<ProtoSegment> nextSegment(size_t budget, double now);
@@ -68,7 +75,7 @@ class ProtoTx {
 
  private:
   void maybeSeal(double now);
-  void seal(std::vector<uint8_t> raw);
+  void seal(uint8_t svcTag, std::span<const uint8_t> raw);
 
   bool zstd_ = false;
   std::vector<uint8_t> coalesce_;
@@ -89,15 +96,20 @@ class ProtoTx {
 class ProtoRx {
  public:
   void onSegment(uint8_t flags, std::span<const uint8_t> bytes);
-  std::vector<uint8_t> takeBytes();
+  std::vector<uint8_t> takeBytes();  // kSvcStream payload, in order
+  // Complete non-stream service messages (tag stripped), in order.
+  std::vector<std::vector<uint8_t>> takeServiceMessages(uint8_t svcTag);
   uint32_t badMessages() const { return bad_; }
   // Drop any half-assembled message (session teardown without resume).
   void abortMessage() { assembly_.clear(); }
   void reset();
 
  private:
+  void deliver(std::span<const uint8_t> message);
+
   std::vector<uint8_t> assembly_;
   std::vector<uint8_t> out_;
+  std::vector<std::pair<uint8_t, std::vector<uint8_t>>> svcOut_;
   uint32_t bad_ = 0;
 };
 

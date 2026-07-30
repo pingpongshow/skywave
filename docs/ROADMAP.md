@@ -442,8 +442,18 @@ On-air work is gated by **ST4** (attended rig checklist).
   so retransmissions reproduce the envelope; 16 KiB round-trips
   byte-exact under 1-in-7 loss. Fixed three protocol bugs this exposed —
   see Deviations Log.
-- [ ] **4.3 File transfer** — metadata, service tags, 32 KiB checkpoints,
+- [x] **4.3 File transfer** — metadata, service tags, 32 KiB checkpoints,
   `EVT:FILE_*`. *Gate: `test_file` + two-modem transfer scenario.*
+  ✓ 2026-07-29 — service tag is the first byte of every proto message
+  (0x01 stream / 0x02 file; compression covers tag+body).
+  `proto/filesvc`: META (id/name/size/mtime/CRC-32/chunk) + CHUNK
+  records; receiver checkpoints every 32 KiB contiguous
+  (`fileRxCheckpoint()` — persistence + resume continuation land with
+  4.4/worker); CRC-verified completion. Engine: `sendFile` (one per
+  direction), flow-controlled pump (~4 segment budgets of backlog),
+  `takeEvents()` → `EVT:FILE_RX/FILE_ERROR/TXCOMPLETE`. Gate: 80 KiB
+  under 1-in-9 loss with interleaved stream chat — byte-exact,
+  CRC-clean, stream routes independently.
 - [ ] **4.4 Session resume** — tokens, window, sequence continuation,
   file-checkpoint continuation, invalidation rules.
   *Gate: two-modem `resume` scenario (mid-transfer kill → CRC-clean
