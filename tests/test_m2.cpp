@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "link/engine.hpp"
+#include "link/monitor.hpp"
 #include "sim/chansim.hpp"
 #include "skytest.hpp"
 
@@ -448,6 +449,108 @@ TEST_CASE(m3_cp_auto_steps_under_multipath) {
   CHECK(p.a.cpMode() == CpMode::Long);
   CHECK(p.a.cpMode() == p.b.cpMode());
   CHECK(got == blob);
+}
+
+TEST_CASE(m3_monitor_third_party) {
+  // A passive third station decodes both directions of a session it can
+  // hear - the self-describing PHY header is the whole mechanism.
+  Pair p(25.0, 44);
+  Monitor mon(Family::Wide);
+  int monLines = 0, binRecords = 0, sawCall = 0, sawData = 0, sawAck = 0;
+  auto feed = [&](const std::vector<cfloat>& y) {
+    if (auto ev = mon.rxBurst(y)) {
+      ++monLines;
+      if (!ev->binaryRecord.empty()) {
+        ++binRecords;
+        CHECK_EQ(int(ev->binaryRecord[0]), 0xFB);
+      }
+      if (ev->monLine.find(":1:") != std::string::npos) ++sawCall;
+      // Data rides bare DATA frames or MAC burst containers (type 62).
+      if (ev->monLine.find(":6:") != std::string::npos ||
+          ev->monLine.find(":62:") != std::string::npos) {
+        ++sawData;
+      }
+      // B-direction frames: CALL_ACK / START_ACK / ACK / MODE_ACK.
+      if (ev->monLine.find(":2:") != std::string::npos ||
+          ev->monLine.find(":4:") != std::string::npos ||
+          ev->monLine.find(":7:") != std::string::npos ||
+          ev->monLine.find(":9:") != std::string::npos) {
+        ++sawAck;
+      }
+    }
+  };
+  p.a.connectTo("K6XYZ", p.now);
+  std::vector<uint8_t> blob(2048);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 5 + 2);
+  bool sent = false;
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 1200 && got.size() < blob.size(); ++i) {
+    auto bA = p.a.tick(p.now);
+    auto bB = p.b.tick(p.now);
+    double dt = 0.05;
+    if (bA) {
+      dt += double(bA->size()) / kFsBaseband;
+      std::vector<cfloat> x(1500, cfloat(0, 0));
+      x.insert(x.end(), bA->begin(), bA->end());
+      x.insert(x.end(), 2000, cfloat(0, 0));
+      ChansimParams cp = p.chanAB;
+      cp.seed = p.chanAB.seed + (p.seedCtr++) * 7919;
+      auto y = Chansim::run(cp, x);
+      p.b.rxBurst(y, p.now);
+      feed(y);
+    }
+    if (bB) {
+      dt += double(bB->size()) / kFsBaseband;
+      std::vector<cfloat> x(1500, cfloat(0, 0));
+      x.insert(x.end(), bB->begin(), bB->end());
+      x.insert(x.end(), 2000, cfloat(0, 0));
+      ChansimParams cp = p.chanBA;
+      cp.seed = p.chanBA.seed + (p.seedCtr++) * 7919;
+      auto y = Chansim::run(cp, x);
+      p.a.rxBurst(y, p.now);
+      feed(y);
+    }
+    p.now += dt;
+    if (!sent && p.a.state() == FsmState::Connected &&
+        p.b.state() == FsmState::Connected) {
+      p.a.sendData(blob);
+      sent = true;
+    }
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == blob);
+  std::printf("monitor: %d lines, %d bin, call=%d data=%d ack=%d\n",
+              monLines, binRecords, sawCall, sawData, sawAck);
+  CHECK(sawCall >= 1);   // A->B handshake
+  CHECK(sawData >= 2);   // A->B data (containers at fast modes)
+  CHECK(sawAck >= 2);    // B->A feedback: BOTH directions decoded
+  CHECK(binRecords >= monLines / 2);  // not suppressed (monitor idle)
+  // Connected-state suppression.
+  Monitor mon2(Family::Wide);
+  mon2.setLocalConnected(true);
+  TxFrameParams tp;
+  tp.family = Family::Wide;
+  tp.sig = ChirpSig::Fast;
+  tp.mode = 8;
+  std::vector<uint8_t> pl(60);
+  LinkEnvelope env;
+  env.type = LinkType::Data;
+  auto raw = packFrame(env, DataBody{0, pl}.pack());
+  tp.payload = raw;
+  auto frame = buildFrameBaseband(tp);
+  std::vector<cfloat> x(2000, cfloat(0, 0));
+  x.insert(x.end(), frame.begin(), frame.end());
+  x.insert(x.end(), 2500, cfloat(0, 0));
+  ChansimParams cs;
+  cs.fading = false;
+  cs.snr3kDb = 30;
+  cs.seed = 3;
+  auto y = Chansim::run(cs, x);
+  auto ev = mon2.rxBurst(y);
+  CHECK(ev.has_value());
+  CHECK(ev->binaryRecord.empty());              // suppressed
+  CHECK(ev->monLine.rfind("MON:", 0) == 0);     // MON: still flows
 }
 
 SKYTEST_MAIN

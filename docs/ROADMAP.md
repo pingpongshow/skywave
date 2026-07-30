@@ -372,9 +372,15 @@ disconnects over the simulated ionosphere end to end.**
   to robust modes the round trip outran the fast-mode timeout, epoch
   churn rejected every MODE_ACK, and committed modes diverged until the
   session died; timeouts now recompute at every applyMode.
-- [ ] **3.10 Monitor mode** — control-port `MON:` lines, data-port binary
+- [x] **3.10 Monitor mode** — control-port `MON:` lines, data-port binary
   records with connected-state suppression.
   *Gate: third passive instance decodes both directions in harness.*
+  ✓ 2026-07-29 — link/monitor.{hpp,cpp}: passive Monitor over
+  receiveFrame + parseFrame; callsign context cached from CALL/CQ/BEACON
+  (session frames attributed to the last observed exchange); 0xFB binary
+  records per INTERFACES.md, suppressed while the local modem is
+  connected (MON: lines always flow). Harness: third instance decoded
+  handshake, data containers, and B-direction feedback.
 - [ ] **3.11 Ramp validation** — scripted −10→+22→−10 dB SNR ramp.
   *Gate: **M3** — zero session drops; ≥ 75% of oracle throughput.*
 
