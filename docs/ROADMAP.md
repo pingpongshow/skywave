@@ -567,11 +567,28 @@ others `[P]` across tracks.*
   cleartext; a peer without the capability yields an explicit cleartext
   session. Deviation: `CryptoSession` is movable (not copyable) so the
   owning `LinkEngine` stays move-assignable.
-- [ ] **5.4 Voice: codec + streaming** — Codec2 wrapper, talkspurt
+- [x] **5.4 Voice: codec + streaming** — Codec2 wrapper, talkspurt
   streaming (open-ended container), VOICE_DATA packing, PLC, voice
   sequence space.
   *Gate: `test_voice`; A→chansim→B PCM round-trip intelligible artifacts
-  archived; concealment at 5/10% loss.*
+  archived; concealment at 5/10% loss.* ✓ 2026-07-29 — `voice/codec`
+  (Codec2 1.2.0, compiled under `ENABLE_VOICE`): `VoiceEncoder` packs
+  codec frames into `VOICE_DATA` units sized to the codeword budget so a
+  talkspurt pays the preamble once, mid-spurt units are always full and
+  only the PTT-end flush is short; `VoiceDecoder` conceals gaps by
+  repeating the last frame at −3 dB per repeat, twice, then silence.
+  AUTO codec resolution implements the VOICE.md table as its underlying
+  rule (highest codec whose streamed rate + 5% overhead fits the mode's
+  NET rate with headroom; nothing below M8 — no robust-tier voice).
+  Gate: real PCM through the PHY + chansim at M9 WIDE decodes every unit
+  with an exact sample count; 5%/10% unit loss over a 20 s spurt keeps
+  the timeline sample-exact with concealment counted; decay to silence
+  verified. `SKW_VOICE_ARTIFACTS=<dir>` dumps 8 kHz s16le for listening.
+  Deviations: (1) frame geometry is queried from libcodec2 at runtime, not
+  tabulated — Codec2's frame durations are non-uniform (700C/1300 are
+  40 ms, 2400/3200 are 20 ms) and a stale local table would silently
+  corrupt the wire format; (2) `codec2.h` includes `<codec2/version.h>`,
+  so CMake must put the PARENT of the pkg-config include dir on the path.
 - [ ] **5.5 Voice: session control + port** — OPEN/PTT-arbitration/CLOSE
   flows, broadcast voice, jitter buffer, voice TCP port records, codec
   auto-mapping with demotion stepdown.
