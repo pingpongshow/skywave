@@ -225,6 +225,17 @@ class LinkEngine {
   double lastCpChange_ = 0.0;
   uint16_t sessionCaps_ = 0;      // committed capability intersection
   bool harqIr() const { return (sessionCaps_ & kCapHarqIr) != 0; }
+  // Handshake-on-CSS (6.2): the initiator alternates CALL attempts onto
+  // CSS M0 when enabled; the responder mirrors the transport the CALL
+  // arrived on. All handshake control follows hsSig()/hsMode().
+  bool hsOnCss_ = false;
+  int callTxCount_ = 0;
+  bool lastRxWasCss_ = false;
+  std::vector<uint8_t> lastStartAckBody_;  // duplicate-START re-ack
+  ChirpSig hsSig() const {
+    return hsOnCss_ ? ChirpSig::Css : ChirpSig::Calling;
+  }
+  int hsMode() const { return hsOnCss_ ? 0 : 4; }
   // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK).
   int pendingMode_ = -1;
   CpMode pendingCp_ = kCpDefault;

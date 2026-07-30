@@ -5,7 +5,11 @@
 namespace skw {
 
 double clampResponseTimeout(double raw) {
-  return std::clamp(raw, 12.0, 45.0);
+  // The ceiling must accommodate CSS deep-tier legs (a single MID M0
+  // control frame runs ~35 s on air; the responder's answered-state
+  // hold spans the initiator's whole retry ladder). Values are always
+  // airtime-derived, so the ceiling is a runaway guard, not a tuning.
+  return std::clamp(raw, 12.0, 600.0);
 }
 
 std::optional<FsmAction> SessionFsm::nextAction() {
@@ -66,12 +70,21 @@ void SessionFsm::cmdAbort(double /*now*/) {
 void SessionFsm::rxCall(double now) {
   // Responder answer path. A CALL while connected to the same peer is a
   // reconnect attempt; session-level dedup happens above the FSM.
-  if (state_ != FsmState::Idle && state_ != FsmState::CallAnswered) return;
+  // Calling is also accepted: the ENGINE routes a CALL here from that
+  // state only when it decided to YIELD a simultaneous-connect collision
+  // (deterministic callsign tie-break) - the station becomes responder.
+  if (state_ != FsmState::Idle && state_ != FsmState::CallAnswered &&
+      state_ != FsmState::Calling) {
+    return;
+  }
   state_ = FsmState::CallAnswered;
   emit(FsmAction::SendCallAck);
-  // Await START for one response window; no retries on the responder
-  // side (the initiator owns retry budgets).
-  armResponse(now, cfg_.timings.callAckSec, cfg_.timings.startSec);
+  // Hold the answered state through the initiator's ENTIRE START retry
+  // ladder: near the deep-tier floor each leg runs ~50% one-shot FER,
+  // and a one-window hold expires exactly when the initiator's first
+  // START retry would land (observed live at -13 dB CCIR Moderate).
+  armResponse(now, cfg_.timings.callAckSec,
+              cfg_.timings.startSec * cfg_.startAttempts);
 }
 
 void SessionFsm::rxCallAck(double now) {

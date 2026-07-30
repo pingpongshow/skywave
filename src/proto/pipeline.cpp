@@ -55,11 +55,16 @@ size_t dataPayloadBudget(int mode, int framesPerBurst, int codewordsTarget) {
   // solo frame = envelope + rv + payload + CRC; container entries add a
   // u16 length prefix each (engine burst container, PHY frameType 62).
   const size_t perFrame = framesPerBurst == 1 ? 13 : 15;
+  const bool css = kModes[size_t(mode)].waveform == Waveform::Css;
   size_t best = 1;
   for (size_t p = 1;; ++p) {
     const size_t phyLen = size_t(framesPerBurst) * (perFrame + p);
     if (phyLen > 4095) break;  // PHY header length field is 12 bits
-    if (payloadCodewordCount(phyLen, mode) > codewordsTarget) break;
+    // CSS transport counts N=648 codewords (framer.hpp rule); OFDM
+    // counts by the 648/1944 sizing rule.
+    const int cw = css ? int(cssPayloadCodewords(phyLen))
+                       : payloadCodewordCount(phyLen, mode);
+    if (cw > codewordsTarget) break;
     best = p;
   }
   return best;

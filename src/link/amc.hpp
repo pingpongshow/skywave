@@ -15,6 +15,9 @@ namespace skw {
 struct AmcConfig {
   Family family = Family::Wide;
   uint8_t maxMode = 13;
+  // Bottom rung: kFirstMode (M4) normally, 0 when the session
+  // negotiated CAP_CSS_TIER (the ladder extends into the CSS deep tier).
+  uint8_t minMode = kFirstMode;
   double promoteMarginDb = 2.5;
   double demoteMarginDb = 0.5;
   double snrEmaAlpha = 0.25;
@@ -60,13 +63,20 @@ class Amc {
 
   // --- evaluation ------------------------------------------------------
   AmcDecision evaluate(double now);
+  // The next rung is promotable EXCEPT for the clean-probe requirement
+  // (kFadingNA / fragile modes): the engine should run a probe exchange
+  // toward the returned mode. nullopt otherwise. Without this hook the
+  // NA-mode gate is a chicken-and-egg: evaluate() can never return
+  // Promote to trigger the probe that would make it eligible.
+  std::optional<uint8_t> probeWanted(double now) const;
   double effectiveSnrDb(double now) const;
   double retryRatio() const;
   bool degraded() const { return degraded_; }
   uint8_t mode() const { return mode_; }
 
  private:
-  bool modeEligible(uint8_t k, double effSnr) const;
+  bool modeEligible(uint8_t k, double effSnr,
+                    bool assumeProbeClean = false) const;
   double operatingFloorDb(uint8_t k) const;
 
   AmcConfig cfg_;

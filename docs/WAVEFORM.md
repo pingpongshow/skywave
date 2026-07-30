@@ -255,14 +255,18 @@ information — the **header class**:
 | up–up | fast header follows | 2 |
 | up–down–up–down | robust header follows | 4 |
 | up–up–down–down | calling/beacon (robust header) | 4 |
+| up–down–down–up | CSS frame follows (waveform=1) | 4 |
 
 Every multi-rep signature that must support CFO measurement contains both
 chirp slopes: an LFM chirp's ambiguity function is a delay–Doppler ridge,
 so frequency offset is observable only as the *opposing* peak-time shifts
-of up-reps versus down-reps. All six patterns (three signatures × normal /
+of up-reps versus down-reps. All eight patterns (four signatures × normal /
 spectrum-inverted) remain mutually distinct; `up–up` is a prefix of the
-calling signature, so a detector that has seen two up-reps waits up to two
-further rep periods before classifying fast vs calling.
+calling signature and the middle of the inverted CSS signature, so a
+detector that has seen two up-reps checks the surrounding rep slots before
+classifying fast vs a containing 4-rep signature. This signature IS the
+sync arbitration: the preamble alone announces OFDM vs CSS, so the
+receiver never trial-decodes both.
 
 The robust class uses 4 reps so preamble detection always retains ≥ 3 dB of
 margin over the deepest payload floor it announces (a 2-rep preamble would
@@ -408,15 +412,35 @@ inverted.
 
 ## CSS Deep Tier (`M0–M3`)
 
-Modem layer built (ROADMAP 6.1, `src/dsp/css.{hpp,cpp}`); PHY/link
-integration and activation are ROADMAP 6.2.
+Modem layer (ROADMAP 6.1, `src/dsp/css.{hpp,cpp}`) and full PHY/link
+integration (6.2: `waveform=1` frames, sync arbitration by preamble
+signature, `CAP_CSS_TIER` negotiation, handshake-on-CSS, AMC ladder
+extension).
+
+**Frame on air** (`waveform=1`): chirp preamble (signature up–down–down–up)
+→ `kCssSyncSymbols` known shift-0 SF8 symbols (fine timing to the sample;
+CFO↔delay coupling makes residual CFO a pure common shift absorbed here;
+multipath tap profile for RAKE) → PHY header **twice** (Hamming(7,4) bit
+layer at fixed SF8, two independently interleaved copies ~2 s apart —
+time diversity where a short section cannot interleave through a fade;
+CRC-16 arbitrates) → payload as **LDPC r1/2 (N=648 only)** over
+soft-demodulated symbols (dual-max bit metric), whitened, trailing
+CRC-16. A known SF8 pilot precedes every `kCssPilotInterval` (8) data
+symbols of every section: it re-anchors timing (sample-clock drift) and
+refreshes the persistent RAKE tap tracker (Rayleigh taps trade dominance
+on ~1 s scales while deep frames run 10+ s; a tap's remembered strength
+decays over a few pilots rather than vanishing the instant it fades).
+Hard-decision Hamming remains the header transport and the aligned
+modem-layer API; measured ~4–6 dB shy of soft LDPC for long payload
+sections under fading (the 1-error-per-codeword cliff).
 
 **Symbol layer.** LoRa-style chirp spread spectrum: a symbol is the base
 up-chirp cyclically shifted by the symbol value, `2^SF` chips per symbol
 carrying SF bits, SF8 (`M0`, deepest) … SF5 (`M3`). The chip rate is the
 family bandwidth snapped so a chip is an exact integer number of 12 kHz
 baseband samples: WIDE 2400 Hz (5 samples/chip), MID 1000 Hz (12),
-NARROW 480 Hz (25), ULTRA 3000 Hz (4). `kModes.spread` holds the SF.
+NARROW 480 Hz (25), ULTRA 2400 Hz (5 — snapped DOWN so the chirp stays
+inside the 2700 Hz occupied band). `kModes.spread` holds the SF.
 
 **Demodulation.** Non-coherent matched-filter bank over all `2^SF` cyclic
 shifts, computed as one FFT cross-correlation
@@ -443,16 +467,31 @@ bandwidth, so narrow families reach deepest:
 | WIDE | −13.0 | −10.5 | −8.0 | −5.0 |
 | MID | −16.5 | −14.0 | −12.0 | −9.0 |
 | NARROW | −19.5 | −17.5 | −15.0 | −12.0 |
-| ULTRA | −11.5 | −9.5 | −6.5 | −4.0 |
+| ULTRA | −12.5 | −11.0 | −8.0 | −5.0 |
 
 The original forward estimate ("floors −9 → −14 dB") predates the
 per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`
 (FER ≈ 0 at −14 dB). CFO tolerance: ±half the connected-preamble capture
-range (chirp CFO↔delay coupling; gray+Hamming absorb the residual).
+range (chirp CFO↔delay coupling; the sync symbols absorb the residual).
 
-Still forward (6.2): `waveform=1` PHY header transport, sync arbitration,
-`CAP_CSS_TIER` negotiation, handshake-on-CSS `M0`, `kFloors`/AMC
-activation (`kModes[0..3].active` stays false until then).
+**Measured FADING floors** (one-shot FER ≤ ~10%, full frames, designated
+channels per the `kFadingFloors` convention — CCIR Moderate, NARROW on
+CCIR Good; 2026-07-30): WIDE −3/0/NA/NA, MID −10/−7/−5/−3, NARROW
+−11/−9/−8/−7, ULTRA −4/−2/NA/NA (`M0..M3`; NA = flat outage tail where
+the 1 ms delay spread spans 2.4 of the 2400 Hz families' chips — those
+rungs are probe-gated near-static modes, ARQ territory otherwise).
+One-shot fading sits well above the AWGN floors for the same Rayleigh
+outage reasons as the OFDM tier; the LINK operates below them: measured
+two-modem connect + transfer at −13 dB CCIR Moderate on MID rides ~50%
+per-frame FER on handshake retries, deep ARQ budgets, and CSS HARQ chase
+(payload codewords are LDPC — retransmission LLRs soft-combine).
+
+**Link integration** (6.2): `CAP_CSS_TIER` negotiated in the handshake;
+the CALL ladder alternates transports (OFDM calling first, then two CSS
+`M0` attempts per OFDM one) and the responder mirrors whatever transport
+the CALL arrived on; the committed session extends the AMC ladder to
+`M0` (kFadingNA rungs probe-gated); all session control (ACK, MODE, KEY,
+DISC, keepalive) rides the session's CSS mode below `M4`.
 
 ## VHF-FM Band Profile — Forward Specification
 

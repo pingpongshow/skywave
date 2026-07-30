@@ -276,12 +276,18 @@ TEST_CASE(body_malformed_rejects) {
     raw[0] = 0x00;
     CHECK(!BcastDataBody::parse(raw).has_value());
   }
-  // Reserved-mode clamp (M0-M3 -> M4).
+  // M0-M3 are live wire values as of 6.2 (CSS tier): they parse intact.
   {
     StartBody b;
     b.initialMode = 2;
     auto p = StartBody::parse(b.pack());
-    CHECK(p && p->initialMode == kFirstMode);
+    CHECK(p && p->initialMode == 2);
+  }
+  // Out-of-table modes still reject.
+  {
+    StartBody b;
+    b.initialMode = uint8_t(kNumModes);
+    CHECK(!StartBody::parse(b.pack()).has_value());
   }
 }
 

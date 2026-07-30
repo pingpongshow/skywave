@@ -10,6 +10,8 @@ namespace {
 
 FsmConfig fsmConfigFor(const HandshakePolicy& p) {
   // Airtime-derived handshake timings from the real PHY (PROTOCOL.md).
+  // With the CSS tier enabled the timers must cover the SLOWER of the
+  // two CALL transports - a deep-tier frame runs 10x the OFDM airtime.
   std::vector<uint8_t> callSized(48), startSized(24), discSized(16);
   auto air = [&](std::span<const uint8_t> body) {
     TxFrameParams tp;
@@ -17,7 +19,13 @@ FsmConfig fsmConfigFor(const HandshakePolicy& p) {
     tp.sig = ChirpSig::Calling;
     tp.mode = 4;
     tp.payload = body;
-    return frameAirtimeSec(tp);
+    double t = frameAirtimeSec(tp);
+    if (p.cssEnable) {
+      tp.sig = ChirpSig::Css;
+      tp.mode = 0;
+      t = std::max(t, frameAirtimeSec(tp));
+    }
+    return t;
   };
   FsmConfig c;
   c.timings.callSec = air(callSized);
@@ -25,7 +33,28 @@ FsmConfig fsmConfigFor(const HandshakePolicy& p) {
   c.timings.startSec = air(startSized);
   c.timings.startAckSec = air(startSized);
   c.timings.discSec = air(discSized);
+  if (p.cssEnable) {
+    // The CALL ladder alternates OFDM/CSS transports, halving the tries
+    // each transport gets - and deep-tier frames near the fading floor
+    // run ~50% one-shot FER by design (ARQ/retry territory). Double the
+    // ladder so a deep connect keeps its odds.
+    c.callAttempts = 8;
+    c.startAttempts = 8;
+    // Idle-disconnect must survive routine deep-tier decode droughts: a
+    // single DATA+ACK retry cycle spans ~2 frame airtimes, and only a
+    // DECODED frame refreshes the idle clock at ~50% per-frame FER.
+    c.idleDisconnectSec =
+        std::max(c.idleDisconnectSec, 10.0 * c.timings.callSec);
+  }
   return c;
+}
+
+// Chirp signature for a transmit mode: CSS modes announce themselves
+// with the Css pattern (sync arbitration keys off the preamble alone);
+// OFDM splits robust (M4-M7) vs fast.
+ChirpSig sigForMode(int mode) {
+  if (kModes[size_t(mode)].waveform == Waveform::Css) return ChirpSig::Css;
+  return mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
 }
 
 int macWindow(int mode) {
@@ -67,6 +96,8 @@ bool LinkEngine::idleClean() const {
 void LinkEngine::connectTo(const std::string& call, double now) {
   remoteCall_ = call;
   isInitiator_ = true;
+  callTxCount_ = 0;  // CALL transport ladder restarts (handshake-on-CSS)
+  hsOnCss_ = false;
   fsm_.cmdConnect(now);
   drainFsmActions(now);
 }
@@ -237,7 +268,7 @@ void LinkEngine::drainVoiceActions(double now) {
   while (auto a = voiceFsm_.nextAction()) {
     // Voice control frames are small and time-critical: they ride the
     // session mode (voice needs an unspread mode anyway).
-    const ChirpSig sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    const ChirpSig sig = sigForMode(mode_);
     switch (*a) {
       case VoiceAction::SendOpen:
         queueControl(LinkType::VoiceOpen,
@@ -308,7 +339,7 @@ void LinkEngine::pumpVoice(double now) {
       sealPayload(f.env, f.body);
     }
 #endif
-    f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    f.sig = sigForMode(mode_);
     f.mode = mode_;
     // Ahead of DATA, behind control.
     outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
@@ -350,8 +381,7 @@ bool LinkEngine::rotateKeys(double now) {
   // the new epoch - the grace window covers the crossover either way.
   queueControl(LinkType::KeyUpdate,
                KeyUpdateBody{uint8_t(pendingEpoch_ & 0xFF)}.pack(),
-               mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
-               std::min(mode_, 8));
+               sigForMode(mode_), std::min(mode_, 8));
   crypto_.setEpoch(pendingEpoch_);
   pendingEpoch_ = 0;
   epochRotateAt_ = now;
@@ -479,14 +509,19 @@ void LinkEngine::drainFsmActions(double now) {
   while (auto a = fsm_.nextAction()) {
     switch (*a) {
       case FsmAction::SendCall:
+        // Alternate CALL transports when the CSS tier is enabled: OFDM
+        // calling first, CSS M0 on the next attempt, and so on - a deep
+        // link connects on the CSS attempts, a normal one on the first.
+        hsOnCss_ = callOnCssForAttempt(cfg_.policy, callTxCount_);
+        ++callTxCount_;
         queueControl(LinkType::Call,
-                     makeCall(cfg_.policy, remoteCall_).pack(),
-                     ChirpSig::Calling, 4);
+                     makeCall(cfg_.policy, remoteCall_).pack(), hsSig(),
+                     hsMode());
         break;
       case FsmAction::SendCallAck: {
         auto ack = respondToCall(cfg_.policy, lastCall_, lastRxQuality_);
         if (ack) {
-          queueControl(LinkType::CallAck, ack->pack(), ChirpSig::Calling, 4);
+          queueControl(LinkType::CallAck, ack->pack(), hsSig(), hsMode());
         }
         break;
       }
@@ -505,8 +540,7 @@ void LinkEngine::drainFsmActions(double now) {
             rr.fileId = fileRx_.fileId();
             rr.fileOffset = fileRx_.checkpointOffset();
           }
-          queueControl(LinkType::ResumeReq, rr.pack(), ChirpSig::Calling,
-                       4);
+          queueControl(LinkType::ResumeReq, rr.pack(), hsSig(), hsMode());
           break;
         }
         sentResumeReq_ = false;
@@ -530,7 +564,7 @@ void LinkEngine::drainFsmActions(double now) {
           }
         }
 #endif
-        queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
+        queueControl(LinkType::Start, s.pack(), hsSig(), hsMode());
         break;
       }
       case FsmAction::SendStartAck: {
@@ -543,8 +577,7 @@ void LinkEngine::drainFsmActions(double now) {
             ra.fileId = fileRx_.fileId();
             ra.fileOffset = fileRx_.checkpointOffset();
           }
-          queueControl(LinkType::ResumeAck, ra.pack(), ChirpSig::Calling,
-                       4);
+          queueControl(LinkType::ResumeAck, ra.pack(), hsSig(), hsMode());
           break;
         }
         // mode_ was fixed in onFrame when START was evaluated.
@@ -566,27 +599,33 @@ void LinkEngine::drainFsmActions(double now) {
           resumeCtx_.caps = sessionCaps_;
           resumeCtx_.freshAt = now;
         }
-        queueControl(LinkType::StartAck, sa.pack(), ChirpSig::Calling, 4);
+        lastStartAckBody_ = sa.pack();  // kept for duplicate-START re-ack
+        queueControl(LinkType::StartAck, lastStartAckBody_, hsSig(),
+                     hsMode());
         break;
       }
       case FsmAction::SendStartNak:
         queueControl(LinkType::StartNak,
-                     StartNakBody{StartNakReason::Busy}.pack(),
-                     ChirpSig::Calling, 4);
+                     StartNakBody{StartNakReason::Busy}.pack(), hsSig(),
+                     hsMode());
         break;
       case FsmAction::SendDisc:
         queueControl(LinkType::Disc,
                      DiscBody{faultDisc_ ? DiscReason::RetryExhausted
                                          : DiscReason::Normal}
                          .pack(),
-                     ChirpSig::Robust, 4);
+                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Robust,
+                     mode_ <= 3 ? 0 : 4);
         break;
       case FsmAction::SendDiscAck:
-        queueControl(LinkType::DiscAck, {}, ChirpSig::Robust, 4);
+        queueControl(LinkType::DiscAck, {},
+                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Robust,
+                     mode_ <= 3 ? 0 : 4);
         break;
       case FsmAction::SendKeepalive:
         queueControl(LinkType::Keepalive, KeepaliveBody{20}.pack(),
-                     ChirpSig::Fast, std::max(mode_, 8));
+                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Fast,
+                     mode_ <= 3 ? mode_ : std::max(mode_, 8));
         break;
       case FsmAction::IndicateConnected: {
         // TX-alignment bootstrap: connected fast-signature frames only
@@ -609,6 +648,8 @@ void LinkEngine::drainFsmActions(double now) {
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
+        // CAP_CSS_TIER extends the AMC ladder into M0-M3.
+        ac.minMode = (sessionCaps_ & kCapCssTier) ? 0 : uint8_t(kFirstMode);
         amc_.emplace(ac, uint8_t(mode_), 0.0);
         pendingMode_ = -1;
         lastCwAt_ = now;  // CW ID cadence restarts with the session
@@ -641,7 +682,12 @@ void LinkEngine::drainFsmActions(double now) {
           if (pausedForResume_) discardPausedPipeline();
           resumed_ = false;
           const int w = macWindow(mode_);
-          arqTx_ = ArqTx(w, cfg_.arqMaxRetries);
+          // Deep-tier sessions live at ~50% per-frame FER by design:
+          // retry exhaustion there is normal operation, not a fault.
+          const int retries = mode_ <= 3
+                                  ? std::max(cfg_.arqMaxRetries, 20)
+                                  : cfg_.arqMaxRetries;
+          arqTx_ = ArqTx(w, retries);
           arqRx_ = ArqRx(w);
           updateArqTimeout();
         }
@@ -697,8 +743,13 @@ void LinkEngine::drainFsmActions(double now) {
 
 void LinkEngine::pumpData(double now) {
   if (fsm_.state() != FsmState::Connected) return;
+  static const bool arqDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
   // Retransmits first (arbiter priority), then new segments.
   if (auto r = arqTx_.nextRetransmit(now)) {
+    if (arqDbg) {
+      fprintf(stderr, "%s pumpData retx seq=%u rv=%d\n",
+              cfg_.policy.ownCall.c_str(), r->seq, int(r->rv));
+    }
     // A copy of this sequence may already be queued (aggressive timeout
     // requeues while the TX queue is still draining): let the queued
     // copy fly instead of stacking duplicates into the queue.
@@ -732,7 +783,7 @@ void LinkEngine::pumpData(double now) {
     // and the receiver seeds systematic priors from the failed attempt.
     // Modes without an r1/2 rung (and r1/2 modes) stay put = chase.
     f.mode = harqIr() ? irStepDownMode(mode_) : mode_;
-    f.sig = f.mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    f.sig = sigForMode(f.mode);
     outQueue_.push_back(std::move(f));
     return;
   }
@@ -765,7 +816,7 @@ void LinkEngine::pumpData(double now) {
       sealPayload(f.env, f.body);
     }
 #endif
-    f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    f.sig = sigForMode(mode_);
     f.mode = mode_;
     outQueue_.push_back(std::move(f));
   }
@@ -777,6 +828,14 @@ std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
   tp.family = cfg_.policy.family;
   tp.sig = f.sig;
   tp.mode = f.mode;
+  // Waveform consistency guard: the mode decides the waveform, and the
+  // preamble signature must match it - a mismatch produces a frame no
+  // receiver can decode.
+  if (kModes[size_t(tp.mode)].waveform == Waveform::Css) {
+    tp.sig = ChirpSig::Css;
+  } else if (tp.sig == ChirpSig::Css) {
+    tp.sig = tp.mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+  }
   tp.frameType = uint8_t(f.env.type);
   tp.seqLow = uint8_t(f.env.sequence & 0xFF);
   tp.cpMode = cpMode_;
@@ -814,14 +873,17 @@ void LinkEngine::updateArqTimeout() {
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
   tp.family = cfg_.policy.family;
-  tp.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+  tp.sig = sigForMode(mode_);
   tp.mode = mode_;
   tp.cpMode = cpMode_;
   tp.payload = seg;
   std::vector<uint8_t> ackSized(kAckBodyBytes + kFrameOverhead);
   TxFrameParams ta = tp;
   ta.payload = ackSized;
-  ta.mode = mode_ <= 6 ? 4 : mode_;
+  // ACK transport mirrors pumpData/ackPending: session CSS mode below
+  // M4, M4 for the OFDM robust tier, the session mode above.
+  ta.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
+  ta.sig = sigForMode(ta.mode);
   arqTx_.setTimeout(frameAirtimeSec(tp) + frameAirtimeSec(ta) + 3.0);
 }
 
@@ -850,7 +912,7 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
   queueControl(LinkType::ModeChange,
                ModeChangeBody{uint8_t(target), uint8_t(cp), modeEpoch_}
                    .pack(),
-               txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast, txMode);
+               sigForMode(txMode), txMode);
   modeChangeDeadline_ = now + arqTx_.timeoutSec();
 }
 
@@ -858,7 +920,8 @@ bool LinkEngine::pinMode(int mode, double now) {
   if (fsm_.state() != FsmState::Connected || !amc_ || !isInitiator_) {
     return false;
   }
-  if (mode < kFirstMode || mode >= kNumModes) return false;
+  const int lowest = (sessionCaps_ & kCapCssTier) ? 0 : kFirstMode;
+  if (mode < lowest || mode >= kNumModes) return false;
   amc_->pin(uint8_t(mode), now);
   requestModeChange(mode, cpMode_, now);
   return true;
@@ -891,8 +954,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                      ModeChangeBody{uint8_t(pendingMode_),
                                     uint8_t(pendingCp_), modeEpoch_}
                          .pack(),
-                     txMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
-                     txMode);
+                     sigForMode(txMode), txMode);
         modeChangeDeadline_ = now + arqTx_.timeoutSec();
       }
     }
@@ -917,7 +979,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           mu.family = uint8_t(cfg_.policy.family);
           mu.mask = pendingRxMask_.bits;
           queueControl(LinkType::MaskUpdate, mu.pack(),
-                       mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                       sigForMode(mode_),
                        std::min(mode_, 8));
           // Airtime-derived like every other timer: a fixed short
           // interval abandoned the exchange before the MASK_ACK could
@@ -938,7 +1000,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           mu.family = uint8_t(cfg_.policy.family);
           mu.mask = pendingRxMask_.bits;
           queueControl(LinkType::MaskUpdate, mu.pack(),
-                       mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                       sigForMode(mode_),
                        std::min(mode_, 8));
           // Airtime-derived like every other timer: a fixed short
           // interval abandoned the exchange before the MASK_ACK could
@@ -964,13 +1026,18 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                 now, mode_, amc_->effectiveSnrDb(now), amc_->retryRatio(),
                 int(d.kind), int(d.targetMode));
       }
-      if (d.kind == AmcDecision::Kind::Promote &&
-          probeGate_.required(d.targetMode) &&
-          !probeGate_.cleared(d.targetMode)) {
-        // Fragile mode: verify live before committing. The PROBE rides
-        // the CANDIDATE mode; its probeId also travels in the PHY header
-        // seqLow so the peer can report a payload decode failure.
-        if (auto req = probeGate_.begin(d.targetMode, now)) {
+      // Probe requirement: fragile high modes (gate config) and every
+      // kFadingNA row (near-static-only - including CSS M2/M3 on the
+      // wide-chip families).
+      auto needsProbe = [&](int m) {
+        return probeGate_.required(m) ||
+               fadingFloorDb(cfg_.policy.family, m) >= 90.0;
+      };
+      auto launchProbe = [&](int target) {
+        // The PROBE rides the CANDIDATE mode; its probeId also travels
+        // in the PHY header seqLow so the peer can report a payload
+        // decode failure.
+        if (auto req = probeGate_.begin(target, now)) {
           for (int i = 0; i < req->count; ++i) {
             OutFrame f;
             f.env.type = LinkType::Probe;
@@ -978,20 +1045,31 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
             f.env.sequence = req->probeId;
             f.env.ackBase = arqRx_.ackBase();
             f.body = ProbeBody{req->probeId, uint8_t(req->mode)}.pack();
-            f.sig = ChirpSig::Fast;
+            f.sig = sigForMode(req->mode);
             f.mode = req->mode;
             outQueue_.push_back(std::move(f));
           }
         }
+      };
+      if (d.kind == AmcDecision::Kind::Promote &&
+          needsProbe(d.targetMode) && !probeGate_.cleared(d.targetMode)) {
+        launchProbe(d.targetMode);
       } else if (d.kind != AmcDecision::Kind::None) {
         if (d.kind == AmcDecision::Kind::Promote &&
-            probeGate_.required(d.targetMode)) {
+            needsProbe(d.targetMode)) {
           probeGate_.consumeClearance();
         }
         requestModeChange(d.targetMode,
                           cfg_.cpAuto && cpWantStreak_ >= 25 ? cpWant_
                                                              : cpMode_,
                           now);
+      } else if (auto pw = amc_->probeWanted(now)) {
+        // AMC is blocked ONLY on the clean-probe requirement (kFadingNA
+        // rung): run the probe exchange it needs.
+        if (!probeGate_.cleared(*pw) && !probeGate_.pending() &&
+            !probeGate_.inCooldown()) {
+          launchProbe(*pw);
+        }
       }
     }
   }
@@ -1019,9 +1097,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       f.env.sequence = 0;
       f.env.ackBase = arqRx_.ackBase();
       f.body = ack.pack();
-      // Feedback at least as robust as forward traffic (M4 for M4-M6).
-      f.sig = mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast;
-      f.mode = mode_ <= 6 ? 4 : mode_;
+      // Feedback at least as robust as forward traffic (M4 for M4-M6;
+      // CSS sessions ACK at the session's own CSS mode).
+      f.sig = kModes[size_t(mode_)].waveform == Waveform::Css
+                  ? ChirpSig::Css
+                  : (mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast);
+      f.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
       outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
                                     [](const OutFrame& q) {
                                       return q.env.type == LinkType::Data;
@@ -1114,6 +1195,7 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   RxStage stage;
   auto res =
       receiveFrame(cfg_.policy.family, samples, &stage, &harq_, &rxMask_);
+  if (res) lastRxWasCss_ = res->sig == ChirpSig::Css;
   if (res && maskDet_ && fsm_.state() == FsmState::Connected &&
       mode_ >= 8 && !res->carrierSnrDb.empty()) {
     maskDet_->onSnapshot(res->carrierSnrDb, now);
@@ -1153,7 +1235,7 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
         fsm_.state() == FsmState::Connected) {
       queueControl(LinkType::ProbeAck,
                    ProbeAckBody{res->header.seqLow, 0, kProbeFailed}.pack(),
-                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   sigForMode(mode_),
                    std::min(mode_, 8));
     }
     return false;
@@ -1196,9 +1278,20 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Call: {
       auto call = CallBody::parse(f.body);
       if (!call || call->dstCall != cfg_.policy.ownCall) return;
+      if (fsm_.state() == FsmState::Calling) {
+        // Simultaneous-connect collision: both stations are calling each
+        // other. Deterministic tie-break - the lexically GREATER callsign
+        // yields and answers as responder; the other ignores the CALL
+        // and keeps its initiator ladder running.
+        if (call->srcCall != remoteCall_ ||
+            cfg_.policy.ownCall <= call->srcCall) {
+          return;
+        }
+      }
       lastCall_ = *call;
       remoteCall_ = call->srcCall;
       isInitiator_ = false;
+      hsOnCss_ = lastRxWasCss_;  // answer on the transport that reached us
       fsm_.rxCall(now);
       break;
     }
@@ -1213,6 +1306,16 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Start: {
       auto start = StartBody::parse(f.body);
       if (!start) return;
+      if (fsm_.state() == FsmState::Connected && !isInitiator_ &&
+          !lastStartAckBody_.empty()) {
+        // Duplicate START: our START_ACK was lost on the way back (near
+        // the deep-tier floor every leg runs ~50%). Repeat the SAME ack
+        // - never re-run session setup or the KEX.
+        queueControl(LinkType::StartAck, lastStartAckBody_, hsSig(),
+                     hsMode());
+        return;
+      }
+      if (fsm_.state() != FsmState::CallAnswered) return;
       auto r = evaluateStart(cfg_.policy, lastCall_, *start, q);
       bool ok = std::holds_alternative<StartAckBody>(r);
 #ifdef SKW_HAVE_CRYPTO
@@ -1290,7 +1393,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
-        queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
+        queueControl(LinkType::Start, s.pack(), hsSig(), hsMode());
         return;  // FSM stays in WaitStartAck for the real START_ACK
       }
       fsm_.rxStartNak(now);
@@ -1309,7 +1412,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         // clean START on this same call (PROTOCOL.md - never fatal).
         queueControl(LinkType::StartNak,
                      StartNakBody{StartNakReason::ResumeInvalid}.pack(),
-                     ChirpSig::Calling, 4);
+                     hsSig(), hsMode());
         return;
       }
       resuming_ = true;
@@ -1407,11 +1510,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto mc = ModeChangeBody::parse(f.body);
       if (!mc || fsm_.state() != FsmState::Connected) return;
       if (isInitiator_) return;  // only the initiator drives mode control
-      // Echo the epoch at the TARGET mode (the initiator may already have
-      // committed it), then apply.
-      queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
-                   mc->targetMode <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
-                   std::min(int(mc->targetMode), mode_));
+      // Echo the epoch at the LOWER of target/current mode (the
+      // initiator may already have committed it); sig follows that mode.
+      {
+        const int ackMode = std::min(int(mc->targetMode), mode_);
+        queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
+                     sigForMode(ackMode), ackMode);
+      }
       applyMode(mc->targetMode, CpMode(mc->cpMode), now);
       break;
     }
@@ -1452,7 +1557,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                                                   127.0)),
                                 quality}
                        .pack(),
-                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   sigForMode(mode_),
                    std::min(mode_, 8));
       break;
     }
@@ -1477,7 +1582,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                 txMask_.maskedCount(cfg_.policy.family));
       }
       queueControl(LinkType::MaskAck, MaskAckBody{mu->epoch}.pack(),
-                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   sigForMode(mode_),
                    std::min(mode_, 8));
       break;
     }

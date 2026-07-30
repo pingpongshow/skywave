@@ -185,9 +185,10 @@ std::optional<StartBody> StartBody::parse(std::span<const uint8_t> b) {
   }
   if (!r.ok() || r.remaining() != 0) return std::nullopt;
   if (v.caps & kCapReservedMask) return std::nullopt;
-  // Reserved M0-M3 in control fields clamp to M4 (PROTOCOL.md).
-  if (v.initialMode < kFirstMode) v.initialMode = kFirstMode;
-  if (v.maxMode < kFirstMode) v.maxMode = kFirstMode;
+  // M0-M3 are valid on the wire as of 6.2 (CSS tier); inactive table
+  // rows are still rejected.
+  if (!kModes[v.initialMode % kNumModes].active) v.initialMode = kFirstMode;
+  if (!kModes[v.maxMode % kNumModes].active) v.maxMode = kFirstMode;
   if (v.initialMode >= kNumModes || v.maxMode >= kNumModes || v.cpMode > 2) {
     return std::nullopt;
   }
@@ -226,7 +227,7 @@ std::optional<StartAckBody> StartAckBody::parse(std::span<const uint8_t> b) {
     if (!r.bytes(v.resumeToken)) return std::nullopt;
   }
   if (!r.ok() || r.remaining() != 0) return std::nullopt;
-  if (v.finalMode < kFirstMode) v.finalMode = kFirstMode;
+  if (!kModes[v.finalMode % kNumModes].active) v.finalMode = kFirstMode;
   if (v.finalMode >= kNumModes) return std::nullopt;
   return v;
 }
@@ -291,7 +292,7 @@ std::optional<ModeChangeBody> ModeChangeBody::parse(
     std::span<const uint8_t> b) {
   if (b.size() != 3) return std::nullopt;
   ModeChangeBody v{b[0], b[1], b[2]};
-  if (v.targetMode < kFirstMode) v.targetMode = kFirstMode;
+  if (!kModes[v.targetMode % kNumModes].active) v.targetMode = kFirstMode;
   if (v.targetMode >= kNumModes || v.cpMode > 2) return std::nullopt;
   return v;
 }
@@ -308,7 +309,7 @@ std::vector<uint8_t> ProbeBody::pack() const { return {probeId, probeMode}; }
 std::optional<ProbeBody> ProbeBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 2) return std::nullopt;
   ProbeBody v{b[0], b[1]};
-  if (v.probeMode < kFirstMode) v.probeMode = kFirstMode;
+  if (!kModes[v.probeMode % kNumModes].active) v.probeMode = kFirstMode;
   if (v.probeMode >= kNumModes) return std::nullopt;
   return v;
 }

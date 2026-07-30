@@ -24,10 +24,12 @@ constexpr size_t kChunkSamples =
 // preamble start): the frame length is unknown until the self-describing
 // header decodes, so the window grows until the engine takes the frame.
 // The last rung exceeds the longest legal frame on air.
-constexpr double kRxWindowSec[] = {2.5, 5.0, 10.0, 20.0, 34.0};
-constexpr int kRxTries = 5;
+// The 60/90 s rungs exist for the CSS deep tier: a MID/NARROW M0
+// handshake frame runs 35-55 s on air.
+constexpr double kRxWindowSec[] = {2.5, 5.0, 10.0, 20.0, 34.0, 60.0, 90.0};
+constexpr int kRxTries = 7;
 constexpr double kRxPreMarginSec = 0.15;
-constexpr double kRxHistorySec = 38.0;
+constexpr double kRxHistorySec = 94.0;
 
 float levelDbfs(double energy, size_t n) {
   if (n == 0) return -120.0f;
@@ -70,6 +72,8 @@ void ModemWorker::rebuildEngine() {
   if (cfg_.resume) caps |= kCapResume;
   if (cfg_.carrierMasking) caps |= kCapMasking;
   if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
+  if (cfg_.cssTier) caps |= kCapCssTier;
+  ec.policy.cssEnable = cfg_.cssTier;
   ec.policy.caps = caps;
   ec.arqMaxRetries = cfg_.maxRetries;
   ec.maskingEnabled = cfg_.carrierMasking;

@@ -65,6 +65,7 @@ std::vector<bool> chirpPattern(ChirpSig sig) {
     case ChirpSig::Fast: return {true, true};
     case ChirpSig::Robust: return {true, false, true, false};
     case ChirpSig::Calling: return {true, true, false, false};
+    case ChirpSig::Css: return {true, false, false, true};
   }
   return {};
 }
@@ -249,7 +250,7 @@ ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,
 }
 
 void ChirpDetector::debugScore(int64_t g0) const {
-  for (ChirpSig sig : {ChirpSig::Robust, ChirpSig::Calling}) {
+  for (ChirpSig sig : {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
     for (bool inv : {false, true}) {
       PatternScore ps = scorePattern(g0, sig, inv);
       fprintf(stderr, "  g0=%lld sig=%d inv=%d score=%.4f slots:",
@@ -373,6 +374,12 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
             narrowMax(g0 - 2 * kRepGrid - 2 * d) >= jointFloor) {
           contained = true;
         }
+        // Pair as the U-U middle of an inverted CSS signature (D U U D):
+        // opposite-slope partners at -1 and +2 reps, common shift.
+        if (narrowMax(g0 - kRepGrid + 2 * d) >= jointFloor &&
+            narrowMax(g0 + 2 * kRepGrid + 2 * d) >= jointFloor) {
+          contained = true;
+        }
       }
       if (contained) continue;
     }
@@ -392,7 +399,8 @@ void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
            g0 + suppress4_) {
       int64_t s = best4Scores_.base + int64_t(best4Scores_.v.size());
       float b4 = 0;
-      for (ChirpSig sig : {ChirpSig::Robust, ChirpSig::Calling}) {
+      for (ChirpSig sig :
+           {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
         for (bool inv : {false, true}) {
           b4 = std::max(b4, scorePattern(s, sig, inv).score);
         }
@@ -411,7 +419,8 @@ void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
     bool bestInv = false;
     PatternScore bestValid;
     bestValid.score = -1.0f;
-    for (ChirpSig sig : {ChirpSig::Robust, ChirpSig::Calling}) {
+    for (ChirpSig sig :
+         {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
       for (bool inv : {false, true}) {
         PatternScore ps = scorePattern(g0, sig, inv);
         if (ps.score > bestValid.score &&

@@ -5,12 +5,14 @@
 namespace skw {
 
 uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
-                               uint8_t worstSelectivity, uint8_t maxMode) {
+                               uint8_t worstSelectivity, uint8_t maxMode,
+                               bool cssTier) {
   const uint8_t cap =
       std::min<uint8_t>(std::min<uint8_t>(maxMode, kInitialModeCap),
                         uint8_t(kNumModes - 1));
-  uint8_t best = uint8_t(kFirstMode);
-  for (uint8_t m = uint8_t(kFirstMode); m <= cap; ++m) {
+  const uint8_t lowest = cssTier ? 0 : uint8_t(kFirstMode);
+  uint8_t best = lowest;
+  for (uint8_t m = lowest; m <= cap; ++m) {
     const double floor = fadingFloorDb(f, m);
     if (floor >= 90.0) continue;  // kFadingNA: never an initial proposal
     if (effectiveSnrDb < floor + 2.5) continue;  // AMC promote margin
@@ -44,8 +46,9 @@ StartBody makeStart(const HandshakePolicy& p, const CallAckBody& peerAck,
   const double effSnr = std::min(peerSnr, ownMeas.snrDb);
   const uint8_t worstSel =
       std::max(peerAck.selectivity, ownMeas.selectivity);
-  s.initialMode =
-      initialModeFromQuality(p.family, effSnr, worstSel, p.maxMode);
+  s.initialMode = initialModeFromQuality(p.family, effSnr, worstSel,
+                                         p.maxMode,
+                                         (s.caps & kCapCssTier) != 0);
   s.cpMode = uint8_t(kCpDefault);
   s.maxMode = p.maxMode;
   s.macProfile = macProfileForMode(s.initialMode);
@@ -111,8 +114,10 @@ std::variant<StartAckBody, StartNakBody> evaluateStart(
   }
 
   StartAckBody ack;
-  const uint8_t ownView = initialModeFromQuality(
-      Family(call.family), ownMeas.snrDb, ownMeas.selectivity, p.maxMode);
+  const bool cssTier = (start.caps & p.caps & kCapCssTier) != 0;
+  const uint8_t ownView =
+      initialModeFromQuality(Family(call.family), ownMeas.snrDb,
+                             ownMeas.selectivity, p.maxMode, cssTier);
   ack.finalMode = std::min(start.initialMode, ownView);  // only lower
   return ack;
 }

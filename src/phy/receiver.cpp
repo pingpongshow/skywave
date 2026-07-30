@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
+#include "dsp/css.hpp"
 #include "dsp/fft.hpp"
 #include "dsp/zc.hpp"
+#include "fec/crc.hpp"
 #include "fec/interleave.hpp"
 #include "fec/ldpc.hpp"
 #include "fec/whitener.hpp"
@@ -118,6 +121,373 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
   return code.decode(llr, info);
 }
 
+// CSS frame receive (WAVEFORM.md "CSS Deep Tier"): the chirp preamble
+// gave coarse timing and CFO; the two known shift-0 SF8 sync symbols
+// refine timing to the sample (CFO<->delay coupling makes any residual
+// CFO a pure common shift, absorbed here) and expose the multipath
+// profile, which becomes the RAKE tap list for header and payload.
+std::optional<RxFrameResult> cssReceiveFrame(
+    Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
+    double cfoHz, const std::function<void(RxStage)>& stage,
+    HarqChase* harq) {
+  const CssPlan cp = cssPlan(family);
+  const int spc = cp.samplesPerChip;
+  const size_t symH = cssSymbolSamples(family, kCssHeaderSf);
+  const auto base = cssBaseChirp(family, kCssHeaderSf);
+
+  // Derotate by the preamble CFO estimate once, over the maximum extent
+  // a CSS frame can occupy from the coarse start.
+  const double coarse =
+      hit.startSample +
+      double(chirpPattern(ChirpSig::Css).size()) * chirpRepSamples();
+  const int W = 2 * spc + 24;  // sync search half-window, samples
+  const int64_t region0 = int64_t(std::llround(coarse)) - W;
+  if (region0 < 0) return std::nullopt;
+  std::vector<cfloat> rx(sig.begin() + long(region0), sig.end());
+  for (size_t n = 0; n < rx.size(); ++n) {
+    const double ph =
+        -2.0 * M_PI * cfoHz * double(int64_t(region0) + int64_t(n)) /
+        kFsBaseband;
+    rx[n] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
+  }
+
+  // Sync search: non-coherent correlation of the two known symbols over
+  // the timing window.
+  if (rx.size() < size_t(2 * W) + size_t(kCssSyncSymbols) * symH) {
+    return std::nullopt;
+  }
+  std::vector<float> prof(size_t(2 * W + 1), 0.0f);
+  for (int d = -W; d <= W; ++d) {
+    double sum = 0.0;
+    for (int s = 0; s < kCssSyncSymbols; ++s) {
+      cfloat c(0, 0);
+      const size_t off = size_t(W + d) + size_t(s) * symH;
+      for (size_t n = 0; n < symH; ++n) {
+        c += rx[off + n] * std::conj(base[n]);
+      }
+      sum += std::abs(c);
+    }
+    prof[size_t(d + W)] = float(sum);
+  }
+  int dBest = 0;
+  float peak = 0.0f;
+  for (int d = -W; d <= W; ++d) {
+    if (prof[size_t(d + W)] > peak) {
+      peak = prof[size_t(d + W)];
+      dBest = d;
+    }
+  }
+  // Noise reference: median of the profile outside +-2 chips of the peak.
+  std::vector<float> noise;
+  for (int d = -W; d <= W; ++d) {
+    if (std::abs(d - dBest) > 2 * spc) noise.push_back(prof[size_t(d + W)]);
+  }
+  float med = 0.0f;
+  if (!noise.empty()) {
+    std::nth_element(noise.begin(), noise.begin() + long(noise.size() / 2),
+                     noise.end());
+    med = noise[noise.size() / 2];
+  }
+  if (getenv("SKW_RX_DEBUG")) {
+    fprintf(stderr,
+            "skw-css: start=%.1f cfo=%.2f W=%d dBest=%d peak=%.3g med=%.3g "
+            "ratio=%.2f\n",
+            hit.startSample, cfoHz, W, dBest, double(peak), double(med),
+            med > 0 ? double(peak / med) : 0.0);
+  }
+  if (med <= 0.0f || peak < 3.5f * med) return std::nullopt;  // sync fail
+
+  // Persistent RAKE tap tracker. Rayleigh taps hand dominance back and
+  // forth on ~1 s scales while a deep frame runs 10+ s, and a tap that
+  // is faded RIGHT NOW must stay in the score (with its remembered
+  // strength) or a mid-block dominance switch shifts every symbol by the
+  // inter-tap delay. Each pilot refreshes an EMA per tap; delays follow
+  // sample-clock drift; unseen taps decay away over a few pilots.
+  struct TapTrack {
+    int delay;
+    float ema;
+  };
+  std::vector<TapTrack> track;
+  std::vector<CssTap> taps{{0, 1.0f}};
+  auto updateTaps = [&](const std::vector<float>& pr, int half, int center,
+                        float noiseMed, bool initial) {
+    const float pk = pr[size_t(center + half)];
+    if (pk <= 0.0f) return;
+    for (auto& t : track) t.ema *= 0.7f;
+    // Candidates must beat BOTH a peak-relative and a noise-relative
+    // floor: near the SNR floor 0.12*pk sits inside the noise, and
+    // spurious taps poison every symbol score.
+    const float cut = std::max((initial ? 0.12f : 0.4f) * pk,
+                               (initial ? 1.8f : 2.0f) * noiseMed);
+    const int lo = std::max(-half + 1, center - 3 * spc);
+    const int hi = std::min(half - 1, center + 3 * spc);
+    for (int d = lo; d <= hi; ++d) {
+      const float v = pr[size_t(d + half)];
+      if (v < cut) continue;
+      if (v < pr[size_t(d + half - 1)] || v < pr[size_t(d + half + 1)]) {
+        continue;
+      }
+      const int rel = d - center;
+      bool merged = false;
+      for (auto& t : track) {
+        if (std::abs(t.delay - rel) <= 2) {
+          t.ema = std::max(t.ema, v / pk);
+          t.delay = rel;  // follow clock drift
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) track.push_back({rel, v / pk});
+    }
+    std::sort(track.begin(), track.end(),
+              [](const TapTrack& a, const TapTrack& b) {
+                return a.ema > b.ema;
+              });
+    while (track.size() > 3 || (!track.empty() && track.back().ema < 0.15f)) {
+      track.pop_back();
+    }
+    taps.clear();
+    for (const auto& t : track) taps.push_back({t.delay, t.ema});
+    if (taps.empty()) taps.push_back({0, 1.0f});
+  };
+  updateTaps(prof, W, dBest, med, true);
+
+  // Per-sample SNR from the sync region: the correlation peak gives the
+  // signal amplitude (peak ~ kCssSyncSymbols*symLen*a), total power
+  // gives a^2 + sigma^2. (A median-of-|corr| noise reference saturates:
+  // chirp correlation SIDELOBES scale with the signal and cap the
+  // ratio ~12 dB - AMC needs an unbounded estimate to climb out of the
+  // tier when the channel improves.)
+  double snr3k;
+  {
+    const size_t s0 = size_t(W + dBest);
+    double pTot = 0.0;
+    const size_t nTot = size_t(kCssSyncSymbols) * symH;
+    for (size_t n = 0; n < nTot; ++n) pTot += std::norm(rx[s0 + n]);
+    pTot /= double(nTot);
+    const double a = double(peak) / (double(kCssSyncSymbols) * double(symH));
+    const double sig2 = a * a;
+    const double noise2 = std::max(pTot - sig2, sig2 * 1e-3 + 1e-12);
+    snr3k = 10.0 * std::log10(sig2 / noise2) + 6.02;
+  }
+
+  stage(RxStage::HeaderFail);
+  // Section walker: a known SF8 pilot precedes every kCssPilotInterval
+  // data symbols. Each pilot re-anchors timing (clock drift) and
+  // re-estimates the tap profile (fading hands dominance between paths
+  // mid-frame); a pilot caught in a deep fade is skipped and the
+  // previous anchor carries the block.
+  size_t pos = size_t(W + dBest) + size_t(kCssSyncSymbols) * symH;
+  auto walkSection = [&](int sectionSf,
+                         size_t byteCount) -> std::optional<
+                                                 std::vector<uint8_t>> {
+    const size_t symLen = cssSymbolSamples(family, sectionSf);
+    const size_t nsym = cssSymbolsForBytes(byteCount, sectionSf);
+    const int PW = 3 * spc + 6;
+    std::vector<uint16_t> syms;
+    syms.reserve(nsym);
+    for (size_t s = 0; s < nsym; ++s) {
+      if (s % size_t(kCssPilotInterval) == 0) {
+        if (rx.size() < pos + size_t(2 * PW) + symH) return std::nullopt;
+        std::vector<float> pp(size_t(2 * PW + 1), 0.0f);
+        for (int d = -PW; d <= PW; ++d) {
+          cfloat c(0, 0);
+          const cfloat* xr = rx.data() + long(pos) + d;
+          for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
+          pp[size_t(d + PW)] = float(std::abs(c));
+        }
+        int dp = 0;
+        float pk = 0.0f;
+        for (int d = -PW; d <= PW; ++d) {
+          if (pp[size_t(d + PW)] > pk) {
+            pk = pp[size_t(d + PW)];
+            dp = d;
+          }
+        }
+        std::vector<float> ns;
+        for (int d = -PW; d <= PW; ++d) {
+          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
+        }
+        std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
+                         ns.end());
+        const float nsMed = ns[ns.size() / 2];
+        // A pilot caught in a deep fade updates nothing; the tracker's
+        // remembered taps carry the block. The anchor position never
+        // jumps - per-tap delay follow absorbs clock drift.
+        if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
+          updateTaps(pp, PW, 0, nsMed, false);
+        }
+        if (getenv("SKW_RX_DEBUG")) {
+          fprintf(stderr, "skw-css pilot s=%zu dp=%d pk=%.3g med=%.3g taps:",
+                  s, dp, double(pk), double(nsMed));
+          for (const auto& t : taps) {
+            fprintf(stderr, " (%d,%.2f)", t.delay, double(t.weight));
+          }
+          fprintf(stderr, "\n");
+        }
+        pos += symH;
+      }
+      if (rx.size() < pos + symLen) return std::nullopt;
+      syms.push_back(cssDemodSymbolTaps(
+          family, sectionSf, std::span<const cfloat>(rx).subspan(pos, symLen),
+          taps));
+      if (getenv("SKW_RX_DEBUG")) {
+        fprintf(stderr, "skw-css sym %zu = %u\n", s, unsigned(syms.back()));
+      }
+      pos += symLen;
+    }
+    return cssDecode(syms, sectionSf, byteCount);
+  };
+
+  // Both header copies must be walked (the payload starts after them);
+  // the CRC-16 arbitrates - a fade takes at most one copy.
+  std::optional<PhyHeader> hdr;
+  for (int c = 0; c < kCssHeaderCopies; ++c) {
+    auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
+    if (!hdrBytes) {
+      if (!hdr) return std::nullopt;
+      break;  // ran out of samples but an earlier copy already parsed
+    }
+    if (!hdr) hdr = parsePhyHeader(*hdrBytes);
+  }
+  if (!hdr) return std::nullopt;
+  if (hdr->waveform != Waveform::Css || cssSf(hdr->mode) == 0 ||
+      hdr->family != family) {
+    return std::nullopt;
+  }
+  stage(RxStage::Ok);
+
+  RxFrameResult res;
+  res.header = *hdr;
+  res.sig = ChirpSig::Css;
+  res.inverted = hit.inverted;
+  res.cfoHz = cfoHz;
+  res.snrDb = snr3k;
+  {
+    int maxTapDelay = 0;
+    for (const auto& t : taps) {
+      maxTapDelay = std::max(maxTapDelay, std::abs(t.delay));
+    }
+    res.delaySpreadMs = 1000.0 * double(maxTapDelay) / kFsBaseband;
+  }
+
+  // Payload: LDPC r1/2 over soft-demodulated CSS symbols (same pilot
+  // cadence as the header sections), whitened, trailing CRC-16.
+  const int sf = cssSf(hdr->mode);
+  {
+    const size_t symLen = cssSymbolSamples(family, sf);
+    const size_t codedBits = cssPayloadCodedBits(size_t(hdr->length));
+    const size_t nsym = (codedBits + size_t(sf) - 1) / size_t(sf);
+    const int PW = 3 * spc + 6;
+    std::vector<float> llr;
+    llr.reserve(nsym * size_t(sf));
+    bool samplesOk = true;
+    for (size_t s = 0; s < nsym && samplesOk; ++s) {
+      if (s % size_t(kCssPilotInterval) == 0) {
+        if (rx.size() < pos + size_t(2 * PW) + symH) {
+          samplesOk = false;
+          break;
+        }
+        std::vector<float> pp(size_t(2 * PW + 1), 0.0f);
+        for (int d = -PW; d <= PW; ++d) {
+          cfloat c(0, 0);
+          const cfloat* xr = rx.data() + long(pos) + d;
+          for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
+          pp[size_t(d + PW)] = float(std::abs(c));
+        }
+        float pk = 0.0f;
+        int dp = 0;
+        for (int d = -PW; d <= PW; ++d) {
+          if (pp[size_t(d + PW)] > pk) {
+            pk = pp[size_t(d + PW)];
+            dp = d;
+          }
+        }
+        std::vector<float> ns;
+        for (int d = -PW; d <= PW; ++d) {
+          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
+        }
+        std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
+                         ns.end());
+        const float nsMed = ns[ns.size() / 2];
+        if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
+          updateTaps(pp, PW, 0, nsMed, false);
+        }
+        pos += symH;
+      }
+      if (rx.size() < pos + symLen) {
+        samplesOk = false;
+        break;
+      }
+      cssSoftDemodSymbol(family, sf,
+                         std::span<const cfloat>(rx).subspan(pos, symLen),
+                         taps, llr);
+      pos += symLen;
+    }
+    if (samplesOk && llr.size() >= codedBits) {
+      llr.resize(codedBits);  // drop the last symbol's pad bits
+      const size_t payBytes = size_t(hdr->length) + kCssPayloadCrcBytes;
+      std::vector<uint8_t> infoBits;
+      infoBits.reserve(payBytes * 8);
+      size_t remaining = payBytes * 8;
+      size_t off = 0;
+      bool ok = true;
+      const LdpcCode& pcode = LdpcCode::get(kLdpcNShort, {1, 2});
+      size_t cw = 0;
+      // Burst containers repack on retransmission (identical-codeword
+      // combining not guaranteed) - same HARQ bypass as the OFDM path.
+      if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
+      while (remaining > 0 && (ok || harq)) {
+        std::vector<float> cwLlr(llr.begin() + long(off),
+                                 llr.begin() + long(off + size_t(pcode.n())));
+        std::vector<uint8_t> info;
+        bool dec = decodeCodeword(pcode, cwLlr, info);
+        if (harq) {
+          // Chase: a deep-tier retransmission carries identical
+          // codewords, and the payload IS LDPC - soft-combine with
+          // earlier receptions (~3 dB per doubling at the floor).
+          const uint64_t key =
+              HarqChase::frameKey(hdr->frameType, hdr->seqLow, hdr->mode,
+                                  hdr->length, uint32_t(cw));
+          if (!dec) {
+            if (harq->combine(key, cwLlr) > 1) {
+              dec = decodeCodeword(pcode, cwLlr, info);
+            }
+            if (dec) harq->onDecodeSuccess(key);
+          } else {
+            harq->onDecodeSuccess(key);
+          }
+        }
+        if (!dec) {
+          ok = false;
+          if (!harq) break;
+        } else if (ok) {
+          const size_t want = std::min(remaining, size_t(pcode.k()));
+          infoBits.insert(infoBits.end(), info.begin(),
+                          info.begin() + long(want));
+        }
+        remaining -= std::min(remaining, size_t(pcode.k()));
+        off += size_t(pcode.n());
+        ++cw;
+      }
+      if (ok) {
+        auto white = bitsToBytes(infoBits);
+        white.resize(payBytes);
+        const uint16_t want =
+            uint16_t((white[payBytes - 2] << 8) | white[payBytes - 1]);
+        white.resize(size_t(hdr->length));
+        if (crc16(white) == want) {
+          Whitener wh;
+          wh.apply(white);
+          res.payload = std::move(white);
+          res.payloadOk = true;
+        }
+      }
+    }
+  }
+  return res;
+}
+
 }  // namespace
 
 int irStepDownMode(int mode) {
@@ -184,6 +554,12 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     sig = corrected;
   }
   const double cfoSign = hit.inverted ? -hit.cfoHz : hit.cfoHz;
+
+  // CSS frames (sync arbitration): the chirp signature announced a CSS
+  // frame; hand off to the CSS receive path - no ZC, no OFDM.
+  if (hit.sig == ChirpSig::Css) {
+    return cssReceiveFrame(family, sig, hit, cfoSign, stage, harq);
+  }
 
   // 2) ZC refinement.
   const bool robust = robustHeaderForSig(hit.sig);

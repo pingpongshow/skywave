@@ -35,7 +35,8 @@ bool has(const std::vector<FsmAction>& v, FsmAction a) {
 TEST_CASE(timeout_clamp_formula) {
   CHECK_NEAR(clampResponseTimeout(3.0), 12.0, 1e-9);
   CHECK_NEAR(clampResponseTimeout(20.0), 20.0, 1e-9);
-  CHECK_NEAR(clampResponseTimeout(60.0), 45.0, 1e-9);
+  CHECK_NEAR(clampResponseTimeout(60.0), 60.0, 1e-9);
+  CHECK_NEAR(clampResponseTimeout(900.0), 600.0, 1e-9);
 }
 
 TEST_CASE(happy_path_initiator_and_responder) {
@@ -134,10 +135,15 @@ TEST_CASE(start_retry_budget) {
 }
 
 TEST_CASE(responder_start_window_expiry) {
+  // The answered-state hold spans the initiator's whole START retry
+  // ladder (6.2 deep-tier fix), so expiry sits past that budget - but
+  // it MUST still expire.
   SessionFsm b(quickCfg());
   b.rxCall(0);
   drain(b);
-  b.tick(12.001);
+  b.tick(12.0);
+  CHECK(b.state() == FsmState::CallAnswered);  // still holding
+  b.tick(601.0);
   CHECK(b.state() == FsmState::Idle);
   CHECK(b.lastDiscCause() == FsmDiscCause::IdleTimeout);
 }
@@ -267,7 +273,7 @@ TEST_CASE(airtime_derived_timeouts_real_phy) {
   double narrowTimeout = clampResponseTimeout(narrow + narrow + 6.0);
   CHECK(wideTimeout >= 12.0);
   CHECK(narrowTimeout >= wideTimeout);
-  CHECK(narrowTimeout <= 45.0);
+  CHECK(narrowTimeout <= 600.0);
 }
 
 SKYTEST_MAIN

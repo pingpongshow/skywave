@@ -140,7 +140,7 @@ attempts go unanswered automatically retries the remaining attempts at
 | 4 | carrier masking |
 | 5 | burst MAC aggregation |
 | 6 | voice |
-| 7 | `CAP_CSS_TIER` (reserved deep tier) |
+| 7 | `CAP_CSS_TIER` (deep tier: M0–M3 modes + handshake-on-CSS) |
 | 8–15 | reserved, must be 0 |
 
 ### Timers and Retries
@@ -152,16 +152,38 @@ therefore computed from airtime, which the PHY reports per frame:
 
 | Timer | Value |
 |---|---|
-| `CALL` response timeout | `own_airtime + expected_response_airtime + 6 s`, clamped 12–45 s; 4 attempts |
-| `START` response timeout | same formula; 4 attempts |
-| ACK timeout | adaptive: `burst_airtime + expected_ack_airtime + 3 s`, clamped 4–45 s |
-| idle disconnect | 120 s without any valid frame |
+| `CALL` response timeout | `own_airtime + expected_response_airtime + 6 s`, clamped 12–600 s; 4 attempts (8 with the CSS tier enabled) |
+| `START` response timeout | same formula; 4 attempts (8 with CSS) |
+| ACK timeout | adaptive: `burst_airtime + expected_ack_airtime + 3 s` |
+| idle disconnect | 120 s without any valid frame; with the CSS tier enabled, `max(120 s, 10 × CALL airtime)` — deep sessions have routine multi-minute decode droughts |
 | keepalive interval | 20 s idle |
 | `DISC` retry | `2 × frame_airtime + 3 s` cadence, 3 attempts, then unilateral teardown |
 
 (`NARROW` robust-tier exchanges sit near the upper clamps by design; the
-clamp ceilings exist to bound pathological configurations, not to race the
-slow families.)
+clamp ceiling exists to bound pathological configurations, not to race the
+slow families. With `CAP_CSS_TIER` the timing formulas take the SLOWER of
+the two CALL transports — a deep-tier control frame runs 20–50 s of air.)
+
+Deep-tier handshake behaviors (6.2, all measured live at −13 dB CCIR
+Moderate on MID):
+
+- **CALL transport ladder**: attempt 0 rides OFDM calling; with the tier
+  enabled, two of every three subsequent attempts ride CSS `M0`. The
+  responder answers on whichever transport the CALL arrived on, and the
+  whole handshake stays there.
+- **Responder hold**: after CALL_ACK, the responder holds the answered
+  state through the initiator's ENTIRE START retry ladder (each leg runs
+  ~50% one-shot FER at the floor; a one-window hold expires exactly when
+  the first START retry lands).
+- **Duplicate START re-ack**: a connected responder receiving a duplicate
+  START repeats its stored START_ACK verbatim — never re-runs session
+  setup or the KEX.
+- **Call-collision tie-break**: two stations calling each other
+  simultaneously resolve deterministically — the lexically greater
+  callsign yields and answers as responder.
+- **Deep ARQ**: sessions committed below `M4` raise the retry budget to
+  ≥ 20 (retry exhaustion at ~50% FER is normal operation, not a dead
+  peer) and CSS payload codewords chase-combine like OFDM ones.
 
 ## Connected Transport
 

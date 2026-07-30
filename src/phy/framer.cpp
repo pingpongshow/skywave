@@ -4,6 +4,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "dsp/css.hpp"
 #include "dsp/fft.hpp"
 #include "dsp/fir.hpp"
 #include "dsp/zc.hpp"
@@ -212,6 +213,31 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
 }
 
 FrameGeometry computeGeometry(const TxFrameParams& p) {
+  if (kModes[size_t(p.mode)].waveform == Waveform::Css) {
+    FrameGeometry g;
+    const int sf = cssSf(p.mode);
+    const size_t symH = cssSymbolSamples(p.family, kCssHeaderSf);
+    const size_t symP = cssSymbolSamples(p.family, sf);
+    auto pilots = [](size_t n) {
+      return (n + size_t(kCssPilotInterval) - 1) / kCssPilotInterval;
+    };
+    const size_t hSyms = cssSymbolsForBytes(kPhyHeaderBytes, kCssHeaderSf);
+    const size_t pSyms =
+        (cssPayloadCodedBits(p.payload.size()) + size_t(sf) - 1) /
+        size_t(sf);
+    g.preambleSamples =
+        int(chirpPattern(ChirpSig::Css).size()) * chirpRepSamples();
+    g.zcSymbols = 0;  // CSS frames sync on their own known symbols
+    const size_t hAll = size_t(kCssHeaderCopies) * (hSyms + pilots(hSyms));
+    g.headerSymbols = int(kCssSyncSymbols + hAll);
+    g.payloadSymbols = int(pSyms + pilots(pSyms));
+    g.payloadCodewords = 0;  // Hamming, not LDPC
+    g.totalSamples =
+        g.preambleSamples +
+        int(symH) * int(kCssSyncSymbols + hAll + pilots(pSyms)) +
+        int(symP) * int(pSyms);
+    return g;
+  }
   FrameGeometry g;
   auto pre = makeChirpPreamble(p.family, p.sig);
   g.preambleSamples = int(pre.size());
@@ -263,7 +289,106 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
   return g;
 }
 
+namespace {
+
+// CSS frame: preamble + known sync symbols + SF8 header + SF(mode)
+// payload (+CRC-16). Constant-envelope, so no PAPR clip; the family band
+// filter still smooths the cyclic-shift wrap discontinuities.
+std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
+  if (p.payload.size() > 4095) throw std::invalid_argument("frame too large");
+  const int sf = cssSf(p.mode);
+
+  std::vector<uint8_t> white(p.payload.begin(), p.payload.end());
+  Whitener wh;
+  wh.apply(white);
+  const uint16_t crc = crc16(white);
+  white.push_back(uint8_t(crc >> 8));
+  white.push_back(uint8_t(crc & 0xFF));
+
+  PhyHeader h;
+  h.waveform = Waveform::Css;
+  h.family = p.family;
+  h.mode = uint8_t(p.mode);
+  h.cpMode = p.cpMode;  // carried but unused by CSS transport
+  h.frameType = p.frameType;
+  h.length = uint16_t(p.payload.size());
+  h.seqLow = p.seqLow;
+  uint8_t hdr[kPhyHeaderBytes];
+  packPhyHeader(h, hdr);
+
+  std::vector<cfloat> frame;
+  auto pre = makeChirpPreamble(p.family, ChirpSig::Css);
+  frame.insert(frame.end(), pre.begin(), pre.end());
+  const uint16_t syncVals[kCssSyncSymbols] = {0, 0};
+  auto sync = cssModulate(p.family, kCssHeaderSf, syncVals);
+  frame.insert(frame.end(), sync.begin(), sync.end());
+
+  // Sections carry a known SF8 pilot before every kCssPilotInterval data
+  // symbols (timing re-anchor + tap re-estimation at the receiver).
+  const auto pilot = cssBaseChirp(p.family, kCssHeaderSf);
+  auto appendSymbols = [&](int sectionSf,
+                           std::span<const uint16_t> symVals) {
+    auto data = cssModulate(p.family, sectionSf, symVals);
+    const size_t symLen = cssSymbolSamples(p.family, sectionSf);
+    for (size_t s = 0; s < symVals.size(); ++s) {
+      if (s % size_t(kCssPilotInterval) == 0) {
+        frame.insert(frame.end(), pilot.begin(), pilot.end());
+      }
+      frame.insert(frame.end(), data.begin() + long(s * symLen),
+                   data.begin() + long((s + 1) * symLen));
+    }
+  };
+  // Header: Hamming bit layer, duplicated for time diversity.
+  const auto hdrSyms =
+      cssEncode({hdr, size_t(kPhyHeaderBytes)}, kCssHeaderSf);
+  for (int c = 0; c < kCssHeaderCopies; ++c) {
+    appendSymbols(kCssHeaderSf, hdrSyms);
+  }
+  // Payload: LDPC r1/2 (N=648 only) coded bits over soft symbols.
+  {
+    auto restBits = bytesToBits(white);
+    std::vector<uint8_t> coded;
+    coded.reserve(cssPayloadCodedBits(p.payload.size()));
+    const LdpcCode& pcode = LdpcCode::get(kLdpcNShort, {1, 2});
+    size_t off = 0;
+    while (off < restBits.size()) {
+      const size_t remaining = restBits.size() - off;
+      std::vector<uint8_t> info(size_t(pcode.k()), 0);
+      const size_t nCopy = std::min(remaining, size_t(pcode.k()));
+      std::copy(restBits.begin() + long(off),
+                restBits.begin() + long(off + nCopy), info.begin());
+      std::vector<uint8_t> cw, il;
+      pcode.encode(info, cw);
+      interleaveBits(cw, il);
+      coded.insert(coded.end(), il.begin(), il.end());
+      off += nCopy;
+    }
+    appendSymbols(sf, cssMapCodedBits(coded, sf));
+  }
+
+  FirDecimator bandFilt(familyTxBandTaps(p.family), 1);
+  std::vector<cfloat> filtered;
+  filtered.reserve(frame.size());
+  bandFilt.process(frame, filtered);
+  std::vector<cfloat> zeros(bandFilt.groupDelayInput() * 2, cfloat(0, 0));
+  bandFilt.process(zeros, filtered);
+
+  double pow = 0;
+  for (const auto& v : filtered) pow += std::norm(v);
+  double rms = std::sqrt(pow / double(filtered.size()));
+  if (rms > 1e-12) {
+    float g = float(1.0 / rms);
+    for (auto& v : filtered) v *= g;
+  }
+  return filtered;
+}
+
+}  // namespace
+
 std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
+  if (kModes[size_t(p.mode)].waveform == Waveform::Css) {
+    return buildCssFrameBaseband(p);
+  }
   FrameBits fb = buildFrameBits(p);
   const bool robust = robustHeaderForSig(p.sig);
   const ModeDef& md = kModes[size_t(p.mode)];

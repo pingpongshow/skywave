@@ -49,11 +49,12 @@ uint8_t hamming74Decode(uint8_t code) {
 }  // namespace
 
 CssPlan cssPlan(Family f) {
-  // Chip rate = family occupied bandwidth, snapped so kFsBaseband is an
-  // exact integer number of samples per chip (the dechirp needs integer
-  // chip spacing to land energy in one FFT bin).
+  // Chip rate = family occupied bandwidth, snapped DOWN (ceil on the
+  // samples-per-chip) so the chirp never exceeds the family band and the
+  // TX band filter passes it intact; kFsBaseband stays an exact integer
+  // number of samples per chip.
   const double bw = plan(f).carriers() * kSubcarrierHz;
-  int spc = std::max(2, int(std::lround(double(kFsBaseband) / bw)));
+  int spc = std::max(2, int(std::ceil(double(kFsBaseband) / bw - 1e-9)));
   return {double(kFsBaseband) / spc, spc};
 }
 
@@ -62,14 +63,15 @@ size_t cssSymbolSamples(Family f, int sf) {
 }
 
 namespace {
-// Base up-chirp at the full sample rate, complex baseband centered on the
-// waveform center. Phase is the PROPER integral of a linear frequency
-// sweep (fStart .. fStart+B over the symbol), so a cyclic time shift maps
-// cleanly to a single dechirp-FFT bin.
+// Base up-chirp at the full sample rate, DC-centered like everything in
+// the 12 kHz complex baseband (the audio converters place DC at
+// kCenterHz). Phase is the PROPER integral of a linear frequency sweep
+// (-B/2 .. +B/2 over the symbol), so a cyclic time shift maps cleanly to
+// a single matched-filter lag.
 std::vector<cfloat> baseChirp(const CssPlan& p, int N) {
   const int spc = p.samplesPerChip;
   const size_t symLen = size_t(N) * spc;
-  const double fStart = kCenterHz - p.bandHz / 2.0;
+  const double fStart = -p.bandHz / 2.0;
   const double Tsym = double(symLen) / kFsBaseband;
   const double mu = p.bandHz / Tsym;  // sweep rate, Hz/s
   std::vector<cfloat> c(symLen);
@@ -105,6 +107,19 @@ std::vector<cfloat> cssModulate(Family f, int sf,
 
 uint16_t cssDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
                         float* peakRatio) {
+  return cssDemodSymbolTaps(f, sf, sym, {}, peakRatio);
+}
+
+std::vector<cfloat> cssBaseChirp(Family f, int sf) {
+  return baseChirp(cssPlan(f), 1 << sf);
+}
+
+namespace {
+// Tap-combined matched-filter scores for every cyclic shift; returns the
+// mean score (normalization reference for peak ratio and soft LLRs).
+double cssShiftScores(Family f, int sf, std::span<const cfloat> sym,
+                      std::span<const CssTap> taps,
+                      std::vector<double>& scores) {
   const CssPlan p = cssPlan(f);
   const int N = 1 << sf;
   const int spc = p.samplesPerChip;
@@ -135,32 +150,98 @@ uint16_t cssDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
   for (size_t k = 0; k < symLen; ++k) spec[k] *= baseSpecConj[k];
   fft->inverse(spec.data(), corr.data());
   // corr[d] = sum_n sym[n] conj(base[n-d]): a shift-v symbol (tx[n] =
-  // base[n + v*spc]) peaks at lag d = -v*spc, i.e. symLen - v*spc.
-  int best = 0;
-  double bestMag = 0.0, sumMag = 0.0;
+  // base[n + v*spc]) peaks at lag d = -v*spc, i.e. symLen - v*spc; a
+  // channel path delayed by tau moves that to symLen - v*spc + tau. RAKE:
+  // sum tap-weighted magnitudes across the resolved paths.
+  static constexpr CssTap kSingleTap[1] = {{0, 1.0f}};
+  if (taps.empty()) taps = kSingleTap;
+  const long L = long(symLen);
+  scores.assign(size_t(N), 0.0);
+  double sumMag = 0.0;
   for (int v = 0; v < N; ++v) {
-    const size_t lag = v == 0 ? 0 : symLen - size_t(v) * size_t(spc);
-    const double m = std::abs(corr[lag]);
+    const long lag0 = L - long(v) * spc;
+    double m = 0.0;
+    for (const CssTap& t : taps) {
+      const long idx = ((lag0 + t.delay) % L + L) % L;
+      m += double(t.weight) * std::abs(corr[size_t(idx)]);
+    }
+    scores[size_t(v)] = m;
     sumMag += m;
-    if (m > bestMag) {
-      bestMag = m;
-      best = v;
+  }
+  return sumMag / N;
+}
+}  // namespace
+
+uint16_t cssDemodSymbolTaps(Family f, int sf, std::span<const cfloat> sym,
+                            std::span<const CssTap> taps, float* peakRatio) {
+  std::vector<double> scores;
+  const double mean = cssShiftScores(f, sf, sym, taps, scores);
+  int best = 0;
+  double bestMag = 0.0;
+  for (size_t v = 0; v < scores.size(); ++v) {
+    if (scores[v] > bestMag) {
+      bestMag = scores[v];
+      best = int(v);
     }
   }
   if (peakRatio) {
-    const double mean = sumMag / N;
     *peakRatio = mean > 1e-12 ? float(bestMag / mean) : 0.0f;
   }
   return uint16_t(best);
 }
 
+std::vector<uint16_t> cssMapCodedBits(std::span<const uint8_t> bits, int sf) {
+  // Pack sf coded bits per symbol LSB-first, bin = fromGray(bits): the
+  // same gray convention as the Hamming layer, shared by soft demod.
+  const size_t nsym = (bits.size() + size_t(sf) - 1) / size_t(sf);
+  std::vector<uint16_t> syms;
+  syms.reserve(nsym);
+  size_t bi = 0;
+  for (size_t s = 0; s < nsym; ++s) {
+    uint16_t v = 0;
+    for (int b = 0; b < sf; ++b) {
+      const uint16_t bit = bi < bits.size() ? (bits[bi] & 1) : 0;
+      v |= uint16_t(bit << b);
+      ++bi;
+    }
+    syms.push_back(fromGray(v));
+  }
+  return syms;
+}
+
+void cssSoftDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
+                        std::span<const CssTap> taps,
+                        std::vector<float>& llr) {
+  // Dual-max soft metric: per coded bit, the margin between the best
+  // shift carrying bit=0 and the best carrying bit=1, normalized by the
+  // mean score (positive LLR = bit 0, the LDPC convention). A faded or
+  // ambiguous symbol yields small margins - low confidence - instead of
+  // hard wrong bits, which is what buys the coding gain over Hamming.
+  std::vector<double> scores;
+  const double mean = cssShiftScores(f, sf, sym, taps, scores);
+  const int N = 1 << sf;
+  std::vector<double> m0(size_t(sf), 0.0), m1(size_t(sf), 0.0);
+  for (int v = 0; v < N; ++v) {
+    const uint16_t bitsOfV = toGray(uint16_t(v));
+    const double s = scores[size_t(v)];
+    for (int b = 0; b < sf; ++b) {
+      if ((bitsOfV >> b) & 1) {
+        m1[size_t(b)] = std::max(m1[size_t(b)], s);
+      } else {
+        m0[size_t(b)] = std::max(m0[size_t(b)], s);
+      }
+    }
+  }
+  const double norm = std::max(mean, 1e-12);
+  for (int b = 0; b < sf; ++b) {
+    llr.push_back(float((m0[size_t(b)] - m1[size_t(b)]) / norm));
+  }
+}
+
 size_t cssSymbolsForBytes(size_t byteCount, int sf) {
-  // 2 nibbles/byte, one Hamming codeword per nibble, interleaved 7 deep;
-  // each symbol carries sf bits. Round the codeword count up to a
-  // multiple of 7, then to whole symbols.
-  const size_t nibbles = byteCount * 2;
-  const size_t codewords = ((nibbles + 6) / 7) * 7;  // pad to interleave
-  const size_t bits = codewords * 7;
+  // 2 nibbles/byte, one Hamming codeword per nibble, 7 bits each,
+  // full-message row-column interleave; each symbol carries sf bits.
+  const size_t bits = byteCount * 2 * 7;
   return (bits + size_t(sf) - 1) / size_t(sf);
 }
 
@@ -172,17 +253,18 @@ std::vector<uint16_t> cssEncode(std::span<const uint8_t> bytes, int sf) {
     cw.push_back(hamming74Encode(b & 0x0F));
     cw.push_back(hamming74Encode(b >> 4));
   }
-  while (cw.size() % 7) cw.push_back(hamming74Encode(0));  // interleave pad
-  // Block interleave depth 7: bit i of codeword j goes to stream position
-  // i*depth + j, so a lost symbol (a run of bits) hits each codeword once.
-  const size_t blocks = cw.size() / 7;
+  // FULL-MESSAGE row-column interleave: bit i of codeword j goes to
+  // stream position i*ncw + j. A contiguous fade of L symbols (L*sf
+  // consecutive stream bits) then spreads over ~L*sf/ncw bits per
+  // codeword instead of wiping whole codewords - HF fade dwells are
+  // ~1 s, far longer than any small fixed interleave depth at deep-tier
+  // symbol times.
+  const size_t ncw = cw.size();
   std::vector<uint8_t> bits;
-  bits.reserve(cw.size() * 7);
-  for (size_t blk = 0; blk < blocks; ++blk) {
-    for (int i = 0; i < 7; ++i) {
-      for (int j = 0; j < 7; ++j) {
-        bits.push_back((cw[blk * 7 + size_t(j)] >> i) & 1);
-      }
+  bits.reserve(ncw * 7);
+  for (int i = 0; i < 7; ++i) {
+    for (size_t j = 0; j < ncw; ++j) {
+      bits.push_back((cw[j] >> i) & 1);
     }
   }
   // Pack sf bits per symbol; bin = fromGray(bits) so an adjacent-bin
@@ -213,19 +295,16 @@ std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
     for (int b = 0; b < sf; ++b) bits.push_back((v >> b) & 1);
   }
   const size_t nibbles = byteCount * 2;
-  const size_t codewords = ((nibbles + 6) / 7) * 7;
-  const size_t blocks = codewords / 7;
-  std::vector<uint8_t> cw(codewords, 0);
-  // De-interleave (inverse of the depth-7 block map).
+  const size_t ncw = nibbles;
+  std::vector<uint8_t> cw(ncw, 0);
+  // De-interleave (inverse of the full-message row-column map).
   size_t bi = 0;
-  for (size_t blk = 0; blk < blocks; ++blk) {
-    for (int i = 0; i < 7; ++i) {
-      for (int j = 0; j < 7; ++j) {
-        if (bi < bits.size()) {
-          cw[blk * 7 + size_t(j)] |= uint8_t(bits[bi] << i);
-        }
-        ++bi;
+  for (int i = 0; i < 7; ++i) {
+    for (size_t j = 0; j < ncw; ++j) {
+      if (bi < bits.size()) {
+        cw[j] |= uint8_t(bits[bi] << i);
       }
+      ++bi;
     }
   }
   std::vector<uint8_t> out(byteCount, 0);
@@ -240,24 +319,35 @@ std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
   return out;
 }
 
+std::vector<cfloat> cssModulateBytes(Family f, int sf,
+                                     std::span<const uint8_t> bytes) {
+  return cssModulate(f, sf, cssEncode(bytes, sf));
+}
+
+std::vector<uint8_t> cssDemodBytes(Family f, int sf,
+                                   std::span<const cfloat> section,
+                                   size_t byteCount,
+                                   std::span<const CssTap> taps) {
+  const size_t symLen = cssSymbolSamples(f, sf);
+  const size_t need = cssSymbolsForBytes(byteCount, sf);
+  const size_t nsym = std::min(section.size() / symLen, need);
+  std::vector<uint16_t> syms(nsym);
+  for (size_t s = 0; s < nsym; ++s) {
+    syms[s] = cssDemodSymbolTaps(f, sf, section.subspan(s * symLen, symLen),
+                                 taps, nullptr);
+  }
+  return cssDecode(syms, sf, byteCount);
+}
+
 std::vector<cfloat> cssModulatePayload(Family f, int mode,
                                        std::span<const uint8_t> bytes) {
-  const int sf = cssSf(mode);
-  return cssModulate(f, sf, cssEncode(bytes, sf));
+  return cssModulateBytes(f, cssSf(mode), bytes);
 }
 
 std::vector<uint8_t> cssDemodPayload(Family f, int mode,
                                      std::span<const cfloat> section,
                                      size_t byteCount) {
-  const int sf = cssSf(mode);
-  const size_t symLen = cssSymbolSamples(f, sf);
-  const size_t nsym = section.size() / symLen;
-  std::vector<uint16_t> syms(nsym);
-  for (size_t s = 0; s < nsym; ++s) {
-    syms[s] = cssDemodSymbol(
-        f, sf, section.subspan(s * symLen, symLen), nullptr);
-  }
-  return cssDecode(syms, sf, byteCount);
+  return cssDemodBytes(f, cssSf(mode), section, byteCount);
 }
 
 }  // namespace skw

@@ -40,6 +40,7 @@ struct Config {
   Family family = Family::Wide;
   bool ultraEnable = false;
   bool familyFallback = true;
+  bool cssTier = true;           // CSS deep tier (M0-M3) + deep handshake
   int mode = -1;                 // -1 = auto, else pinned 4..13
   int maxMode = 13;
   int cpMode = -1;               // -1 = auto, else CpMode index

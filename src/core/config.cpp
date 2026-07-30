@@ -203,6 +203,7 @@ bool Config::load(const std::string& path) {
     else if (full == "modem.family") { auto f = familyFromString(val); okv = f.has_value(); if (f) family = *f; }
     else if (full == "modem.ultra_enable") okv = parseBool(val, ultraEnable);
     else if (full == "modem.family_fallback") okv = parseBool(val, familyFallback);
+    else if (full == "modem.css_tier") okv = parseBool(val, cssTier);
     else if (full == "modem.mode") okv = parseModeSel(val, mode);
     else if (full == "modem.max_mode") okv = parseModeSel(val, maxMode);
     else if (full == "modem.cp_mode") okv = parseCpSel(val, cpMode);
@@ -281,6 +282,7 @@ bool Config::save(const std::string& path) const {
     << "family = " << toString(family) << "\n"
     << "ultra_enable = " << (ultraEnable ? "true" : "false") << "\n"
     << "family_fallback = " << (familyFallback ? "true" : "false") << "\n"
+    << "css_tier = " << (cssTier ? "true" : "false") << "\n"
     << "mode = " << modeSelToString(mode) << "\n"
     << "max_mode = " << modeSelToString(maxMode) << "\n"
     << "cp_mode = " << cpSelToString(cpMode) << "\n"

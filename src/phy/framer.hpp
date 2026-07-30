@@ -53,6 +53,18 @@ inline int payloadCodewordN(size_t remainingInfoBits, CodeRate r) {
   return remainingInfoBits <= k648 ? kLdpcNShort : kLdpcNLong;
 }
 
+// CSS frame payload transport (WAVEFORM.md "CSS Deep Tier"): whitened
+// payload + CRC-16, LDPC r1/2 over soft-demodulated symbols. ALWAYS
+// N=648 codewords: at deep-tier symbol rates a single N=1944 codeword
+// is minutes of airtime, and the link keeps deep frames small anyway.
+inline size_t cssPayloadCodewords(size_t phyBytes) {
+  const size_t bits = (phyBytes + 2) * 8;  // + kCssPayloadCrcBytes
+  return (bits + size_t(kLdpcNShort) / 2 - 1) / (size_t(kLdpcNShort) / 2);
+}
+inline size_t cssPayloadCodedBits(size_t phyBytes) {
+  return cssPayloadCodewords(phyBytes) * size_t(kLdpcNShort);
+}
+
 struct TxFrameParams {
   Family family = Family::Wide;
   ChirpSig sig = ChirpSig::Fast;   // preamble signature / header class

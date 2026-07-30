@@ -23,10 +23,11 @@ namespace skw {
 
 using cfloat = std::complex<float>;
 
-enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2 };
+enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2, Css = 3 };
 
 // Slope pattern for a signature (true = up). Index = rep number.
-// fast: U U     robust: U D U D     calling: U U D D
+// fast: U U   robust: U D U D   calling: U U D D   css: U D D U
+// (patterns and their spectrum-inverted mirrors are pairwise distinct).
 std::vector<bool> chirpPattern(ChirpSig sig);
 
 inline int chirpRepSamples() {

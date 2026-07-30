@@ -110,11 +110,13 @@ inline constexpr int kNumModes  = 14;   // M0..M13
 inline constexpr int kFirstMode = 4;    // lowest active mode in v1
 inline constexpr std::array<ModeDef, kNumModes> kModes = {{
     // M0-M3: CSS deep tier. `spread` holds the spreading factor SF
-    // (2^SF chips per symbol); M0 is the deepest.
-    {Waveform::Css, Constellation::Qpsk, {4, 7}, 8, false},  // M0 SF8
-    {Waveform::Css, Constellation::Qpsk, {4, 7}, 7, false},  // M1 SF7
-    {Waveform::Css, Constellation::Qpsk, {4, 7}, 6, false},  // M2 SF6
-    {Waveform::Css, Constellation::Qpsk, {4, 7}, 5, false},  // M3 SF5
+    // (2^SF chips per symbol); M0 is the deepest; payload transport is
+    // LDPC r1/2 over soft-demodulated CSS symbols. Active as of 6.2;
+    // session use is still gated on CAP_CSS_TIER negotiation.
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 8, true},  // M0 SF8
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 7, true},  // M1 SF7
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 6, true},  // M2 SF6
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 5, true},  // M3 SF5
     // M4-M13: unified spread-OFDM ladder
     {Waveform::Ofdm, Constellation::Qpsk,  {1, 2}, 16, true},  // M4
     {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  8, true},  // M5
@@ -143,22 +145,23 @@ inline constexpr double netRate(Family f, int mode, CpMode cp) {
   return grossRate(f, mode, cp) * kModes[size_t(mode)].rate.ratio();
 }
 
-// AMC design floors (dB SNR, 3 kHz noise reference, CCIR Moderate), per
-// family per mode; reserved modes carry a sentinel. WAVEFORM.md tables.
+// AMC design floors (dB SNR, 3 kHz noise reference), per family per
+// mode. M4-M13 per WAVEFORM.md tables; M0-M3 are the measured CSS AWGN
+// floors (WAVEFORM.md "CSS Deep Tier", 2026-07-29).
 inline constexpr double kFloorReserved = -99.0;
 using FloorTable = std::array<double, kNumModes>;
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-13.0, -10.5, -8.0, -5.0,
       -8.5, -6.0, -3.5, -1.0, 2.0, 5.0, 8.0, 12.0, 16.0, 20.0}},
     // MID
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-16.5, -14.0, -12.0, -9.0,
       -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5}},
     // NARROW
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-19.5, -17.5, -15.0, -12.0,
       -15.0, -12.5, -10.0, -7.5, -4.5, -1.5, 1.5, 5.5, 9.5, 13.5}},
     // ULTRA
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-12.5, -11.0, -8.0, -5.0,
       -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5}},
 }};
 inline constexpr double floorDb(Family f, int mode) {
@@ -183,22 +186,24 @@ inline constexpr double kFadingNA = 99.0;
 // bertool ladders archived in docs/conformance/.
 inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // WIDE (M9 > M10 is real: r3/4 QPSK is more burst-fragile than
-    // r1/2 16QAM under fading; M13 = kFadingNA like NARROW's)
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    // r1/2 16QAM under fading; M13 = kFadingNA like NARROW's. CSS
+    // M2/M3 = kFadingNA: 1 ms delay spread is 2.4 of their chips and
+    // the shallow spreading leaves a flat outage tail - ARQ territory)
+    {{-3.0, 0.0, kFadingNA, kFadingNA,
       1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 16.0, 26.0, kFadingNA}},
     // MID
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-10.0, -7.0, -5.0, -3.0,
       -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5}},
     // NARROW (M13 = kFadingNA: 64QAM r5/6 over a flat-Rayleigh one-shot
     // frame has a near-flat outage tail - no 10% point exists at sane
     // SNR; AMC admits it only on near-static channels)
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-11.0, -9.0, -8.0, -7.0,
       -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0}},
     // ULTRA (robust tier ~3 dB worse than WIDE: outermost carriers ride
     // the TX band-FIR transition - candidate for a wider FIR margin.
     // M6/M7 provisional: slow outage tails, see ROADMAP 1.13 known
     // issues)
-    {{kFloorReserved, kFloorReserved, kFloorReserved, kFloorReserved,
+    {{-4.0, -2.0, kFadingNA, kFadingNA,
       4.0, 6.5, 16.0, 12.5, 8.5, 13.5, 14.5, 18.5, 24.5, 28.5}},
 }};
 inline constexpr double fadingFloorDb(Family f, int mode) {

@@ -71,11 +71,13 @@ double Amc::operatingFloorDb(uint8_t k) const {
   return fadingFloorDb(cfg_.family, int(k));
 }
 
-bool Amc::modeEligible(uint8_t k, double effSnr) const {
+bool Amc::modeEligible(uint8_t k, double effSnr,
+                       bool assumeProbeClean) const {
+  const bool probeOk = probeClean_ || assumeProbeClean;
   const double floor = operatingFloorDb(k);
   if (floor >= 90.0) {
     // Near-static-only mode (kFadingNA): clean probe + AWGN-floor margin.
-    if (!probeClean_) return false;
+    if (!probeOk) return false;
     if (effSnr < floorDb(cfg_.family, int(k)) + cfg_.naModeAwgnMarginDb) {
       return false;
     }
@@ -88,8 +90,21 @@ bool Amc::modeEligible(uint8_t k, double effSnr) const {
     return false;
   }
   if (k >= 12 && selectivity_ > cfg_.selectivityMax) return false;
-  if (k >= 13 && !probeClean_) return false;
+  if (k >= 13 && !probeOk) return false;
   return true;
+}
+
+std::optional<uint8_t> Amc::probeWanted(double now) const {
+  if (pinned_ || mode_ >= cfg_.maxMode) return std::nullopt;
+  if (now - lastChange_ < cfg_.minDwellSec) return std::nullopt;
+  if (retryRatio() > cfg_.promoteRetryMax) return std::nullopt;
+  const uint8_t next = uint8_t(mode_ + 1);
+  const double eff = effectiveSnrDb(now);
+  if (modeEligible(next, eff)) return std::nullopt;  // no probe needed
+  if (!modeEligible(next, eff, /*assumeProbeClean=*/true)) {
+    return std::nullopt;  // blocked on something a probe cannot fix
+  }
+  return next;
 }
 
 AmcDecision Amc::evaluate(double now) {
@@ -99,7 +114,7 @@ AmcDecision Amc::evaluate(double now) {
 
   // Fast demote: applies even when pinned (safety), min dwell waived.
   if (windowFill_ >= 8 && retry > cfg_.fastDemoteRetryMin) {
-    uint8_t target = uint8_t(std::max(int(mode_) - 2, int(kFirstMode)));
+    uint8_t target = uint8_t(std::max(int(mode_) - 2, int(cfg_.minMode)));
     if (target != mode_) {
       promoteStreak_ = 0;
       return {AmcDecision::Kind::FastDemote, target};
@@ -117,7 +132,7 @@ AmcDecision Amc::evaluate(double now) {
   const bool failBreak = failStreak_ >= cfg_.demoteFailStreak;
   if (floorBreak || retryBreak || failBreak) {
     promoteStreak_ = 0;
-    if (mode_ > kFirstMode) {
+    if (mode_ > cfg_.minMode) {
       return {AmcDecision::Kind::Demote, uint8_t(mode_ - 1)};
     }
     degraded_ = true;  // at the bottom rung and still failing

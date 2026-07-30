@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
   for (Family fam : a.families) {
     for (int mode : a.modes) {
       const ModeDef& md = kModes[size_t(mode)];
-      if (!md.active) continue;
+      if (!md.active || md.waveform != Waveform::Ofdm) continue;
       // Offsets are relative to the floor that matches the channel: the
       // AWGN reference for --preset awgn, the measured fading floor for
       // the fading presets (WAVEFORM.md fading conformance annex).

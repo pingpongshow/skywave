@@ -32,6 +32,10 @@ struct HandshakePolicy {
   uint8_t maxMode = 13;        // config cap (AMC + proposal clamp)
   bool busy = false;           // session already active
   bool policyRefuse = false;   // operator/policy block hook
+  // CSS deep tier (6.2): advertise CAP_CSS_TIER and alternate CALL
+  // attempts onto CSS M0 so a connect can land below the OFDM robust
+  // handshake floor.
+  bool cssEnable = false;
 };
 
 // One direction's quality measurement of a received handshake frame.
@@ -43,9 +47,21 @@ struct QualityMeasurement {
 
 // Highest mode justified by a quality measurement: fading floor + the AMC
 // promote margin (+2.5 dB), M12+ selectivity gate, kInitialModeCap, then
-// clamped to [M4, maxMode]. kFadingNA rows are never eligible.
+// clamped to [M4, maxMode] - or [M0, maxMode] when the session committed
+// CAP_CSS_TIER (the deep tier both extends the ladder downward and is
+// the only floor that exists below the OFDM handshake threshold).
+// kFadingNA rows are never eligible.
 uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
-                               uint8_t worstSelectivity, uint8_t maxMode);
+                               uint8_t worstSelectivity, uint8_t maxMode,
+                               bool cssTier = false);
+
+// CALL transport for 0-based attempt N: OFDM robust signature first
+// (fast connect at workable SNR), then two CSS attempts for every OFDM
+// one - once the first OFDM call goes unanswered, deep-floor odds
+// dominate and CSS legs near the fading floor run ~50% each.
+inline bool callOnCssForAttempt(const HandshakePolicy& p, int attempt) {
+  return p.cssEnable && (attempt % 3) != 0;
+}
 
 // MAC burst profile id for a mode (PROTOCOL.md table rows 0/1/2).
 uint8_t macProfileForMode(uint8_t mode);
