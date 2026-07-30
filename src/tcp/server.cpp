@@ -72,6 +72,11 @@ std::vector<uint8_t> TcpServer::poll() {
       setNonBlocking(fd);
       int one = 1;
       setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef SO_NOSIGPIPE
+      // A client vanishing mid-send must never SIGPIPE the modem
+      // process (found by ST2 fault injection).
+      setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
       client_ = fd;
     } else {
       ::close(fd);  // one client per port
@@ -100,8 +105,14 @@ std::vector<uint8_t> TcpServer::poll() {
 void TcpServer::send(const std::vector<uint8_t>& bytes) {
   if (client_ < 0 || bytes.empty()) return;
   size_t off = 0;
+#ifdef MSG_NOSIGNAL
+  constexpr int kSendFlags = MSG_NOSIGNAL;  // Linux: no SIGPIPE
+#else
+  constexpr int kSendFlags = 0;  // macOS: SO_NOSIGPIPE set at accept
+#endif
   while (off < bytes.size()) {
-    ssize_t n = ::send(client_, bytes.data() + off, bytes.size() - off, 0);
+    ssize_t n = ::send(client_, bytes.data() + off, bytes.size() - off,
+                       kSendFlags);
     if (n > 0) {
       off += size_t(n);
       continue;

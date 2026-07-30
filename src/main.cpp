@@ -8,6 +8,7 @@
 #include "core/constants.hpp"
 #include "core/log.hpp"
 #include "io/audio.hpp"
+#include "tcp/server.hpp"
 #include "worker.hpp"
 
 namespace {
@@ -160,10 +161,42 @@ int main(int argc, char** argv) {
     }
     audio->finished();  // final TX drain
   } else {
+    // TCP surface (INTERFACES.md): data + control ports polled from this
+    // thread; the worker owns the modem and is bridged through its
+    // thread-safe queues. Voice port lands in Phase 5.
+    skw::TcpServer dataSrv, ctrlSrv;
+    if (!dataSrv.open(cfg.dataPort) || !ctrlSrv.open(cfg.ctrlPort)) {
+      SKW_ERROR("cannot bind TCP ports %u/%u", cfg.dataPort, cfg.ctrlPort);
+      audio->stop();
+      return 1;
+    }
+    SKW_INFO("tcp: data=%u control=%u", dataSrv.boundPort(),
+             ctrlSrv.boundPort());
+    skw::LineBuffer ctrlLines;
+    std::vector<uint8_t> dataOut;  // held while no data client is attached
     worker.start();
     while (!g_stop) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      // Phase 2 adds TCP polling and PTT service here.
+      // Data port: client bytes -> engine; delivered bytes -> client.
+      auto inBytes = dataSrv.poll();
+      if (!inBytes.empty()) worker.submitAppData(inBytes);
+      auto outBytes = worker.takeAppData();
+      dataOut.insert(dataOut.end(), outBytes.begin(), outBytes.end());
+      if (!dataOut.empty() && dataSrv.clientConnected()) {
+        dataSrv.send(dataOut);
+        dataOut.clear();
+      }
+      for (auto& rec : worker.takeMonitorRecords()) {
+        if (dataSrv.clientConnected()) dataSrv.send(rec);
+      }
+      // Control port: lines -> dispatcher; EVT:/MON: notifications out.
+      ctrlLines.feed(ctrlSrv.poll());
+      for (auto& line : ctrlLines.takeLines()) {
+        ctrlSrv.send(worker.control(line) + "\n");
+      }
+      for (auto& note : worker.takeNotifications()) {
+        if (ctrlSrv.clientConnected()) ctrlSrv.send(note + "\n");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     worker.stop();
   }

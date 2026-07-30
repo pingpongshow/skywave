@@ -94,11 +94,28 @@ class LinkEngine {
   CpMode cpMode() const { return cpMode_; }
   double lastRxCfoHz() const { return lastRxQuality_.cfoHz; }
 
+  // --- observability / control surface (4.6) ---------------------------
+  void abortSession(double now);       // immediate, no DISC exchange
+  bool setCpPolicy(const std::string& p, double now);  // AUTO/SHORT/...
+  std::string cpPolicy() const;
+  const std::string& remoteCall() const { return remoteCall_; }
+  uint16_t sessionCaps() const { return sessionCaps_; }
+  double lastRxSnrDb() const { return lastRxQuality_.snrDb; }
+  double remoteSnrDb() const;   // from ACK reports; -99 when unknown
+  double retryRatio() const;
+  uint64_t framesOk() const { return framesOk_; }
+  uint64_t framesFailed() const { return framesFailed_; }
+  double netBps() const {
+    return netRate(cfg_.policy.family, mode_, cpMode_);
+  }
+
   // --- scheduling ------------------------------------------------------
   // Advance timers and, if a burst is due, return its baseband samples.
   std::optional<std::vector<cfloat>> tick(double now);
-  // Feed a received capture (burst + padding); engine decodes and reacts.
-  void rxBurst(std::span<const cfloat> samples, double now);
+  // Feed a received capture (burst + padding); engine decodes and
+  // reacts. Returns true when a frame decoded payload-clean (the
+  // worker's windowed retry stops there).
+  bool rxBurst(std::span<const cfloat> samples, double now);
 
  private:
   struct OutFrame {
@@ -227,6 +244,10 @@ class LinkEngine {
   // emitted only when nothing else wants the transmitter.
   bool cwPending_ = false;
   double lastCwAt_ = 0.0;
+  // Observability counters (4.6).
+  uint64_t framesOk_ = 0;
+  uint64_t framesFailed_ = 0;
+  double remoteSnrDb_ = -99.0;
 };
 
 }  // namespace skw

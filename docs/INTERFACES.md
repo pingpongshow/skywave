@@ -49,6 +49,11 @@ responses. Responses start with the verb or `ERROR:<reason>`. Asynchronous
 notifications start with `EVT:` or `MON:` and may interleave between
 command/response pairs (clients must dispatch on prefix).
 
+Commands whose feature is compiled out or not yet active in this build
+(crypto without `ENABLE_CRYPTO`, voice before Phase 5) answer
+`ERROR:UNSUPPORTED` — distinct from `ERROR:UNKNOWN` so clients can tell a
+gated feature from a typo.
+
 ### Command Index
 
 #### Identity and Session
@@ -92,6 +97,7 @@ command/response pairs (clients must dispatch on prefix).
 | `AUDIOLEVEL` | input/output level meters (dBFS) |
 | `MONITOR ON\|OFF` | passive frame monitoring |
 | `TXTEST [seconds\|OFF]` | transmit a representative OFDM calibration signal (IDLE only, max 30 s) |
+| `FREQINFO` | waveform center, TX alignment shift, last RX CFO (`CENTER=<hz> SHIFT=<hz> CFO=<hz>`) |
 | `VERSION` | version string |
 
 #### PTT

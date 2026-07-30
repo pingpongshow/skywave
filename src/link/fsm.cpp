@@ -55,6 +55,14 @@ void SessionFsm::cmdDisconnect(double now) {
   discCause_ = FsmDiscCause::LocalRequest;
 }
 
+void SessionFsm::cmdAbort(double /*now*/) {
+  if (state_ == FsmState::Idle) return;
+  state_ = FsmState::Idle;
+  deadline_ = 0.0;
+  discCause_ = FsmDiscCause::LocalRequest;
+  emit(FsmAction::IndicateDisconnected);
+}
+
 void SessionFsm::rxCall(double now) {
   // Responder answer path. A CALL while connected to the same peer is a
   // reconnect attempt; session-level dedup happens above the FSM.

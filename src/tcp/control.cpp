@@ -67,7 +67,13 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
     if (!v) return "ERROR:BADARG";
     return be.setListen(*v) ? "LISTEN " + onOff(*v) : "ERROR:STATE";
   }
-  if (verb == "STATUS") return "STATUS " + be.statusLine();
+  if (verb == "STATUS") {
+    if (argc == 1 && upper(tok[1]) == "JSON") {
+      return "STATUS " + be.statusJson();
+    }
+    if (argc != 0) return "ERROR:BADARG";
+    return "STATUS " + be.statusLine();
+  }
   if (verb == "STATE") return "STATE " + be.fsmState();
   if (verb == "BUSY") return std::string("BUSY ") + (be.busy() ? "1" : "0");
   if (verb == "BUFFER") {
@@ -102,6 +108,83 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
     return be.txTest(sec) ? "TXTEST " + tok[1] : "ERROR:STATE";
   }
   if (verb == "VERSION") return "VERSION " + be.version();
+
+  // --- 4.6 completions ------------------------------------------------
+  if (verb == "CQ") return be.cq() ? "CQ" : "ERROR:STATE";
+  if (verb == "BEACON") return be.beacon() ? "BEACON" : "ERROR:STATE";
+  if (verb == "BCAST") {
+    if (argc != 1) return "ERROR:BADARG";
+    const std::string& h = tok[1];
+    if (h.size() < 2 || (h.size() % 2) != 0) return "ERROR:BADARG";
+    std::vector<uint8_t> payload;
+    payload.reserve(h.size() / 2);
+    for (size_t i = 0; i < h.size(); i += 2) {
+      auto nib = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+      };
+      const int hi = nib(h[i]), lo = nib(h[i + 1]);
+      if (hi < 0 || lo < 0) return "ERROR:BADARG";
+      payload.push_back(uint8_t(hi << 4 | lo));
+    }
+    return be.bcast(payload) ? "BCAST " + std::to_string(payload.size())
+                             : "ERROR:BADARG";
+  }
+  if (verb == "CWID") {
+    if (argc == 0) return "CWID " + onOff(be.cwId());
+    auto v = parseOnOff(tok[1]);
+    if (!v) return "ERROR:BADARG";
+    be.setCwId(*v);
+    return "CWID " + onOff(*v);
+  }
+  if (verb == "MODE") {
+    if (argc == 0) return "MODE " + be.modeStr();
+    return be.setMode(upper(tok[1])) ? "MODE " + be.modeStr()
+                                     : "ERROR:BADARG";
+  }
+  if (verb == "CPMODE") {
+    if (argc == 0) return "CPMODE " + be.cpModeStr();
+    return be.setCpMode(upper(tok[1])) ? "CPMODE " + be.cpModeStr()
+                                       : "ERROR:BADARG";
+  }
+  if (verb == "HARQ") {
+    if (argc == 0) return "HARQ " + be.harqStr();
+    return be.setHarq(upper(tok[1])) ? "HARQ " + be.harqStr()
+                                     : "ERROR:BADARG";
+  }
+  if (verb == "CHANMEM" || verb == "PROBE" || verb == "MASKING" ||
+      verb == "RESUME") {
+    if (argc == 0) {
+      auto v = be.feature(verb);
+      return v ? verb + " " + onOff(*v) : "ERROR:STATE";
+    }
+    auto v = parseOnOff(tok[1]);
+    if (!v) return "ERROR:BADARG";
+    return be.setFeature(verb, *v) ? verb + " " + onOff(*v)
+                                   : "ERROR:STATE";
+  }
+  if (verb == "NOISEFLOOR") return "NOISEFLOOR " + be.noiseFloor();
+  if (verb == "AUDIOLEVEL") return "AUDIOLEVEL " + be.audioLevel();
+  if (verb == "FREQINFO") return "FREQINFO " + be.freqInfo();
+  if (verb == "PTTMETHOD" || verb == "PTTPORT" || verb == "PTTBAUD" ||
+      verb == "PTTLEAD" || verb == "PTTTAIL") {
+    const std::string key = verb.substr(3);
+    if (argc == 0) return verb + " " + be.pttGet(key);
+    // Value passed verbatim: PTTPORT is a case-sensitive device path.
+    return be.pttSet(key, tok[1]) ? verb + " " + be.pttGet(key)
+                                  : "ERROR:BADARG";
+  }
+  // Recognized but unavailable in this build/phase (crypto gated by
+  // SKW_HAVE_CRYPTO; voice is Phase 5): a distinct error keeps clients
+  // from confusing them with typos.
+  if (verb == "ENCRYPTION" || verb == "ENCRYPTKEY" || verb == "KEYROTATE" ||
+      verb == "SECURITY" || verb == "VOICE" || verb == "VOICECODEC" ||
+      verb == "VOICESTART" || verb == "VOICESTOP" || verb == "VOICEPTT" ||
+      verb == "VOICESTATUS") {
+    return "ERROR:UNSUPPORTED";
+  }
   return "ERROR:UNKNOWN";
 }
 

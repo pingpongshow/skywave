@@ -1,4 +1,4 @@
-// Control-port line protocol (INTERFACES.md): Phase-2 command subset.
+// Control-port line protocol (INTERFACES.md): full 4.6 command surface.
 // Pure logic: one line in, one response line out (no trailing newline);
 // the backend is an abstract view of the modem the worker implements.
 // Notifications (EVT:/MON:) are formatted by free functions and pushed by
@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace skw {
 
@@ -38,6 +39,29 @@ struct ControlBackend {
   virtual bool monitoring() = 0;
   virtual bool txTest(double seconds) = 0;  // false: refused
   virtual std::string version() = 0;
+
+  // --- 4.6 completions --------------------------------------------------
+  virtual bool cq() = 0;
+  virtual bool beacon() = 0;
+  virtual bool bcast(const std::vector<uint8_t>& payload) = 0;
+  virtual bool cwId() = 0;
+  virtual void setCwId(bool on) = 0;
+  virtual std::string modeStr() = 0;             // "AUTO(M9)" or "M6"
+  virtual bool setMode(const std::string& m) = 0;  // "M4".."M13"|"AUTO"
+  virtual std::string cpModeStr() = 0;           // AUTO/SHORT/MEDIUM/LONG
+  virtual bool setCpMode(const std::string& m) = 0;
+  virtual std::string harqStr() = 0;             // AUTO/CHASE/IR
+  virtual bool setHarq(const std::string& m) = 0;
+  // Feature toggles: CHANMEM / PROBE / MASKING / RESUME.
+  virtual std::optional<bool> feature(const std::string& name) = 0;
+  virtual bool setFeature(const std::string& name, bool on) = 0;
+  virtual std::string statusJson() = 0;  // one-line JSON object
+  virtual std::string noiseFloor() = 0;  // payload after the verb
+  virtual std::string audioLevel() = 0;
+  virtual std::string freqInfo() = 0;
+  // PTT config: METHOD/PORT/BAUD/LEAD/TAIL (INTERFACES.md).
+  virtual std::string pttGet(const std::string& key) = 0;
+  virtual bool pttSet(const std::string& key, const std::string& val) = 0;
 };
 
 // Uppercases the verb, dispatches, returns the single response line.

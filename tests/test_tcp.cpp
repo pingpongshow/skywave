@@ -7,7 +7,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -81,6 +83,67 @@ struct StubBackend : ControlBackend {
   bool monitoring() override { return mon; }
   bool txTest(double sec) override { return state == "IDLE" && sec <= 30; }
   std::string version() override { return "skywave-test"; }
+  // 4.6 surface: simple stateful stubs so the dispatcher is testable.
+  bool cq() override { return state == "IDLE"; }
+  bool beacon() override { return state == "IDLE"; }
+  bool bcast(const std::vector<uint8_t>& p) override {
+    lastBcast = p;
+    return !p.empty() && p.size() <= 4096;
+  }
+  bool cwId() override { return cw; }
+  void setCwId(bool on) override { cw = on; }
+  std::string modeStr() override { return modeS; }
+  bool setMode(const std::string& m) override {
+    if (m == "AUTO") {
+      modeS = "AUTO(M8)";
+      return true;
+    }
+    if (m.size() >= 2 && m[0] == 'M') {
+      modeS = m;
+      return true;
+    }
+    return false;
+  }
+  std::string cpModeStr() override { return cpS; }
+  bool setCpMode(const std::string& m) override {
+    if (m != "AUTO" && m != "SHORT" && m != "MEDIUM" && m != "LONG") {
+      return false;
+    }
+    cpS = m;
+    return true;
+  }
+  std::string harqStr() override { return harqS; }
+  bool setHarq(const std::string& m) override {
+    if (m != "AUTO" && m != "CHASE" && m != "IR") return false;
+    harqS = m;
+    return true;
+  }
+  std::optional<bool> feature(const std::string& name) override {
+    return features.count(name) ? std::optional<bool>(features[name])
+                                : std::optional<bool>(true);
+  }
+  bool setFeature(const std::string& name, bool on) override {
+    features[name] = on;
+    return true;
+  }
+  std::string statusJson() override { return "{\"state\":\"" + state + "\"}"; }
+  std::string noiseFloor() override { return "-98.5"; }
+  std::string audioLevel() override { return "RX=-18.2 TX=-12.0"; }
+  std::string freqInfo() override { return "CENTER=1500 SHIFT=0.0 CFO=0.0"; }
+  std::string pttGet(const std::string& key) override {
+    return ptt.count(key) ? ptt[key] : "NONE";
+  }
+  bool pttSet(const std::string& key, const std::string& val) override {
+    ptt[key] = val;
+    return true;
+  }
+  std::vector<uint8_t> lastBcast;
+  bool cw = false;
+  std::string modeS = "AUTO(M8)";
+  std::string cpS = "AUTO";
+  std::string harqS = "AUTO";
+  std::map<std::string, bool> features;
+  std::map<std::string, std::string> ptt;
 };
 
 int connectLoopback(uint16_t port) {
@@ -156,12 +219,65 @@ TEST_CASE(control_protocol_scripted_session) {
   CHECK(run("MONITOR ON") == "MONITOR ON");
   CHECK(run("TXTEST 10") == "TXTEST 10");
   CHECK(run("TXTEST 99") == "ERROR:BADARG");
+
+  // 4.6 surface.
+  CHECK(run("MODE") == "MODE AUTO(M8)");
+  CHECK(run("MODE M6") == "MODE M6");
+  CHECK(run("MODE AUTO") == "MODE AUTO(M8)");
+  CHECK(run("CPMODE LONG") == "CPMODE LONG");
+  CHECK(run("CPMODE BOGUS") == "ERROR:BADARG");
+  CHECK(run("HARQ CHASE") == "HARQ CHASE");
+  CHECK(run("CHANMEM OFF") == "CHANMEM OFF");
+  CHECK(run("PROBE ON") == "PROBE ON");
+  CHECK(run("MASKING OFF") == "MASKING OFF");
+  CHECK(run("RESUME ON") == "RESUME ON");
+  CHECK(run("CQ") == "CQ");
+  CHECK(run("BEACON") == "BEACON");
+  CHECK(run("BCAST 48656C6C6F") == "BCAST 5");
+  CHECK(be.lastBcast.size() == 5 && be.lastBcast[0] == 'H');
+  CHECK(run("BCAST xz") == "ERROR:BADARG");
+  CHECK(run("CWID ON") == "CWID ON");
+  CHECK(run("STATUS JSON") == "STATUS {\"state\":\"IDLE\"}");
+  CHECK(run("NOISEFLOOR") == "NOISEFLOOR -98.5");
+  CHECK(run("AUDIOLEVEL") == "AUDIOLEVEL RX=-18.2 TX=-12.0");
+  CHECK(run("FREQINFO") == "FREQINFO CENTER=1500 SHIFT=0.0 CFO=0.0");
+  CHECK(run("PTTMETHOD RTS") == "PTTMETHOD RTS");
+  CHECK(run("PTTLEAD 120") == "PTTLEAD 120");
+  CHECK(run("VOICESTATUS") == "ERROR:UNSUPPORTED");
+  CHECK(run("SECURITY") == "ERROR:UNSUPPORTED");
+  CHECK(run("XYZZY") == "ERROR:UNKNOWN");
   be.state = "CONNECTED";
   CHECK(run("TXTEST 5") == "ERROR:STATE");
 
   // Unknown.
   CHECK(run("FLY ME") == "ERROR:UNKNOWN");
   CHECK(run("") == "ERROR:UNKNOWN");
+}
+
+TEST_CASE(command_surface_complete) {
+  // M4 checklist: every command in INTERFACES.md answers with something
+  // other than ERROR:UNKNOWN (UNSUPPORTED is legal for gated features).
+  StubBackend be;
+  const char* cmds[] = {
+      "MYCALL",       "CONNECT K6XYZ", "DISCONNECT",  "ABORT",
+      "LISTEN ON",    "CQ",            "BEACON",      "BCAST 00",
+      "CWID ON",      "FAMILY",        "MODE",        "MAXMODE",
+      "CPMODE",       "HARQ",          "CHANMEM",     "PROBE",
+      "MASKING",      "RESUME",        "STATUS",      "STATUS JSON",
+      "STATE",        "BUSY",          "NOISEFLOOR",  "BUFFER",
+      "AUDIOLEVEL",   "MONITOR",       "TXTEST 5",    "VERSION",
+      "FREQINFO",     "PTTMETHOD",     "PTTPORT",     "PTTBAUD 9600",
+      "PTTLEAD",      "PTTTAIL",       "ENCRYPTION ON", "ENCRYPTKEY 00",
+      "KEYROTATE",    "SECURITY",      "VOICE",       "VOICECODEC",
+      "VOICESTART",   "VOICESTOP",     "VOICEPTT ON", "VOICESTATUS",
+  };
+  for (const char* c : cmds) {
+    const std::string r = handleControlLine(c, be);
+    if (r.rfind("ERROR:UNKNOWN", 0) == 0) {
+      std::printf("  UNKNOWN: %s\n", c);
+    }
+    CHECK(r.rfind("ERROR:UNKNOWN", 0) != 0);
+  }
 }
 
 TEST_CASE(notification_formats) {

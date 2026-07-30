@@ -142,6 +142,52 @@ void LinkEngine::sendBeacon(double snrFloorDb) {
   queueControl(LinkType::Beacon, b.pack(), ChirpSig::Calling, 4);
 }
 
+void LinkEngine::abortSession(double now) {
+  resumeCtx_.valid = false;  // ABORT is operator intent: no resume
+  fsm_.cmdAbort(now);
+  drainFsmActions(now);
+}
+
+bool LinkEngine::setCpPolicy(const std::string& p, double now) {
+  if (p == "AUTO") {
+    cfg_.cpAuto = true;
+    return true;
+  }
+  CpMode want;
+  if (p == "SHORT") {
+    want = CpMode::Short;
+  } else if (p == "MEDIUM") {
+    want = CpMode::Medium;
+  } else if (p == "LONG") {
+    want = CpMode::Long;
+  } else {
+    return false;
+  }
+  cfg_.cpAuto = false;
+  if (fsm_.state() == FsmState::Connected && want != cpMode_) {
+    if (!isInitiator_) return false;  // v1: initiator owns mode control
+    requestModeChange(mode_, want, now);
+  } else {
+    cpMode_ = want;
+  }
+  return true;
+}
+
+std::string LinkEngine::cpPolicy() const {
+  if (cfg_.cpAuto) return "AUTO";
+  switch (cpMode_) {
+    case CpMode::Short: return "SHORT";
+    case CpMode::Medium: return "MEDIUM";
+    default: return "LONG";
+  }
+}
+
+double LinkEngine::remoteSnrDb() const { return remoteSnrDb_; }
+
+double LinkEngine::retryRatio() const {
+  return amc_ ? amc_->retryRatio() : 0.0;
+}
+
 bool LinkEngine::sendBroadcast(std::span<const uint8_t> bytes) {
   if (bytes.empty() || bytes.size() > 16 * kBcastMaxPayload) return false;
   const size_t count = (bytes.size() + kBcastMaxPayload - 1) /
@@ -786,7 +832,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   return buildBurst(f);
 }
 
-void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
+bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   lastNow_ = now;
   RxStage stage;
   auto res =
@@ -814,6 +860,13 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
     cpWantStreak_ = want == cpWant_ ? cpWantStreak_ + 1 : 1;
     cpWant_ = want;
   }
+  if (res) {
+    if (res->payloadOk) {
+      ++framesOk_;
+    } else {
+      ++framesFailed_;
+    }
+  }
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
     // A PROBE whose header decoded but payload failed still gets its
@@ -826,7 +879,7 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
                    mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                    std::min(mode_, 8));
     }
-    return;
+    return false;
   }
   if (res->header.frameType == kBurstContainerFrameType) {
     // Greedy container parse: [u16le len][link frame] entries; each
@@ -842,15 +895,16 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
       off += len;
       if (inner) onFrame(*inner, q, now);
     }
-    return;
+    return true;
   }
   auto parsed = parseFrame(res->payload);
-  if (!parsed) return;
+  if (!parsed) return true;  // frame decoded; envelope just isn't ours
   QualityMeasurement q;
   q.snrDb = res->snrDb;
   q.selectivity = 0;
   q.cfoHz = res->cfoHz;
   onFrame(*parsed, q, now);
+  return true;
 }
 
 void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
@@ -1009,6 +1063,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                 arqTx_.inFlight());
       }
       if (amc_) amc_->onRemoteSnr(a->snrHalfDb * 0.5, now);
+      remoteSnrDb_ = a->snrHalfDb * 0.5;
       onCfoReport(a->cfoHalfHz * 0.5);
       arqTx_.onAck(*a, now);
       break;

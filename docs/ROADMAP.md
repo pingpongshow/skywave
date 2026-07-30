@@ -417,7 +417,13 @@ and survives the emulated rig chain end to end (ST1).**
 **System-test gates for the remaining phases (TESTING.md ST layers):**
 Phase 4 exits through **ST2** (process-level loopback: real worker/TCP
 stack over an in-process audio driver + radio chain, scripted via the
-control port, fault injection). Phase 5 exits through **ST3**
+control port, fault injection). ✓ ST2 passed 2026-07-29 (`test_st2`):
+scripted CONNECT/STATUS-JSON/data-socket session with EVT assertions;
+faults — 5.7 s audio dropout + worker stall (ring starvation) mid-
+transfer recovered by ARQ, control/data client disconnect+reconnect,
+ABORT with peer idle-timeout; simultaneous-TX collision settles clean.
+ST2 found and fixed a real bug: a TCP client vanishing mid-send
+SIGPIPE'd the process (now SO_NOSIGPIPE/MSG_NOSIGNAL in TcpServer). Phase 5 exits through **ST3**
 (real/virtual audio devices - BlackHole/VB-Cable - two processes,
 independent clocks, ≥2 h zero-drop soak; ctest label `hardware`).
 On-air work is gated by **ST4** (attended rig checklist).
@@ -484,10 +490,31 @@ On-air work is gated by **ST4** (attended rig checklist).
   baseband ±5), monitor reassembly, both CW cadences. Note: received
   CQ/BEACON surface via the monitor path; a LISTENING-state auto-answer
   policy is Phase-5 UI territory.
-- [ ] **4.6 Observability completion** — `STATUS JSON`, `NOISEFLOOR`,
+- [x] **4.6 Observability completion** — `STATUS JSON`, `NOISEFLOOR`,
   `AUDIOLEVEL`, `FREQINFO`, remaining commands.
   *Gate: **M4** — command surface complete vs INTERFACES.md checklist;
   conformance matrix (`tests/conformance.yaml`) fully evidenced.*
+  ✓ 2026-07-29 — **this was the worker-integration step**: ModemWorker
+  is now the real modem (LinkEngine + Monitor + 48k↔12k converters +
+  streaming RX acquisition + noise/CCA floor + level meters + CW/TXTEST
+  in the TX path), implements the full ControlBackend, and main.cpp
+  bridges the TCP data/control ports. Streaming RX: rolling baseband
+  history + ChirpDetector; each detection opens a capture window grown
+  along a retry ladder (2.5→34 s) until `rxBurst` reports a clean
+  decode — frame length is unknowable before the self-describing header
+  decodes, so windows cannot be sized up front. Full command surface
+  incl. MODE/CPMODE/HARQ/feature toggles (IDLE-only where caps
+  renegotiate), CQ/BEACON/BCAST/CWID, STATUS+JSON, NOISEFLOOR (min-
+  tracking floor, +6 dB busy), AUDIOLEVEL, FREQINFO (added to
+  INTERFACES.md), PTT config; crypto/voice verbs answer
+  `ERROR:UNSUPPORTED` (documented). Checklist test:
+  `test_tcp/command_surface_complete`; matrix: `tests/conformance.yaml`
+  (requirement → evidence for every gate to date). **Milestone M4 met
+  2026-07-29.** Deviations: physical PTT keying (serial RTS/DTR / TCP)
+  is stored config only — bursts carry lead/tail silence padding; real
+  keying + calibrated RX SNR metering land with the ST3 hardware pass.
+  CHANMEM toggle is config-only (engine seeding still unwired, known
+  debt from 3.5).
 
 ## Phase 5 — Voice, Crypto, GUI
 

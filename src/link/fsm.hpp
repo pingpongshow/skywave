@@ -78,6 +78,7 @@ class SessionFsm {
   // --- operator/API commands -----------------------------------------
   void cmdConnect(double now);     // Idle -> Calling (emits SendCall)
   void cmdDisconnect(double now);  // -> Disconnecting (emits SendDisc)
+  void cmdAbort(double now);       // -> Idle immediately, no DISC exchange
 
   // --- received frames (already CRC/type validated) -------------------
   void rxCall(double now);       // responder path
