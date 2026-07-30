@@ -24,6 +24,7 @@ struct SymbolWalker {
   int64_t nextSampleStart;  // absolute index of the next symbol's CP start
   int symIdx;               // pilot-pattern symbol number
   ChannelTracker* tracker;
+  const CarrierMask* mask = nullptr;  // payload phase only
   Fft fft{kFftBaseband};
 
   // Collect exactly `bits` LLRs coded at the given parameters. Returns
@@ -33,7 +34,7 @@ struct SymbolWalker {
     const int cpLen = kCpSamplesAudio[size_t(cp)] / kDecimation;
     const int symLen = kFftBaseband + cpLen;
     const int bps = bitsPerSymbol(cst);
-    const int G = spreadGroupSymbols(family, spread);
+    const int G = spreadGroupSymbols(family, spread, mask);
     const int n = plan(family).carriers();
 
     int got = 0;
@@ -59,7 +60,7 @@ struct SymbolWalker {
         const float invTs = 1.0f / ofdmTimeScale(family);
         for (auto& b : out) b *= invTs;
         tracker->processSymbol(out, symIdx + g);
-        auto lay = symbolLayout(family, symIdx + g);
+        auto lay = symbolLayout(family, symIdx + g, mask);
         for (int c : lay.dataCarriers) pool.push_back({g, c});
         bins.push_back(std::move(out));
       }
@@ -156,7 +157,8 @@ int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
 
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
-                                          RxStage* stageOut, HarqChase* harq) {
+                                          RxStage* stageOut, HarqChase* harq,
+                                          const CarrierMask* payloadMask) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -250,6 +252,11 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     const ModeDef& md = kModes[size_t(hdr->mode)];
     if (md.waveform != Waveform::Ofdm || !md.active) return std::nullopt;
     size_t restBits = (size_t(hdr->length) - piggy) * 8;
+    // Payload phase: apply the session carrier mask (header symbols used
+    // the full set). The tracker skips masked pilots; its delay-domain
+    // model interpolates the gap.
+    walker.mask = payloadMask;
+    tracker.setMask(payloadMask);
     // Info chunks are k bits each, which is not byte-aligned for every
     // rate (r5/6: 1620 bits): concatenate BITS across codewords, convert
     // to bytes once. Codeword sizing mirrors the TX rule.
@@ -336,6 +343,19 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     res.payload = std::move(white);
   }
   res.snrDb = tracker.snrDb();
+  {
+    const auto& h = tracker.h();
+    const auto& re = tracker.carrierResid();
+    const double nv = std::max(tracker.noiseVar(), 1e-12);
+    res.carrierSnrDb.resize(h.size());
+    for (size_t c = 0; c < h.size(); ++c) {
+      const double denom =
+          std::max(re.size() == h.size() && re[c] >= 0 ? re[c] : nv, 1e-12);
+      res.carrierSnrDb[c] = float(
+          10.0 * std::log10(std::max(double(std::norm(h[c])) / denom,
+                                     1e-9)));
+    }
+  }
   return res;
 }
 

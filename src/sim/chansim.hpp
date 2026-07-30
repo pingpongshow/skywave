@@ -28,6 +28,8 @@ struct ChansimParams {
   double refSignalPower = 1.0;  // signal power the SNR refers to
   double cfoHz = 0.0;
   double clockPpm = 0.0;        // sample-clock offset
+  double toneHz = 0.0;          // narrowband interferer (baseband offset)
+  double toneAmp = 0.0;         // 0 = off
 
   uint64_t seed = 1;
 };
@@ -77,6 +79,7 @@ class Chansim {
   double noiseStd_ = 0.0;
   uint64_t noiseRng_;
   double cfoPhase_ = 0.0;
+  double tonePhase_ = 0.0;
   uint64_t samplesOut_ = 0;
 };
 

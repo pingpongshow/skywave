@@ -80,6 +80,7 @@ struct RxFrameResult {
   bool inverted = false;
   double cfoHz = 0.0;
   double snrDb = 0.0;              // tracker estimate at end of frame
+  std::vector<float> carrierSnrDb;  // per active carrier, at frame end
 };
 
 // Detect and decode the first frame of the given family in rx.
@@ -87,9 +88,13 @@ struct RxFrameResult {
 // stageOut (optional) reports how far the receiver got. When harq is
 // provided, failed payload codewords are chase-combined with earlier
 // receptions of the same frame identity before the retry decode.
+// payloadMask: session carrier mask applied to PAYLOAD symbols only
+// (header symbols always use the full carrier set).
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut = nullptr,
-                                          HarqChase* harq = nullptr);
+                                          HarqChase* harq = nullptr,
+                                          const CarrierMask* payloadMask =
+                                              nullptr);
 
 }  // namespace skw

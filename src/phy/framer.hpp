@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/constants.hpp"
+#include "phy/layout.hpp"
 #include "dsp/chirp.hpp"
 
 namespace skw {
@@ -60,6 +61,9 @@ struct TxFrameParams {
   uint8_t frameType = 0;
   uint8_t seqLow = 0;
   std::span<const uint8_t> payload;  // link frame bytes, <= 4095
+  // Session carrier mask, PAYLOAD symbols only (LINK_ADAPTATION.md);
+  // nullptr = all carriers usable.
+  const CarrierMask* mask = nullptr;
 };
 
 // Frame geometry shared by TX and (later) RX.
@@ -97,6 +101,7 @@ FrameBits buildFrameBits(const TxFrameParams& p);
 // baseband samples to out and returns the number of symbols emitted.
 int appendOfdmSymbols(Family family, Constellation constellation, int spread,
                       CpMode cp, std::span<const uint8_t> codedBits,
-                      int symIdx0, std::vector<cfloat>& out);
+                      int symIdx0, std::vector<cfloat>& out,
+                      const CarrierMask* mask = nullptr);
 
 }  // namespace skw

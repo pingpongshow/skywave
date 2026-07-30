@@ -132,6 +132,10 @@ void LinkEngine::drainFsmActions(double /*now*/) {
       case FsmAction::IndicateConnected: {
         harq_.clear();
         probeGate_ = ProbeGate();
+        maskDet_.emplace(cfg_.policy.family);
+        txMask_ = CarrierMask();
+        rxMask_ = CarrierMask();
+        pendingMaskEpoch_ = -1;
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
@@ -217,6 +221,11 @@ std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
   tp.frameType = uint8_t(f.env.type);
   tp.seqLow = uint8_t(f.env.sequence & 0xFF);
   tp.payload = raw;
+  // Spread modes (M4-M7) skip masking: spreading already averages over
+  // interference (LINK_ADAPTATION.md).
+  if (f.mode >= 8 && txMask_.maskedCount(cfg_.policy.family) > 0) {
+    tp.mask = &txMask_;
+  }
   return buildFrameBaseband(tp);
 }
 
@@ -282,6 +291,42 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
     probeGate_.tick(now);
+    // Carrier-mask exchange (per direction; either side may originate).
+    if (maskDet_ && cfg_.maskingEnabled && (sessionCaps_ & kCapMasking) &&
+        mode_ >= 8) {
+      if (pendingMaskEpoch_ >= 0 && now >= maskRetryAt_) {
+        if (++maskTries_ >= 2) {
+          pendingMaskEpoch_ = -1;  // abandon this mask generation
+        } else {
+          MaskUpdateBody mu;
+          mu.epoch = uint8_t(pendingMaskEpoch_);
+          mu.family = uint8_t(cfg_.policy.family);
+          mu.mask = pendingRxMask_.bits;
+          queueControl(LinkType::MaskUpdate, mu.pack(),
+                       mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                       std::min(mode_, 8));
+          maskRetryAt_ = now + 2.0;
+        }
+      }
+      if (pendingMaskEpoch_ < 0) {
+        CarrierMask want = maskDet_->proposal(now);
+        if (!(want == rxMask_) &&
+            want.maskedCount(cfg_.policy.family) > 0) {
+          pendingRxMask_ = want;
+          pendingMaskEpoch_ = (maskEpoch_ + 1) & 0x0F;
+          maskEpoch_ = pendingMaskEpoch_;
+          maskTries_ = 0;
+          MaskUpdateBody mu;
+          mu.epoch = uint8_t(pendingMaskEpoch_);
+          mu.family = uint8_t(cfg_.policy.family);
+          mu.mask = pendingRxMask_.bits;
+          queueControl(LinkType::MaskUpdate, mu.pack(),
+                       mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                       std::min(mode_, 8));
+          maskRetryAt_ = now + 2.0;
+        }
+      }
+    }
     if (amc_ && isInitiator_ && pendingMode_ < 0) {
       auto d = amc_->evaluate(now);
       if (d.kind == AmcDecision::Kind::Promote &&
@@ -331,7 +376,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
 
 void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
   RxStage stage;
-  auto res = receiveFrame(cfg_.policy.family, samples, &stage, &harq_);
+  auto res =
+      receiveFrame(cfg_.policy.family, samples, &stage, &harq_, &rxMask_);
+  if (res && maskDet_ && fsm_.state() == FsmState::Connected &&
+      mode_ >= 8 && !res->carrierSnrDb.empty()) {
+    maskDet_->onSnapshot(res->carrierSnrDb, now);
+  }
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok) amc_->onFrameResult(false, false);
     // A PROBE whose header decoded but payload failed still gets its
@@ -472,6 +522,27 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       const bool clearedNow =
           probeGate_.onProbeAck(pa->probeId, pa->decodedOk);
       if (amc_) amc_->onProbeResult(clearedNow, now);
+      break;
+    }
+    case LinkType::MaskUpdate: {
+      auto mu = MaskUpdateBody::parse(f.body);
+      if (!mu || fsm_.state() != FsmState::Connected) return;
+      // The peer's RX sees interference on these carriers: zero them in
+      // OUR transmissions from now on, and confirm.
+      txMask_.bits = mu->mask;
+      queueControl(LinkType::MaskAck, MaskAckBody{mu->epoch}.pack(),
+                   mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
+                   std::min(mode_, 8));
+      break;
+    }
+    case LinkType::MaskAck: {
+      auto ma = MaskAckBody::parse(f.body);
+      if (!ma || pendingMaskEpoch_ < 0 ||
+          ma->epoch != uint8_t(pendingMaskEpoch_)) {
+        return;
+      }
+      rxMask_ = pendingRxMask_;  // peer now zeroes these toward us
+      pendingMaskEpoch_ = -1;
       break;
     }
     case LinkType::Keepalive:

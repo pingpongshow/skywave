@@ -325,9 +325,20 @@ disconnects over the simulated ionosphere end to end.**
   header alone; clean/marginal/failed via SNR margin at the responder;
   2 probes for M12+; 10-frame cooldown; timeout = failed. Harness
   scenario promotes M10→M11→M12 through both gate shapes.
-- [ ] **3.7 Carrier masking** `[P]` — weight tracking, MASK_UPDATE/ACK,
+- [x] **3.7 Carrier masking** `[P]` — weight tracking, MASK_UPDATE/ACK,
   RLE, pilot-skip interpolation, demote-on-ratio.
   *Gate: two-modem `mask_excision` scenario (injected tone → recovery).*
+  ✓ 2026-07-29 — CarrierMask threaded through the PHY (payload symbols
+  only; header stays full-set for monitor decodability; masked pilots
+  skipped, the tap-domain Kalman interpolates natively). Detection is
+  RESIDUAL-based: a tone INFLATES |H| but explodes per-carrier pilot
+  residuals - the tracker now keeps a per-carrier residual EMA and
+  carrier quality derives from it. Per-direction MASK_UPDATE/ACK with
+  2 s × 2 retry then abandon; 30% proposal cap; spread modes skip.
+  chansim gained a tone injector. DEVIATIONS: raw 9-byte bitmap (no
+  RLE flags - 9 bytes is already small); demote-on-ratio surfaces via
+  MaskDetector::ratioExceeded but the AMC hookup lands with 3.11
+  tuning; mask exchange currently keyed on kCapMasking negotiation.
 - [ ] **3.8 MAC burst container + profiles** — multi-frame PHY container,
   window/aggregate tiers, keepalive, greedy container parsing.
   *Gate: throughput at M13 within 10% of NET × (1 − container overhead).*

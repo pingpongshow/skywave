@@ -78,6 +78,7 @@ add_library(skywave_core STATIC
   src/link/amc.cpp
   src/link/chanmem.cpp
   src/link/probe.cpp
+  src/link/mask.cpp
   src/tcp/server.cpp
   src/tcp/control.cpp
   src/fec/crc.cpp

@@ -18,6 +18,7 @@
 
 #include "link/amc.hpp"
 #include "link/arq.hpp"
+#include "link/mask.hpp"
 #include "link/probe.hpp"
 #include "link/frame.hpp"
 #include "link/fsm.hpp"
@@ -30,6 +31,7 @@ namespace skw {
 struct EngineConfig {
   HandshakePolicy policy;
   int arqMaxRetries = 8;
+  bool maskingEnabled = true;  // negotiated via kCapMasking as well
 };
 
 class LinkEngine {
@@ -86,6 +88,27 @@ class LinkEngine {
   std::optional<Amc> amc_;
   HarqChase harq_;  // chase soft-combining across retransmissions
   ProbeGate probeGate_;
+  // Carrier masking (per direction): txMask_ = what the PEER asked us to
+  // zero when transmitting; rxMask_ = what we asked the peer to zero
+  // (applies to our RX once the peer ACKs). Spread modes skip masking.
+  std::optional<MaskDetector> maskDet_;
+  CarrierMask txMask_;
+  CarrierMask rxMask_;
+  CarrierMask pendingRxMask_;
+  int maskEpoch_ = 0;
+  int pendingMaskEpoch_ = -1;
+  double maskRetryAt_ = 0.0;
+  int maskTries_ = 0;
+
+ public:
+  int txMaskedCount() const {
+    return txMask_.maskedCount(cfg_.policy.family);
+  }
+  int rxMaskedCount() const {
+    return rxMask_.maskedCount(cfg_.policy.family);
+  }
+
+ private:
   // Mode-control ownership: the session INITIATOR drives AMC decisions
   // and MODE_CHANGE; the responder's channel view reaches it via ACK SNR
   // reports. Two independent controllers would collide mid-air (observed:

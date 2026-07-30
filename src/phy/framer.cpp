@@ -157,11 +157,12 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
 
 int appendOfdmSymbols(Family family, Constellation constellation, int spread,
                       CpMode cp, std::span<const uint8_t> codedBits,
-                      int symIdx0, std::vector<cfloat>& out) {
+                      int symIdx0, std::vector<cfloat>& out,
+                      const CarrierMask* mask) {
   const int bps = bitsPerSymbol(constellation);
   Fft fft(kFftBaseband);
   const int cpLen = kCpSamplesAudio[size_t(cp)] / kDecimation;
-  const int G = spreadGroupSymbols(family, spread);
+  const int G = spreadGroupSymbols(family, spread, mask);
 
   size_t bitPos = 0;
   int symIdx = symIdx0;
@@ -173,7 +174,7 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
         size_t(G),
         std::vector<cfloat>(size_t(kFftBaseband), cfloat(0, 0)));
     for (int g = 0; g < G; ++g) {
-      auto lay = symbolLayout(family, symIdx + g);
+      auto lay = symbolLayout(family, symIdx + g, mask);
       for (int c : lay.pilotCarriers) {
         freq[size_t(g)][size_t(carrierToBasebandBin(family, c))] =
             pilotValue(c, symIdx + g);
@@ -235,7 +236,7 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
   size_t remaining = (p.payload.size() - piggy) * 8;
   // Payload symbols: each codeword is emitted as its own group-aligned
   // run (mirrors buildFrameBaseband's per-codeword appendOfdmSymbols).
-  const int pG = spreadGroupSymbols(p.family, md.spread);
+  const int pG = spreadGroupSymbols(p.family, md.spread, p.mask);
   int psym = 0;
   while (remaining > 0) {
     const LdpcCode& pcode =
@@ -245,7 +246,7 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
     int pbits = pcode.n();
     while (pbits > 0) {
       pbits -= sourceSymbolsPerGroup(p.family, g.headerSymbols + psym,
-                                     md.spread) *
+                                     md.spread, p.mask) *
                bitsPerSymbol(md.constellation);
       psym += pG;
     }
@@ -283,7 +284,7 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
                               fb.headerCoded, 0, frame);
   for (const auto& cw : fb.payloadCoded) {
     sym += appendOfdmSymbols(p.family, md.constellation, md.spread, p.cpMode,
-                             cw, sym, frame);
+                             cw, sym, frame, p.mask);
   }
 
   // PAPR soft clip at +8 dB over current RMS.

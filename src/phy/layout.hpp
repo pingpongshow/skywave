@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdint>
@@ -57,10 +58,34 @@ struct SymbolLayout {
   std::vector<int> dataCarriers;
 };
 
-inline SymbolLayout symbolLayout(Family f, int symIdx) {
+// Carrier mask (LINK_ADAPTATION.md "Carrier Masking"): wire-compatible
+// bitmap, bit set = carrier USABLE (LSB = lowest active carrier).
+// Default: everything usable. Masked carriers carry no data and no
+// pilots (skipped, not relocated - the delay-domain channel estimator
+// interpolates across the gap). The mask applies to PAYLOAD symbols
+// only; header symbols always use the full carrier set so any receiver
+// (including monitors) can decode the self-describing header.
+struct CarrierMask {
+  std::array<uint8_t, 9> bits;
+  CarrierMask() { bits.fill(0xFF); }
+  bool usable(int c) const {
+    return (bits[size_t(c >> 3)] >> (c & 7)) & 1;
+  }
+  void exclude(int c) { bits[size_t(c >> 3)] &= uint8_t(~(1u << (c & 7))); }
+  int maskedCount(Family f) const {
+    int m = 0;
+    for (int c = 0; c < plan(f).carriers(); ++c) m += usable(c) ? 0 : 1;
+    return m;
+  }
+  bool operator==(const CarrierMask&) const = default;
+};
+
+inline SymbolLayout symbolLayout(Family f, int symIdx,
+                                 const CarrierMask* mask = nullptr) {
   SymbolLayout out;
   const int n = plan(f).carriers();
   for (int c = 0; c < n; ++c) {
+    if (mask && !mask->usable(c)) continue;
     if (isPilotCarrier(c, symIdx)) out.pilotCarriers.push_back(c);
     else out.dataCarriers.push_back(c);
   }
@@ -71,13 +96,15 @@ inline SymbolLayout symbolLayout(Family f, int symIdx) {
 // data carriers can hold at least one spread-S source symbol. For most
 // family/spread combinations the group is a single symbol; NARROW at S16
 // (11-12 data carriers) needs 2 symbols - frequency+time spreading.
-inline int spreadGroupSymbols(Family f, int spread) {
+inline int spreadGroupSymbols(Family f, int spread,
+                              const CarrierMask* mask = nullptr) {
   // Minimum data carriers over the 8-symbol pilot cycle.
   int minNd = 1 << 30;
   for (int s = 0; s < kPilotSpacing; ++s) {
     minNd = std::min(minNd,
-                     int(symbolLayout(f, s).dataCarriers.size()));
+                     int(symbolLayout(f, s, mask).dataCarriers.size()));
   }
+  minNd = std::max(minNd, 1);
   int g = 1;
   while (g * minNd < spread) ++g;
   return g;
@@ -85,11 +112,12 @@ inline int spreadGroupSymbols(Family f, int spread) {
 
 // Source (pre-spreading) constellation symbols carried by one spread group
 // starting at symIdx.
-inline int sourceSymbolsPerGroup(Family f, int symIdx, int spread) {
-  const int g = spreadGroupSymbols(f, spread);
+inline int sourceSymbolsPerGroup(Family f, int symIdx, int spread,
+                                 const CarrierMask* mask = nullptr) {
+  const int g = spreadGroupSymbols(f, spread, mask);
   int pool = 0;
   for (int s = 0; s < g; ++s) {
-    pool += int(symbolLayout(f, symIdx + s).dataCarriers.size());
+    pool += int(symbolLayout(f, symIdx + s, mask).dataCarriers.size());
   }
   return pool / spread;
 }

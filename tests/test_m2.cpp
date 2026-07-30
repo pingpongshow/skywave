@@ -34,7 +34,7 @@ struct Pair {
     EngineConfig c;
     c.policy.ownCall = call;
     c.policy.family = fam;
-    c.policy.caps = kCapZstd | kCapResume;
+    c.policy.caps = kCapZstd | kCapResume | kCapMasking;
     return c;
   }
 
@@ -265,6 +265,42 @@ TEST_CASE(m3_promotion_through_probe) {
   CHECK(best >= 11);  // crossed the probe gate
   for (int i = 0; i < 12; ++i) p.step();
   CHECK_EQ(p.a.sessionMode(), p.b.sessionMode());
+}
+
+TEST_CASE(m3_mask_excision) {
+  // Persistent narrowband tone in the A->B direction after connect: B's
+  // per-carrier SNR collapses around the tone, B sends MASK_UPDATE, A
+  // zeroes those carriers on TX, and the transfer completes. The tone
+  // sits exactly on a carrier (baseband +300 Hz = bin 8, WIDE idx 40).
+  Pair p(16.0, 88);
+  CHECK(p.connect());
+  CHECK(p.a.pinMode(10, p.now));
+  for (int i = 0; i < 40 && p.b.sessionMode() != 10; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), 10);
+  // Interference starts.
+  p.chanAB.toneHz = 300.0;
+  p.chanAB.toneAmp = 0.35;
+  std::vector<uint8_t> blob(10 * 1024);
+  for (size_t i = 0; i < blob.size(); ++i) blob[i] = uint8_t(i * 61 + 9);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  bool masked = false;
+  for (int i = 0; i < 6000 && got.size() < blob.size(); ++i) {
+    p.step();
+    if (!masked && p.a.txMaskedCount() > 0) {
+      masked = true;
+      std::printf("mask_excision: A masks %d carriers (B rx-side %d)\n",
+                  p.a.txMaskedCount(), p.b.rxMaskedCount());
+    }
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  CHECK(masked);                 // the exchange actually happened
+  CHECK(p.b.rxMaskedCount() > 0);  // and B expects the masked TX
+  CHECK_EQ(int(got.size()), int(blob.size()));
+  CHECK(got == blob);
+  CHECK(p.a.state() == FsmState::Connected);
 }
 
 SKYTEST_MAIN

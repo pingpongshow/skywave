@@ -107,6 +107,7 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
     P_[size_t(t) * T + t] = 0.05 * qDiag_[size_t(t)] / qScale;
   }
   hVar_ = 0.0;
+  residEma_.assign(size_t(n), -1.0);
 }
 
 double ChannelTracker::snrDb() const {
@@ -119,7 +120,7 @@ double ChannelTracker::snrDb() const {
 void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
   const int n = plan(family_).carriers();
   const int T = numTaps_;
-  auto lay = symbolLayout(family_, symIdx);
+  auto lay = symbolLayout(family_, symIdx, mask_);
   const int np = int(lay.pilotCarriers.size());
   if (np == 0) return;
 
@@ -150,17 +151,24 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
   double pilotPow = 0.0;
   std::complex<double> gnum(0, 0);
   double gden = 0;
-  for (int k = 0; k < np; ++k) {
-    std::complex<double> pred(0, 0);
-    const cfloat* row = rows[size_t(k)];
-    for (int t = 0; t < T; ++t) {
-      pred += std::complex<double>(row[t].real(), row[t].imag()) *
-              g_[size_t(t)];
+  {
+    int k = 0;
+    for (int c : lay.pilotCarriers) {
+      std::complex<double> pred(0, 0);
+      const cfloat* row = rows[size_t(k)];
+      for (int t = 0; t < T; ++t) {
+        pred += std::complex<double>(row[t].real(), row[t].imag()) *
+                g_[size_t(t)];
+      }
+      const double r2c = std::norm(m[size_t(k)] - pred);
+      resid += r2c;
+      double& e = residEma_[size_t(c)];
+      e = e < 0 ? r2c : e + 0.3 * (r2c - e);
+      pilotPow += std::norm(pred);
+      gnum += m[size_t(k)] * std::conj(pred);
+      gden += std::norm(pred);
+      ++k;
     }
-    resid += std::norm(m[size_t(k)] - pred);
-    pilotPow += std::norm(pred);
-    gnum += m[size_t(k)] * std::conj(pred);
-    gden += std::norm(pred);
   }
   resid /= np;
   pilotPow /= np;

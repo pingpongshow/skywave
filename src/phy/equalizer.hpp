@@ -33,6 +33,10 @@ class ChannelTracker {
   // order; bins is the full 320-bin FFT output (modified in place).
   void processSymbol(std::span<cfloat> bins, int symIdx);
 
+  // Session carrier mask (payload symbols): masked pilots are skipped -
+  // no measurement is taken; the tap-domain model interpolates.
+  void setMask(const CarrierMask* mask) { mask_ = mask; }
+
   const std::vector<cfloat>& h() const { return h_; }
   // Effective noise for LLR scaling: measurement noise plus the filter's
   // mean per-carrier posterior variance. When the estimate is genuinely
@@ -40,6 +44,10 @@ class ChannelTracker {
   // confidently wrong LLRs from a mis-rotated H.
   double noiseVar() const { return noiseVar_ + hVar_; }
   double snrDb() const;             // mean per-carrier SNR estimate
+  // Per-carrier pilot-residual EMA: interference-aware quality (a tone
+  // INFLATES |H| but explodes the residual; carrier quality must come
+  // from residuals, not |H|^2 - LINK_ADAPTATION.md mask detection).
+  const std::vector<double>& carrierResid() const { return residEma_; }
   double cpePhase() const {
     return std::atan2(lastGain_.imag(), lastGain_.real());
   }
@@ -59,6 +67,8 @@ class ChannelTracker {
   // measurement update. This handles fading DYNAMICS correctly - the
   // former sliding-window LS assumed a quasi-static shape and collapsed
   // mid-fade when tap-relative phases rotated within the window.
+  const CarrierMask* mask_ = nullptr;
+  std::vector<double> residEma_;    // per carrier; <0 = never visited
   int numTaps_ = 0;
   double rho_ = 0.999;              // per-symbol tap correlation
   std::vector<std::complex<double>> g_;      // tap state (T)

@@ -131,7 +131,13 @@ void Chansim::process(std::span<const cfloat> in, std::vector<cfloat>& out) {
       y *= cfloat(float(std::cos(cfoPhase_)), float(std::sin(cfoPhase_)));
     }
 
-    // AWGN.
+    // Narrowband interferer (persistent tone), then AWGN.
+    if (p_.toneAmp > 0.0) {
+      tonePhase_ += 2.0 * M_PI * p_.toneHz / kFsBaseband;
+      if (tonePhase_ > 2.0 * M_PI) tonePhase_ -= 2.0 * M_PI;
+      y += float(p_.toneAmp) * cfloat(float(std::cos(tonePhase_)),
+                                      float(std::sin(tonePhase_)));
+    }
     if (noiseStd_ > 0.0 && p_.snr3kDb < 90.0) {
       y += gaussianPair(noiseRng_, noiseStd_);
     }
