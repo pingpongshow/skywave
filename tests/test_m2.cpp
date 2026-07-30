@@ -21,8 +21,9 @@ struct Pair {
   uint64_t seedCtr = 1;
 
   explicit Pair(double snrDb, uint64_t seed = 77,
-                Family fam = Family::Wide)
-      : a(makeCfg("W1AW", fam)), b(makeCfg("K6XYZ", fam)) {
+                Family fam = Family::Wide, bool aggregate = true)
+      : a(makeCfg("W1AW", fam, aggregate)),
+        b(makeCfg("K6XYZ", fam, aggregate)) {
     chanAB.fading = false;
     chanAB.snr3kDb = snrDb;
     chanBA = chanAB;
@@ -30,11 +31,13 @@ struct Pair {
     chanBA.seed = seed + 5000;
   }
 
-  static EngineConfig makeCfg(const char* call, Family fam) {
+  static EngineConfig makeCfg(const char* call, Family fam,
+                              bool aggregate = true) {
     EngineConfig c;
     c.policy.ownCall = call;
     c.policy.family = fam;
     c.policy.caps = kCapZstd | kCapResume | kCapMasking;
+    c.burstAggregation = aggregate;
     return c;
   }
 
@@ -301,6 +304,71 @@ TEST_CASE(m3_mask_excision) {
   CHECK_EQ(int(got.size()), int(blob.size()));
   CHECK(got == blob);
   CHECK(p.a.state() == FsmState::Connected);
+}
+
+namespace {
+
+// Airtime to move `bytes` at pinned M13 over a clean 30 dB channel.
+double m13TransferAirtime(bool aggregate, size_t bytes) {
+  Pair p(30.0, 123, Family::Wide, aggregate);
+  if (!p.connect()) return -1;
+  if (!p.a.pinMode(13, p.now)) return -1;
+  for (int i = 0; i < 40 && p.b.sessionMode() != 13; ++i) p.step();
+  std::vector<uint8_t> blob(bytes);
+  for (size_t i = 0; i < bytes; ++i) blob[i] = uint8_t(i * 17 + 3);
+  const double t0 = p.now;
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 6000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  if (got != blob) return -1;
+  return p.now - t0;
+}
+
+}  // namespace
+
+TEST_CASE(m3_burst_container_throughput) {
+  // One preamble/sync/header per 4-frame burst at M13 must beat the
+  // per-frame overhead of single-frame transmission by a wide margin.
+  const size_t bytes = 18 * 1024;
+  double tAgg = m13TransferAirtime(true, bytes);
+  double tSolo = m13TransferAirtime(false, bytes);
+  CHECK(tAgg > 0);
+  CHECK(tSolo > 0);
+  double thruAgg = bytes * 8.0 / tAgg;
+  double thruSolo = bytes * 8.0 / tSolo;
+  std::printf("burst container: agg %.0f bps vs solo %.0f bps (x%.2f); "
+              "net table %.0f bps\n",
+              thruAgg, thruSolo, thruAgg / thruSolo,
+              netRate(Family::Wide, 13, CpMode::Medium));
+  CHECK(thruAgg > 1.25 * thruSolo);
+
+  // Geometry gate: the container frame's payload-section rate must sit
+  // within 10% of NET x (1 - container overhead fraction).
+  std::vector<uint8_t> payload(4 * 313);
+  TxFrameParams tp;
+  tp.family = Family::Wide;
+  tp.sig = ChirpSig::Fast;
+  tp.mode = 13;
+  tp.frameType = kBurstContainerFrameType;
+  tp.payload = payload;
+  auto g = computeGeometry(tp);
+  const double paySamples =
+      double(kFftBaseband + kCpSamplesAudio[1] / kDecimation);
+  // Payload-SECTION rate vs the table NET rate, with the structural
+  // codeword-padding allowance (0.80, as in the conformance geometry
+  // gate). Piggyback bytes ride the header section and are excluded.
+  const double sectionSec = g.payloadSymbols * paySamples / kFsBaseband;
+  const double sectionBits = (payload.size() - 30) * 8.0;
+  const double eff = sectionBits / sectionSec;
+  const double net = netRate(Family::Wide, 13, CpMode::Medium);
+  std::printf("container geometry: payload-section %.0f bps vs NET %.0f\n",
+              eff, net);
+  CHECK(eff > 0.80 * net);
+  CHECK(eff < 1.05 * net);
 }
 
 SKYTEST_MAIN

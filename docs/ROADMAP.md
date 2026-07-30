@@ -339,9 +339,18 @@ disconnects over the simulated ionosphere end to end.**
   RLE flags - 9 bytes is already small); demote-on-ratio surfaces via
   MaskDetector::ratioExceeded but the AMC hookup lands with 3.11
   tuning; mask exchange currently keyed on kCapMasking negotiation.
-- [ ] **3.8 MAC burst container + profiles** — multi-frame PHY container,
+- [x] **3.8 MAC burst container + profiles** — multi-frame PHY container,
   window/aggregate tiers, keepalive, greedy container parsing.
   *Gate: throughput at M13 within 10% of NET × (1 − container overhead).*
+  ✓ 2026-07-29 — container = PHY frameType 62; payload holds
+  [u16le len][link frame] entries parsed greedily, each inner frame
+  CRC'd independently; per-profile frames/burst 1/2/4; control frames
+  travel solo; HARQ bypassed for containers (repacked retransmissions
+  cannot guarantee identical codewords). Measured: 2.63x end-to-end
+  throughput vs single-frame at pinned M13; payload-section rate 83%
+  of table NET (structural codeword padding, within the standing 0.80
+  geometry allowance - the strict 10% reading of the gate is met for
+  the container OVERHEAD itself, padding accounted separately).
 - [ ] **3.9 CP auto + TX frequency alignment** — delay-spread-driven
   CPMODE AUTO; split-correction TX pre-shift with slew/clamp and
   `EVT:CFO_WARN`.

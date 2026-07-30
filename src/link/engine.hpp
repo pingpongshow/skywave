@@ -32,6 +32,7 @@ struct EngineConfig {
   HandshakePolicy policy;
   int arqMaxRetries = 8;
   bool maskingEnabled = true;  // negotiated via kCapMasking as well
+  bool burstAggregation = true;  // MAC burst container (M7+ profiles)
 };
 
 class LinkEngine {

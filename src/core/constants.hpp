@@ -204,6 +204,13 @@ inline constexpr double fadingFloorDb(Family f, int mode) {
   return kFadingFloors[size_t(f)][size_t(mode)];
 }
 
+// PHY frame_type value marking a MAC burst container (PROTOCOL.md "MAC
+// Burst Profiles"): the PHY payload holds multiple link frames packed as
+// [u16le length][frame bytes] entries, parsed greedily. Containers are
+// excluded from HARQ chase (retransmissions repack, so the frame-identity
+// key cannot guarantee identical codewords).
+inline constexpr uint8_t kBurstContainerFrameType = 62;
+
 // --------------------------------------------------------------------- LDPC
 inline constexpr int kLdpcNShort = 648;    // control frames, PHY header
 inline constexpr int kLdpcNLong  = 1944;   // data frames

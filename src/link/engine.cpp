@@ -32,6 +32,12 @@ int macWindow(int mode) {
   return 8;
 }
 
+int framesPerBurst(int mode) {
+  if (mode <= 6) return 1;
+  if (mode <= 9) return 2;
+  return 4;
+}
+
 }  // namespace
 
 size_t dataSegmentBytes(int mode) {
@@ -195,21 +201,23 @@ void LinkEngine::pumpData(double now) {
     outQueue_.push_back(std::move(f));
     return;
   }
-  if (txBuffer_.empty() || !arqTx_.canSend()) return;
-  const size_t n = std::min(txBuffer_.size(), dataSegmentBytes(mode_));
-  std::vector<uint8_t> seg(txBuffer_.begin(), txBuffer_.begin() + long(n));
-  txBuffer_.erase(txBuffer_.begin(), txBuffer_.begin() + long(n));
-  auto seq = arqTx_.send(seg, now);
-  if (!seq) return;
-  OutFrame f;
-  f.env.type = LinkType::Data;
-  f.env.sessionId = sessionId_;
-  f.env.sequence = *seq;
-  f.env.ackBase = arqRx_.ackBase();
-  f.body = DataBody{0, std::move(seg)}.pack();
-  f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
-  f.mode = mode_;
-  outQueue_.push_back(std::move(f));
+  for (int k = 0; k < framesPerBurst(mode_); ++k) {
+    if (txBuffer_.empty() || !arqTx_.canSend()) return;
+    const size_t n = std::min(txBuffer_.size(), dataSegmentBytes(mode_));
+    std::vector<uint8_t> seg(txBuffer_.begin(), txBuffer_.begin() + long(n));
+    txBuffer_.erase(txBuffer_.begin(), txBuffer_.begin() + long(n));
+    auto seq = arqTx_.send(seg, now);
+    if (!seq) return;
+    OutFrame f;
+    f.env.type = LinkType::Data;
+    f.env.sessionId = sessionId_;
+    f.env.sequence = *seq;
+    f.env.ackBase = arqRx_.ackBase();
+    f.body = DataBody{0, std::move(seg)}.pack();
+    f.sig = mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    f.mode = mode_;
+    outQueue_.push_back(std::move(f));
+  }
 }
 
 std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
@@ -371,6 +379,44 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (outQueue_.empty()) return std::nullopt;
   OutFrame f = std::move(outQueue_.front());
   outQueue_.pop_front();
+  // MAC burst container: pack consecutive DATA frames of the same
+  // mode/signature into one PHY frame (one preamble/sync/header for the
+  // whole burst). Control frames always travel solo.
+  const int quota = framesPerBurst(f.mode);
+  if (cfg_.burstAggregation && f.env.type == LinkType::Data && quota > 1 &&
+      !outQueue_.empty()) {
+    std::vector<OutFrame> group;
+    group.push_back(std::move(f));
+    while (int(group.size()) < quota && !outQueue_.empty() &&
+           outQueue_.front().env.type == LinkType::Data &&
+           outQueue_.front().mode == group[0].mode &&
+           outQueue_.front().sig == group[0].sig) {
+      group.push_back(std::move(outQueue_.front()));
+      outQueue_.pop_front();
+    }
+    if (group.size() > 1) {
+      std::vector<uint8_t> payload;
+      for (auto& g : group) {
+        auto raw = packFrame(g.env, g.body);
+        payload.push_back(uint8_t(raw.size() & 0xFF));
+        payload.push_back(uint8_t(raw.size() >> 8));
+        payload.insert(payload.end(), raw.begin(), raw.end());
+      }
+      TxFrameParams tp;
+      tp.family = cfg_.policy.family;
+      tp.sig = group[0].sig;
+      tp.mode = group[0].mode;
+      tp.frameType = kBurstContainerFrameType;
+      tp.seqLow = uint8_t(group[0].env.sequence & 0xFF);
+      tp.payload = payload;
+      if (group[0].mode >= 8 &&
+          txMask_.maskedCount(cfg_.policy.family) > 0) {
+        tp.mask = &txMask_;
+      }
+      return buildFrameBaseband(tp);
+    }
+    f = std::move(group[0]);
+  }
   return buildBurst(f);
 }
 
@@ -393,6 +439,22 @@ void LinkEngine::rxBurst(std::span<const cfloat> samples, double now) {
                    ProbeAckBody{res->header.seqLow, 0, kProbeFailed}.pack(),
                    mode_ <= 7 ? ChirpSig::Robust : ChirpSig::Fast,
                    std::min(mode_, 8));
+    }
+    return;
+  }
+  if (res->header.frameType == kBurstContainerFrameType) {
+    // Greedy container parse: [u16le len][link frame] entries; each
+    // inner frame carries its own CRC and dispatches independently.
+    QualityMeasurement q{res->snrDb, 0, res->cfoHz};
+    size_t off = 0;
+    const auto& pl = res->payload;
+    while (off + 2 <= pl.size()) {
+      const size_t len = size_t(pl[off]) | (size_t(pl[off + 1]) << 8);
+      off += 2;
+      if (len == 0 || off + len > pl.size()) break;
+      auto inner = parseFrame({pl.data() + off, len});
+      off += len;
+      if (inner) onFrame(*inner, q, now);
     }
     return;
   }

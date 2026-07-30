@@ -257,6 +257,9 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     // model interpolates the gap.
     walker.mask = payloadMask;
     tracker.setMask(payloadMask);
+    // Burst containers repack on retransmission: identical-codeword
+    // combining cannot be guaranteed, so HARQ is bypassed for them.
+    if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
     // Info chunks are k bits each, which is not byte-aligned for every
     // rate (r5/6: 1620 bits): concatenate BITS across codewords, convert
     // to bytes once. Codeword sizing mirrors the TX rule.
