@@ -62,6 +62,11 @@ class LinkEngine {
   // Control-port notification lines ("EVT:..."), drained by the caller.
   std::vector<std::string> takeEvents();
 
+  // --- session resume (4.4) --------------------------------------------
+  // True while the current connection was established via RESUME.
+  bool sessionResumed() const { return resumed_; }
+  bool hasResumeContext() const { return resumeCtx_.valid; }
+
   FsmState state() const { return fsm_.state(); }
   FsmDiscCause lastDiscCause() const { return fsm_.lastDiscCause(); }
   int sessionMode() const { return mode_; }
@@ -176,6 +181,37 @@ class LinkEngine {
   FileRx fileRx_;
   uint32_t nextFileId_ = 1;
   std::vector<std::string> events_;
+  // Session resume (4.4): token minted at START_ACK, bound to the
+  // family + callsign pair; a failure-mode drop pauses the pipeline and
+  // a reconnect within the window continues sequence spaces + file
+  // checkpoints (PROTOCOL.md "Session Resume").
+  struct ResumeCtx {
+    bool valid = false;
+    std::array<uint8_t, 8> token{};
+    std::string remoteCall;
+    Family family = Family::Wide;
+    uint16_t caps = 0;
+    int mode = 4;
+    CpMode cp = kCpDefault;
+    double freshAt = 0.0;  // window runs from mint, refreshed at drop
+  };
+  bool resumeUsable(double now) const;
+  std::array<uint8_t, 8> mintToken(double now);
+  void discardPausedPipeline();  // clean start: paused state is dead
+  ResumeCtx resumeCtx_;
+  bool pausedForResume_ = false;  // pipeline held across a broken link
+  bool sentResumeReq_ = false;    // this handshake attempted RESUME
+  bool resuming_ = false;         // accept path: continue, don't reset
+  bool resumed_ = false;
+  bool sendResumeAckInstead_ = false;
+  uint16_t resumePeerNext_ = 0;   // peer's next-expected ARQ sequence
+  bool resumePeerHasCkpt_ = false;
+  uint32_t resumePeerCkptId_ = 0;
+  uint64_t resumePeerCkptOff_ = 0;
+  uint64_t tokenCtr_ = 0;
+  // Fault-mode teardown (ARQ exhaustion, peer's for-cause DISC, idle
+  // timeout): keeps the resume token alive; operator DISC does not.
+  bool faultDisc_ = false;
 };
 
 }  // namespace skw

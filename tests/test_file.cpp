@@ -145,7 +145,7 @@ struct Pair {
     return c;
   }
 
-  void step(bool dropAB = false) {
+  void step(bool dropAB = false, bool dropBA = false) {
     auto burstA = a.tick(now);
     auto burstB = b.tick(now);
     double dt = 0.05;
@@ -161,8 +161,19 @@ struct Pair {
       to.rxBurst(y, now);
     };
     if (burstA && !dropAB) push(*burstA, b, chanAB);
-    if (burstB) push(*burstB, a, chanBA);
+    if (burstB && !dropBA) push(*burstB, a, chanBA);
     now += dt;
+  }
+
+  // Total link death until both ends give the session up.
+  bool blackout() {
+    for (int i = 0; i < 4000 && (a.state() != FsmState::Idle ||
+                                 b.state() != FsmState::Idle);
+         ++i) {
+      step(true, true);
+      now += 2.0;  // let ARQ/DISC/idle timers run their course
+    }
+    return a.state() == FsmState::Idle && b.state() == FsmState::Idle;
   }
 
   bool connect() {
@@ -229,6 +240,130 @@ TEST_CASE(file_two_modem_transfer) {
   CHECK(txDone);
   CHECK(!p.a.fileTxActive());
   std::printf("file transfer done in %.0f s simulated\n", p.now);
+}
+
+TEST_CASE(resume_wire_roundtrip) {
+  StartAckBody sa;
+  sa.finalMode = 8;
+  sa.hasResumeToken = true;
+  sa.resumeToken = {1, 2, 3, 4, 5, 6, 7, 8};
+  auto q = StartAckBody::parse(sa.pack());
+  CHECK(q.has_value());
+  CHECK(q->hasResumeToken);
+  CHECK(q->resumeToken == sa.resumeToken);
+
+  ResumeReqBody rr;
+  rr.token = sa.resumeToken;
+  rr.lastRxSeq = 555;
+  rr.hasFileCkpt = true;
+  rr.fileId = 42;
+  rr.fileOffset = 65536;
+  auto r2 = ResumeReqBody::parse(rr.pack());
+  CHECK(r2.has_value());
+  CHECK(r2->token == rr.token);
+  CHECK_EQ(int(r2->lastRxSeq), 555);
+  CHECK(r2->hasFileCkpt);
+  CHECK_EQ(int(r2->fileOffset), 65536);
+
+  ResumeAckBody ra;
+  ra.lastRxSeq = 700;
+  auto a2 = ResumeAckBody::parse(ra.pack());
+  CHECK(a2.has_value());
+  CHECK(!a2->hasFileCkpt);
+  CHECK_EQ(int(a2->lastRxSeq), 700);
+
+  auto nak = StartNakBody::parse(
+      StartNakBody{StartNakReason::ResumeInvalid}.pack());
+  CHECK(nak.has_value());
+  CHECK(nak->reason == StartNakReason::ResumeInvalid);
+}
+
+TEST_CASE(file_resume_after_link_death) {
+  // ROADMAP 4.4 gate: kill the link mid-transfer, reconnect inside the
+  // resume window, and the file completes CRC-clean from the checkpoint
+  // - no restart from zero.
+  Pair p(25.0, 9100);
+  CHECK(p.connect());
+  auto blob = randomBytes(80 * 1024, 21);
+  CHECK(p.a.sendFile("resume.bin", blob, 1785600000));
+  for (int i = 0; i < 4000 && p.b.fileRxCheckpoint() < 32 * 1024; ++i) {
+    p.step();
+  }
+  CHECK(p.b.fileRxCheckpoint() >= 32 * 1024);
+  // The link dies. Both sides give up the session but keep the token,
+  // pipeline, and file state (failure-mode teardown, not operator DISC).
+  CHECK(p.blackout());
+  CHECK(p.a.hasResumeContext());
+  CHECK(p.b.hasResumeContext());
+  const uint64_t ckpt = p.b.fileRxCheckpoint();
+  CHECK(ckpt >= 32 * 1024);
+  std::printf("resume: link died at checkpoint %llu\n",
+              (unsigned long long)ckpt);
+  // Reconnect well inside the 10 min window.
+  p.now += 30.0;
+  p.a.connectTo("K6XYZ", p.now);
+  for (int i = 0; i < 400 && (p.a.state() != FsmState::Connected ||
+                              p.b.state() != FsmState::Connected);
+       ++i) {
+    p.step();
+  }
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(p.a.sessionResumed());
+  CHECK(p.b.sessionResumed());
+  // The transfer continues to a CRC-clean completion.
+  std::optional<ReceivedFile> got;
+  for (int i = 0; i < 6000 && !got; ++i) {
+    p.step();
+    got = p.b.takeReceivedFile();
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  CHECK(got.has_value());
+  CHECK(got->crcOk);
+  CHECK(got->data == blob);
+  CHECK(got->meta.name == "resume.bin");
+}
+
+TEST_CASE(resume_invalid_falls_back_to_clean_start) {
+  // The responder lost its state (power cycle): RESUME_REQ draws
+  // START_NAK(ResumeInvalid) and the same call completes as a clean
+  // session - never a protocol failure.
+  Pair p(25.0, 9200);
+  CHECK(p.connect());
+  auto blob = randomBytes(48 * 1024, 22);
+  CHECK(p.a.sendFile("lost.bin", blob, 0));
+  for (int i = 0; i < 4000 && p.b.fileRxCheckpoint() < 32 * 1024; ++i) {
+    p.step();
+  }
+  CHECK(p.blackout());
+  CHECK(p.a.hasResumeContext());
+  p.b = LinkEngine(Pair::mk("K6XYZ"));  // responder restarted: no token
+  p.now += 10.0;
+  p.a.connectTo("K6XYZ", p.now);
+  for (int i = 0; i < 400 && (p.a.state() != FsmState::Connected ||
+                              p.b.state() != FsmState::Connected);
+       ++i) {
+    p.step();
+  }
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(!p.a.sessionResumed());
+  CHECK(!p.a.hasResumeContext() || p.a.sessionResumed() == false);
+  // The paused file died with the fallback; the operator is told.
+  bool fileError = false;
+  for (auto& e : p.a.takeEvents()) {
+    if (e.find("EVT:FILE_ERROR lost.bin") == 0) fileError = true;
+  }
+  CHECK(fileError);
+  CHECK(!p.a.fileTxActive());
+  // The clean session still works end to end.
+  const std::vector<uint8_t> msg = {'o', 'k'};
+  p.a.sendData(msg);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 400 && got.size() < msg.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == msg);
 }
 
 SKYTEST_MAIN

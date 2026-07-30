@@ -290,15 +290,25 @@ app bytes -> coalesce window (250 ms or window-full)
 
 ## Session Resume
 
-- negotiated capability; token minted at `START_ACK` (8-byte random ID bound
-  to family + callsign pair)
-- on reconnect within the resume window (10 min), initiator sends
-  `RESUME_REQ(token, last_rx_seq)` after `CALL_ACK`; responder validates and
-  answers `RESUME_ACK(last_rx_seq)` — sequence spaces and any file-transfer
-  checkpoint continue
-- any mismatch falls back to a clean `START` (never a protocol error)
-- resume state is invalidated by family change, crypto state change, or
-  token expiry
+- negotiated capability; token minted at `START_ACK` (8-byte ID bound to
+  family + callsign pair) and **carried in the `START_ACK` body** — both
+  ends hold it, so either may initiate the resumed reconnect
+- on reconnect within the resume window (10 min, running from the drop),
+  initiator sends `RESUME_REQ(token, last_rx_seq[, file_ckpt])` in the
+  `START` slot after `CALL_ACK`; responder validates and answers
+  `RESUME_ACK(last_rx_seq[, file_ckpt])` — sequence spaces continue, and
+  each side's optional `file_ckpt` (file_id, contiguous offset) tells the
+  peer's paused file TX where to rewind (overlap with already-received
+  bytes is absorbed by the receiver)
+- an invalid/expired token draws `START_NAK(reason=RESUME_INVALID)`; the
+  initiator falls back to a clean `START` on the same call (never a
+  protocol error)
+- resume state is invalidated by family change, crypto state change,
+  token expiry — or a **clean disconnect**: only failure-mode teardowns
+  (ARQ retry exhaustion, idle timeout, a peer `DISC` with a for-cause
+  reason) pause the pipeline for resume; an operator `DISC(normal)` ends
+  the session for real, and the `DISC` reason field carries the
+  distinction to the peer
 
 ## Broadcast Traffic
 

@@ -54,6 +54,12 @@ class ArqTx {
   // Fires the ACK timeout: all in-flight unacked frames requeue.
   void tick(double now);
 
+  // Session resume (PROTOCOL.md): drop frames the peer confirmed
+  // (< peerNextSeq), requeue everything still pending with fresh retry
+  // budgets, keep the sequence counter - the sequence space continues.
+  void resumeFrom(uint16_t peerNextSeq, double now);
+  uint16_t nextSeq() const { return nextSeq_; }
+
  private:
   struct Pending {
     uint16_t seq;

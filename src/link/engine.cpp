@@ -46,6 +46,9 @@ int framesPerBurst(int mode) {
   return 4;
 }
 
+// Resume window (PROTOCOL.md "Session Resume").
+constexpr double kResumeWindowSec = 600.0;
+
 }  // namespace
 
 LinkEngine::LinkEngine(EngineConfig cfg)
@@ -88,6 +91,37 @@ std::vector<std::string> LinkEngine::takeEvents() {
   auto out = std::move(events_);
   events_.clear();
   return out;
+}
+
+bool LinkEngine::resumeUsable(double now) const {
+  return resumeCtx_.valid && (cfg_.policy.caps & kCapResume) &&
+         resumeCtx_.remoteCall == remoteCall_ &&
+         resumeCtx_.family == cfg_.policy.family &&
+         (now - resumeCtx_.freshAt) < kResumeWindowSec;
+}
+
+std::array<uint8_t, 8> LinkEngine::mintToken(double now) {
+  // Deterministic hash entropy (time + callsigns + counter): adequate
+  // for v1 link identification, NOT a cryptographic secret - the
+  // crypto layer (Phase 5) authenticates sessions properly.
+  const uint64_t h = skwHash(
+      uint64_t(now * 1e6) ^ (uint64_t(callsignHash24(cfg_.policy.ownCall))
+                             << 40) ^
+      (uint64_t(callsignHash24(remoteCall_)) << 16) ^ ++tokenCtr_);
+  std::array<uint8_t, 8> t{};
+  for (int i = 0; i < 8; ++i) t[size_t(i)] = uint8_t(h >> (8 * i));
+  return t;
+}
+
+void LinkEngine::discardPausedPipeline() {
+  protoTx_.reset();
+  protoRx_.abortMessage();
+  if (fileTx_.active()) {
+    events_.push_back("EVT:FILE_ERROR " + fileTx_.name() +
+                      " disconnected");
+    fileTx_.abort();
+  }
+  pausedForResume_ = false;
 }
 
 // Feed the proto pipeline from an active file transfer, keeping only a
@@ -145,7 +179,7 @@ void LinkEngine::queueControl(LinkType t, std::vector<uint8_t> body,
   outQueue_.push_back(std::move(f));
 }
 
-void LinkEngine::drainFsmActions(double /*now*/) {
+void LinkEngine::drainFsmActions(double now) {
   while (auto a = fsm_.nextAction()) {
     switch (*a) {
       case FsmAction::SendCall:
@@ -161,24 +195,73 @@ void LinkEngine::drainFsmActions(double /*now*/) {
         break;
       }
       case FsmAction::SendStart: {
+        if (resumeUsable(now)) {
+          // Reconnect within the window: RESUME_REQ rides the START
+          // slot; capability set and pipeline continue.
+          sentResumeReq_ = true;
+          sessionCaps_ = resumeCtx_.caps;
+          protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
+          ResumeReqBody rr;
+          rr.token = resumeCtx_.token;
+          rr.lastRxSeq = arqRx_.ackBase();
+          if (fileRx_.inProgress()) {
+            rr.hasFileCkpt = true;
+            rr.fileId = fileRx_.fileId();
+            rr.fileOffset = fileRx_.checkpointOffset();
+          }
+          queueControl(LinkType::ResumeReq, rr.pack(), ChirpSig::Calling,
+                       4);
+          break;
+        }
+        sentResumeReq_ = false;
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
         queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
         break;
       }
-      case FsmAction::SendStartAck:
+      case FsmAction::SendStartAck: {
+        if (sendResumeAckInstead_) {
+          sendResumeAckInstead_ = false;
+          ResumeAckBody ra;
+          ra.lastRxSeq = arqRx_.ackBase();  // resume path: state kept
+          if (fileRx_.inProgress()) {
+            ra.hasFileCkpt = true;
+            ra.fileId = fileRx_.fileId();
+            ra.fileOffset = fileRx_.checkpointOffset();
+          }
+          queueControl(LinkType::ResumeAck, ra.pack(), ChirpSig::Calling,
+                       4);
+          break;
+        }
         // mode_ was fixed in onFrame when START was evaluated.
-        queueControl(LinkType::StartAck, StartAckBody{uint8_t(mode_), {}}.pack(),
-                     ChirpSig::Calling, 4);
+        StartAckBody sa;
+        sa.finalMode = uint8_t(mode_);
+        if (sessionCaps_ & kCapResume) {
+          // Mint the resume token here (PROTOCOL.md): both sides hold
+          // it; either may initiate the resumed reconnect.
+          sa.hasResumeToken = true;
+          sa.resumeToken = mintToken(now);
+          resumeCtx_.valid = true;
+          resumeCtx_.token = sa.resumeToken;
+          resumeCtx_.remoteCall = lastCall_.srcCall;
+          resumeCtx_.family = cfg_.policy.family;
+          resumeCtx_.caps = sessionCaps_;
+          resumeCtx_.freshAt = now;
+        }
+        queueControl(LinkType::StartAck, sa.pack(), ChirpSig::Calling, 4);
         break;
+      }
       case FsmAction::SendStartNak:
         queueControl(LinkType::StartNak,
                      StartNakBody{StartNakReason::Busy}.pack(),
                      ChirpSig::Calling, 4);
         break;
       case FsmAction::SendDisc:
-        queueControl(LinkType::Disc, DiscBody{DiscReason::Normal}.pack(),
+        queueControl(LinkType::Disc,
+                     DiscBody{faultDisc_ ? DiscReason::RetryExhausted
+                                         : DiscReason::Normal}
+                         .pack(),
                      ChirpSig::Robust, 4);
         break;
       case FsmAction::SendDiscAck:
@@ -211,13 +294,38 @@ void LinkEngine::drainFsmActions(double /*now*/) {
         ac.maxMode = cfg_.policy.maxMode;
         amc_.emplace(ac, uint8_t(mode_), 0.0);
         pendingMode_ = -1;
-        const int w = macWindow(mode_);
-        arqTx_ = ArqTx(w, cfg_.arqMaxRetries);
-        arqRx_ = ArqRx(w);
-        updateArqTimeout();
+        if (resuming_) {
+          // RESUME: sequence spaces continue - keep both ARQ engines,
+          // drop what the peer confirmed, requeue the rest.
+          arqTx_.resumeFrom(resumePeerNext_, now);
+          updateArqTimeout();
+          if (fileTx_.active()) {
+            if (resumePeerHasCkpt_ &&
+                resumePeerCkptId_ == fileTx_.fileId()) {
+              // Replay from the peer's persisted checkpoint; the
+              // receiver absorbs overlap with what it already holds.
+              fileTx_.rewindTo(resumePeerCkptOff_);
+            } else if (resumePeerHasCkpt_) {
+              // Peer is mid-way through a DIFFERENT file: ours is dead.
+              events_.push_back("EVT:FILE_ERROR " + fileTx_.name() +
+                                " resume-mismatch");
+              fileTx_.abort();
+            }
+          }
+          resumed_ = true;
+          resuming_ = false;
+          pausedForResume_ = false;
+        } else {
+          if (pausedForResume_) discardPausedPipeline();
+          resumed_ = false;
+          const int w = macWindow(mode_);
+          arqTx_ = ArqTx(w, cfg_.arqMaxRetries);
+          arqRx_ = ArqRx(w);
+          updateArqTimeout();
+        }
         break;
       }
-      case FsmAction::IndicateDisconnected:
+      case FsmAction::IndicateDisconnected: {
         // Drop stale DATA, but keep queued control frames: the teardown
         // handshake's own DISC_ACK is queued in this same drain and must
         // still transmit.
@@ -228,18 +336,28 @@ void LinkEngine::drainFsmActions(double /*now*/) {
                                     f.env.type == LinkType::Ack;
                            }),
             outQueue_.end());
-        protoTx_.reset();
-        protoRx_.abortMessage();  // delivered bytes stay drainable
-        // File TX aborts (4.4 session resume will pause + rewind to the
-        // receiver checkpoint instead); RX state is KEPT - it holds the
-        // checkpoint a resumed session continues from.
-        if (fileTx_.active()) {
-          events_.push_back("EVT:FILE_ERROR " + fileTx_.name() +
-                            " disconnected");
-          fileTx_.abort();
+        // A FAILURE-mode drop with a live resume token pauses the whole
+        // pipeline (proto queues, ARQ state, file transfer) for a
+        // resumed reconnect; a clean/intentional disconnect ends the
+        // session for real. FileRx state is kept either way - it holds
+        // the checkpoint a resumed session continues from.
+        const auto cause = fsm_.lastDiscCause();
+        const bool clean = !faultDisc_ &&
+                           (cause == FsmDiscCause::LocalRequest ||
+                            cause == FsmDiscCause::PeerRequest);
+        faultDisc_ = false;
+        if (clean) resumeCtx_.valid = false;
+        if (resumeCtx_.valid && (sessionCaps_ & kCapResume)) {
+          pausedForResume_ = true;
+          resumeCtx_.mode = mode_;
+          resumeCtx_.cp = cpMode_;
+          resumeCtx_.freshAt = now;  // window runs from the drop
+        } else {
+          discardPausedPipeline();
         }
         ackPending_ = false;
         break;
+      }
     }
   }
 }
@@ -411,6 +529,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   drainFsmActions(now);
   arqTx_.tick(now);
   if (arqTx_.failed() && fsm_.state() == FsmState::Connected) {
+    faultDisc_ = true;  // dead link, not operator intent: resumable
     fsm_.cmdDisconnect(now);
     drainFsmActions(now);
   }
@@ -725,12 +844,82 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto ack = StartAckBody::parse(f.body);
       if (!ack) return;
       mode_ = ack->finalMode;
+      if (ack->hasResumeToken && (sessionCaps_ & kCapResume)) {
+        resumeCtx_.valid = true;
+        resumeCtx_.token = ack->resumeToken;
+        resumeCtx_.remoteCall = remoteCall_;
+        resumeCtx_.family = cfg_.policy.family;
+        resumeCtx_.caps = sessionCaps_;
+        resumeCtx_.freshAt = now;
+      }
       fsm_.rxStartAck(now);
       break;
     }
-    case LinkType::StartNak:
+    case LinkType::StartNak: {
+      auto nak = StartNakBody::parse(f.body);
+      if (nak && nak->reason == StartNakReason::ResumeInvalid &&
+          sentResumeReq_) {
+        // Peer rejected the token: fall back to a clean START in place
+        // (never a session failure). The paused pipeline is dead - the
+        // peer kept nothing to continue from.
+        sentResumeReq_ = false;
+        resumeCtx_.valid = false;
+        discardPausedPipeline();
+        StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
+        sessionCaps_ = s.caps;
+        protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
+        queueControl(LinkType::Start, s.pack(), ChirpSig::Calling, 4);
+        return;  // FSM stays in WaitStartAck for the real START_ACK
+      }
       fsm_.rxStartNak(now);
       break;
+    }
+    case LinkType::ResumeReq: {
+      auto rr = ResumeReqBody::parse(f.body);
+      if (!rr || fsm_.state() != FsmState::CallAnswered) return;
+      const bool ok = resumeCtx_.valid &&
+                      rr->token == resumeCtx_.token &&
+                      lastCall_.srcCall == resumeCtx_.remoteCall &&
+                      cfg_.policy.family == resumeCtx_.family &&
+                      (now - resumeCtx_.freshAt) < kResumeWindowSec;
+      if (!ok) {
+        // Reject the token but stay ready: the peer falls back to a
+        // clean START on this same call (PROTOCOL.md - never fatal).
+        queueControl(LinkType::StartNak,
+                     StartNakBody{StartNakReason::ResumeInvalid}.pack(),
+                     ChirpSig::Calling, 4);
+        return;
+      }
+      resuming_ = true;
+      sendResumeAckInstead_ = true;
+      resumePeerNext_ = rr->lastRxSeq;
+      resumePeerHasCkpt_ = rr->hasFileCkpt;
+      resumePeerCkptId_ = rr->fileId;
+      resumePeerCkptOff_ = rr->fileOffset;
+      sessionCaps_ = resumeCtx_.caps;
+      protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
+      mode_ = resumeCtx_.mode;
+      cpMode_ = resumeCtx_.cp;
+      fsm_.rxStart(now, true);  // emits ResumeAck via the StartAck slot
+      break;
+    }
+    case LinkType::ResumeAck: {
+      auto ra = ResumeAckBody::parse(f.body);
+      if (!ra || !sentResumeReq_ ||
+          fsm_.state() != FsmState::WaitStartAck) {
+        return;
+      }
+      sentResumeReq_ = false;
+      resuming_ = true;
+      resumePeerNext_ = ra->lastRxSeq;
+      resumePeerHasCkpt_ = ra->hasFileCkpt;
+      resumePeerCkptId_ = ra->fileId;
+      resumePeerCkptOff_ = ra->fileOffset;
+      mode_ = resumeCtx_.mode;
+      cpMode_ = resumeCtx_.cp;
+      fsm_.rxStartAck(now);
+      break;
+    }
     case LinkType::Data: {
       auto d = DataBody::parse(f.body);
       if (!d || fsm_.state() != FsmState::Connected) return;
@@ -791,9 +980,16 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       pendingMode_ = -1;
       break;
     }
-    case LinkType::Disc:
+    case LinkType::Disc: {
+      auto d = DiscBody::parse(f.body);
+      if (d && (d->reason == DiscReason::RetryExhausted ||
+                d->reason == DiscReason::IdleTimeout ||
+                d->reason == DiscReason::Fault)) {
+        faultDisc_ = true;  // peer dropped us for cause: resumable
+      }
       fsm_.rxDisc(now);
       break;
+    }
     case LinkType::DiscAck:
       fsm_.rxDiscAck(now);
       break;

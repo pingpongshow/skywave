@@ -198,11 +198,14 @@ std::vector<uint8_t> StartAckBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.u8(finalMode);
-  w.u8(kexResponse.empty() ? 0 : 1);
+  const uint8_t present =
+      uint8_t((kexResponse.empty() ? 0 : 1) | (hasResumeToken ? 2 : 0));
+  w.u8(present);
   if (!kexResponse.empty()) {
     w.u8(uint8_t(kexResponse.size()));
     w.bytes(kexResponse);
   }
+  if (hasResumeToken) w.bytes(resumeToken);
   return out;
 }
 
@@ -211,12 +214,16 @@ std::optional<StartAckBody> StartAckBody::parse(std::span<const uint8_t> b) {
   StartAckBody v;
   v.finalMode = r.u8();
   uint8_t present = r.u8();
-  if (!r.ok() || (present & ~1u)) return std::nullopt;
+  if (!r.ok() || (present & ~3u)) return std::nullopt;
   if (present & 1) {
     uint8_t len = r.u8();
     if (!r.ok() || len == 0 || r.remaining() < len) return std::nullopt;
     v.kexResponse.resize(len);
     if (!r.bytes(v.kexResponse)) return std::nullopt;
+  }
+  if (present & 2) {
+    v.hasResumeToken = true;
+    if (!r.bytes(v.resumeToken)) return std::nullopt;
   }
   if (!r.ok() || r.remaining() != 0) return std::nullopt;
   if (v.finalMode < kFirstMode) v.finalMode = kFirstMode;
@@ -231,7 +238,7 @@ std::vector<uint8_t> StartNakBody::pack() const {
 std::optional<StartNakBody> StartNakBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 1) return std::nullopt;
   if (b[0] < uint8_t(StartNakReason::FamilyMismatch) ||
-      b[0] > uint8_t(StartNakReason::PolicyRefusal)) {
+      b[0] > uint8_t(StartNakReason::ResumeInvalid)) {
     return std::nullopt;
   }
   return StartNakBody{StartNakReason(b[0])};
@@ -350,20 +357,43 @@ std::optional<KeepaliveBody> KeepaliveBody::parse(std::span<const uint8_t> b) {
   return KeepaliveBody{b[0]};
 }
 
+namespace {
+void packFileCkpt(ByteWriter& w, bool has, uint32_t id, uint64_t off) {
+  w.u8(has ? 1 : 0);
+  if (has) {
+    w.u32le(id);
+    w.u64le(off);
+  }
+}
+bool parseFileCkpt(ByteReader& r, bool& has, uint32_t& id, uint64_t& off) {
+  const uint8_t flag = r.u8();
+  if (!r.ok() || flag > 1) return false;
+  has = flag == 1;
+  if (has) {
+    id = r.u32le();
+    off = r.u64le();
+  }
+  return r.ok() && r.remaining() == 0;
+}
+}  // namespace
+
 std::vector<uint8_t> ResumeReqBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.bytes(token);
   w.u16le(lastRxSeq);
+  packFileCkpt(w, hasFileCkpt, fileId, fileOffset);
   return out;
 }
 
 std::optional<ResumeReqBody> ResumeReqBody::parse(std::span<const uint8_t> b) {
-  if (b.size() != 10) return std::nullopt;
   ByteReader r(b);
   ResumeReqBody v;
   if (!r.bytes(v.token)) return std::nullopt;
   v.lastRxSeq = r.u16le();
+  if (!parseFileCkpt(r, v.hasFileCkpt, v.fileId, v.fileOffset)) {
+    return std::nullopt;
+  }
   return v;
 }
 
@@ -371,14 +401,17 @@ std::vector<uint8_t> ResumeAckBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.u16le(lastRxSeq);
+  packFileCkpt(w, hasFileCkpt, fileId, fileOffset);
   return out;
 }
 
 std::optional<ResumeAckBody> ResumeAckBody::parse(std::span<const uint8_t> b) {
-  if (b.size() != 2) return std::nullopt;
   ByteReader r(b);
   ResumeAckBody v;
   v.lastRxSeq = r.u16le();
+  if (!parseFileCkpt(r, v.hasFileCkpt, v.fileId, v.fileOffset)) {
+    return std::nullopt;
+  }
   return v;
 }
 

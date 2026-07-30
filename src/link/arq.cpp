@@ -122,6 +122,21 @@ void ArqTx::tick(double now) {
   deadline_ = now + timeoutSec_;
 }
 
+void ArqTx::resumeFrom(uint16_t peerNextSeq, double now) {
+  while (!pending_.empty() &&
+         seqDiff(pending_.front().seq, peerNextSeq) < 0) {
+    pending_.pop_front();
+  }
+  retxQueue_.clear();
+  failed_ = false;
+  for (auto& p : pending_) {
+    p.retries = 0;
+    p.inRetxQueue = false;
+    queueRetx(p);
+  }
+  deadline_ = pending_.empty() ? 0.0 : now + timeoutSec_;
+}
+
 // -------------------------------------------------------------------- ArqRx
 
 ArqRx::Accept ArqRx::onData(uint16_t seq, std::vector<uint8_t> payload) {

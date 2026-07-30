@@ -111,6 +111,9 @@ enum class StartNakReason : uint8_t {
   CapabilityConflict = 3,
   Busy = 4,
   PolicyRefusal = 5,
+  // RESUME_REQ rejected (bad/expired token): the initiator falls back
+  // to a clean START in place - never a session failure.
+  ResumeInvalid = 6,
 };
 
 // Capability bitmap (u16). Bits 8-15 reserved, must be 0.
@@ -159,6 +162,10 @@ struct StartBody {
 struct StartAckBody {
   uint8_t finalMode = 4;  // responder may only lower the proposal
   std::vector<uint8_t> kexResponse;  // empty = absent
+  // Resume token minted here (PROTOCOL.md "Session Resume"): 8-byte ID
+  // bound to family + callsign pair, valid for the resume window.
+  bool hasResumeToken = false;
+  std::array<uint8_t, 8> resumeToken{};
   std::vector<uint8_t> pack() const;
   static std::optional<StartAckBody> parse(std::span<const uint8_t> b);
 };
@@ -241,15 +248,24 @@ struct KeepaliveBody {
   static std::optional<KeepaliveBody> parse(std::span<const uint8_t> b);
 };
 
+// Both resume bodies may carry the sender's file-RECEIVE checkpoint
+// (file_id, contiguous offset) so the peer's paused file TX rewinds to
+// exactly what survived the drop.
 struct ResumeReqBody {
   std::array<uint8_t, 8> token{};
-  uint16_t lastRxSeq = 0;
+  uint16_t lastRxSeq = 0;  // sender's next-expected ARQ sequence
+  bool hasFileCkpt = false;
+  uint32_t fileId = 0;
+  uint64_t fileOffset = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<ResumeReqBody> parse(std::span<const uint8_t> b);
 };
 
 struct ResumeAckBody {
   uint16_t lastRxSeq = 0;
+  bool hasFileCkpt = false;
+  uint32_t fileId = 0;
+  uint64_t fileOffset = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<ResumeAckBody> parse(std::span<const uint8_t> b);
 };

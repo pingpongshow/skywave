@@ -454,10 +454,23 @@ On-air work is gated by **ST4** (attended rig checklist).
   `takeEvents()` → `EVT:FILE_RX/FILE_ERROR/TXCOMPLETE`. Gate: 80 KiB
   under 1-in-9 loss with interleaved stream chat — byte-exact,
   CRC-clean, stream routes independently.
-- [ ] **4.4 Session resume** — tokens, window, sequence continuation,
+- [x] **4.4 Session resume** — tokens, window, sequence continuation,
   file-checkpoint continuation, invalidation rules.
   *Gate: two-modem `resume` scenario (mid-transfer kill → CRC-clean
-  completion).*
+  completion).* ✓ 2026-07-29 — token rides `START_ACK` (both ends hold
+  it); `RESUME_REQ/ACK` carry each side's file checkpoint; failure-mode
+  teardown (ARQ exhaustion / idle timeout / for-cause `DISC`) pauses the
+  whole pipeline (proto queues + ARQ objects + file state) while an
+  operator `DISC(normal)` invalidates the token — `DISC` now carries the
+  for-cause reason so both sides agree. `ArqTx::resumeFrom` continues
+  the sequence space (drop confirmed, requeue the rest, fresh retry
+  budgets). Invalid token → `START_NAK(RESUME_INVALID)` → clean START in
+  place. Gates in `test_file`: mid-transfer blackout at ≥32 KiB → resumed
+  reconnect → CRC-clean, plus responder-restart fallback (clean session,
+  `FILE_ERROR` surfaced, link still works). PROTOCOL.md "Session Resume"
+  updated with the wire details. Deviation: token is hash-derived (time +
+  callsigns + counter), not cryptographically random — the Phase-5
+  crypto layer owns real session authentication.
 - [ ] **4.5 Broadcast + CW ID** `[P]` — CQ/BEACON/BCAST_DATA with
   fragmenting, CW renderer as lowest-priority burst.
   *Gate: monitor instance receives/reassembles; CW timing verified.*
