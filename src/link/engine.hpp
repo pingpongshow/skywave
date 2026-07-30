@@ -38,6 +38,8 @@ struct EngineConfig {
   bool maskingEnabled = true;  // negotiated via kCapMasking as well
   bool burstAggregation = true;  // MAC burst container (M7+ profiles)
   bool cpAuto = true;            // delay-spread-driven CPMODE
+  bool cwId = false;             // CW ID after disconnect / 10-min
+  int cwWpm = 20;
 };
 
 class LinkEngine {
@@ -66,6 +68,15 @@ class LinkEngine {
   // True while the current connection was established via RESUME.
   bool sessionResumed() const { return resumed_; }
   bool hasResumeContext() const { return resumeCtx_.valid; }
+
+  // --- broadcast (4.5) ---------------------------------------------------
+  // Connectionless frames: calling signature + robust header + M4.
+  // Usable while idle (and alongside a session; the arbiter interleaves).
+  void sendCq();
+  void sendBeacon(double snrFloorDb);
+  // Fragments into <= 16 BCAST_DATA frames (4-bit index/count); false
+  // if the payload exceeds 16 * 256 bytes or is empty.
+  bool sendBroadcast(std::span<const uint8_t> bytes);
 
   FsmState state() const { return fsm_.state(); }
   FsmDiscCause lastDiscCause() const { return fsm_.lastDiscCause(); }
@@ -212,6 +223,10 @@ class LinkEngine {
   // Fault-mode teardown (ARQ exhaustion, peer's for-cause DISC, idle
   // timeout): keeps the resume token alive; operator DISC does not.
   bool faultDisc_ = false;
+  // CW ID (4.5): queued after teardown and every 10 min in-session;
+  // emitted only when nothing else wants the transmitter.
+  bool cwPending_ = false;
+  double lastCwAt_ = 0.0;
 };
 
 }  // namespace skw

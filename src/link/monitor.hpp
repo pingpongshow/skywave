@@ -30,9 +30,19 @@ class Monitor {
 
   int decodedFrames() const { return decoded_; }
 
+  // Completed BCAST_DATA reassemblies (fragment chains joined).
+  std::vector<std::vector<uint8_t>> takeBroadcasts() {
+    auto out = std::move(bcastOut_);
+    bcastOut_.clear();
+    return out;
+  }
+
  private:
   Family family_;
   bool localConnected_ = false;
+  int bcastCount_ = 0;  // fragment count of the chain being collected
+  std::vector<std::vector<uint8_t>> bcastFrags_;
+  std::vector<std::vector<uint8_t>> bcastOut_;
   // Callsign context: full calls appear only in handshake/broadcast
   // frames; session frames are attributed to the last observed exchange.
   std::string lastSrc_ = "?";

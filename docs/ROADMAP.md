@@ -471,9 +471,19 @@ On-air work is gated by **ST4** (attended rig checklist).
   updated with the wire details. Deviation: token is hash-derived (time +
   callsigns + counter), not cryptographically random — the Phase-5
   crypto layer owns real session authentication.
-- [ ] **4.5 Broadcast + CW ID** `[P]` — CQ/BEACON/BCAST_DATA with
+- [x] **4.5 Broadcast + CW ID** `[P]` — CQ/BEACON/BCAST_DATA with
   fragmenting, CW renderer as lowest-priority burst.
   *Gate: monitor instance receives/reassembles; CW timing verified.*
+  ✓ 2026-07-29 — engine `sendCq/sendBeacon/sendBroadcast` (≤16 frags ×
+  256 B, calling sig + M4, usable while idle); Monitor reassembles the
+  4-bit fragment chain (`takeBroadcasts()`; v1: one chain at a time, no
+  per-sender demux). `dsp/morse`: PARIS-convention renderer at 12 kHz
+  baseband (800 Hz tone, raised-cosine keying); engine emits CW only
+  when the TX queue is idle — after teardown and each 600 s in-session
+  (`cw_id`/`cw_wpm`). `test_bcast`: timing (46 units, tone −700 Hz
+  baseband ±5), monitor reassembly, both CW cadences. Note: received
+  CQ/BEACON surface via the monitor path; a LISTENING-state auto-answer
+  policy is Phase-5 UI territory.
 - [ ] **4.6 Observability completion** — `STATUS JSON`, `NOISEFLOOR`,
   `AUDIOLEVEL`, `FREQINFO`, remaining commands.
   *Gate: **M4** — command surface complete vs INTERFACES.md checklist;

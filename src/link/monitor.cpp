@@ -54,6 +54,32 @@ std::optional<MonitorEvent> Monitor::rxBurst(
             lastDst_ = "*";
           }
           break;
+        case LinkType::BcastData:
+          if (auto b = BcastDataBody::parse(f->body)) {
+            // Reassemble the 4-bit fragment chain (one broadcast at a
+            // time on frequency - v1 has no per-sender demux).
+            if (b->fragCount != bcastCount_) {
+              bcastCount_ = b->fragCount;
+              bcastFrags_.assign(size_t(b->fragCount), {});
+            }
+            if (b->fragIndex < b->fragCount) {
+              bcastFrags_[b->fragIndex] = std::move(b->payload);
+              bool all = true;
+              for (auto& fr : bcastFrags_) {
+                if (fr.empty()) all = false;
+              }
+              if (all) {
+                std::vector<uint8_t> whole;
+                for (auto& fr : bcastFrags_) {
+                  whole.insert(whole.end(), fr.begin(), fr.end());
+                }
+                bcastOut_.push_back(std::move(whole));
+                bcastCount_ = 0;
+                bcastFrags_.clear();
+              }
+            }
+          }
+          break;
         default:
           break;
       }

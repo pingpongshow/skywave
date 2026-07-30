@@ -65,6 +65,7 @@ add_library(skywave_core STATIC
   src/dsp/updown.cpp
   src/dsp/chirp.cpp
   src/dsp/zc.cpp
+  src/dsp/morse.cpp
   src/phy/framer.cpp
   src/phy/equalizer.cpp
   src/phy/receiver.cpp
@@ -146,6 +147,7 @@ if(BUILD_TESTS)
   skw_test(test_system)
   skw_test(test_proto)
   skw_test(test_file)
+  skw_test(test_bcast)
   skw_test(test_amc)
   skw_test(test_harq)
   skw_test(test_chanmem)

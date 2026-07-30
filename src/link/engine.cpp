@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "dsp/morse.hpp"
+
 namespace skw {
 
 namespace {
@@ -122,6 +124,39 @@ void LinkEngine::discardPausedPipeline() {
     fileTx_.abort();
   }
   pausedForResume_ = false;
+}
+
+void LinkEngine::sendCq() {
+  CqBody c;
+  c.callsign = cfg_.policy.ownCall;
+  c.caps = cfg_.policy.caps;
+  queueControl(LinkType::Cq, c.pack(), ChirpSig::Calling, 4);
+}
+
+void LinkEngine::sendBeacon(double snrFloorDb) {
+  BeaconBody b;
+  b.callsign = cfg_.policy.ownCall;
+  b.snrFloorPlus20 =
+      uint8_t(std::clamp(snrFloorDb + 20.0, 0.0, 255.0));
+  b.family = uint8_t(cfg_.policy.family);
+  queueControl(LinkType::Beacon, b.pack(), ChirpSig::Calling, 4);
+}
+
+bool LinkEngine::sendBroadcast(std::span<const uint8_t> bytes) {
+  if (bytes.empty() || bytes.size() > 16 * kBcastMaxPayload) return false;
+  const size_t count = (bytes.size() + kBcastMaxPayload - 1) /
+                       kBcastMaxPayload;
+  for (size_t i = 0; i < count; ++i) {
+    BcastDataBody b;
+    b.fragIndex = uint8_t(i);
+    b.fragCount = uint8_t(count);
+    const size_t off = i * kBcastMaxPayload;
+    const size_t n = std::min(kBcastMaxPayload, bytes.size() - off);
+    b.payload.assign(bytes.begin() + long(off),
+                     bytes.begin() + long(off + n));
+    queueControl(LinkType::BcastData, b.pack(), ChirpSig::Calling, 4);
+  }
+  return true;
 }
 
 // Feed the proto pipeline from an active file transfer, keeping only a
@@ -294,6 +329,7 @@ void LinkEngine::drainFsmActions(double now) {
         ac.maxMode = cfg_.policy.maxMode;
         amc_.emplace(ac, uint8_t(mode_), 0.0);
         pendingMode_ = -1;
+        lastCwAt_ = now;  // CW ID cadence restarts with the session
         if (resuming_) {
           // RESUME: sequence spaces continue - keep both ARQ engines,
           // drop what the peer confirmed, requeue the rest.
@@ -347,6 +383,7 @@ void LinkEngine::drainFsmActions(double now) {
                             cause == FsmDiscCause::PeerRequest);
         faultDisc_ = false;
         if (clean) resumeCtx_.valid = false;
+        if (cfg_.cwId) cwPending_ = true;  // identify after the session
         if (resumeCtx_.valid && (sessionCaps_ & kCapResume)) {
           pausedForResume_ = true;
           resumeCtx_.mode = mode_;
@@ -676,7 +713,22 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   }
   pumpFile();
   pumpData(now);
-  if (outQueue_.empty()) return std::nullopt;
+  // CW ID (PROTOCOL.md): pure audio-layer identification - after
+  // disconnect, and every 10 min during long connected sessions. It is
+  // the lowest-priority "burst": only an otherwise-idle transmitter
+  // sends it.
+  if (cfg_.cwId && fsm_.state() == FsmState::Connected &&
+      now - lastCwAt_ > 600.0) {
+    cwPending_ = true;
+    lastCwAt_ = now;
+  }
+  if (outQueue_.empty()) {
+    if (cwPending_) {
+      cwPending_ = false;
+      return renderMorseBaseband(cfg_.policy.ownCall, cfg_.cwWpm);
+    }
+    return std::nullopt;
+  }
   OutFrame f = std::move(outQueue_.front());
   outQueue_.pop_front();
   if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
