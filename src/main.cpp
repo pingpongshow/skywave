@@ -1,8 +1,12 @@
 // Skywave process entry: CLI, wiring, headless loop (ARCHITECTURE.md).
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "core/config.hpp"
 #include "core/constants.hpp"
@@ -10,6 +14,12 @@
 #include "io/audio.hpp"
 #include "tcp/server.hpp"
 #include "worker.hpp"
+#ifdef SKW_HAVE_VOICE
+#include "voice/session.hpp"
+#endif
+#ifdef SKW_HAVE_GUI
+#include "gui/gui.hpp"
+#endif
 
 namespace {
 
@@ -164,17 +174,38 @@ int main(int argc, char** argv) {
     // TCP surface (INTERFACES.md): data + control ports polled from this
     // thread; the worker owns the modem and is bridged through its
     // thread-safe queues. Voice port lands in Phase 5.
-    skw::TcpServer dataSrv, ctrlSrv;
+    skw::TcpServer dataSrv, ctrlSrv, voiceSrv;
     if (!dataSrv.open(cfg.dataPort) || !ctrlSrv.open(cfg.ctrlPort)) {
       SKW_ERROR("cannot bind TCP ports %u/%u", cfg.dataPort, cfg.ctrlPort);
       audio->stop();
       return 1;
     }
+#ifdef SKW_HAVE_VOICE
+    if (!voiceSrv.open(cfg.voicePort)) {
+      SKW_WARN("cannot bind voice port %u (voice media unavailable)",
+               cfg.voicePort);
+    }
+    skw::VoiceRecordParser voiceParse;
+    uint32_t voiceTxSeq = 0;
+    uint64_t voiceSamples = 0;
+#endif
     SKW_INFO("tcp: data=%u control=%u", dataSrv.boundPort(),
              ctrlSrv.boundPort());
     skw::LineBuffer ctrlLines;
     std::vector<uint8_t> dataOut;  // held while no data client is attached
     worker.start();
+#ifdef SKW_HAVE_GUI
+    // GUI runs on THIS (main) thread - SDL requires it - while the worker
+    // keeps its own thread. A failed window falls back to headless.
+    std::optional<skw::Gui> gui;
+    if (cfg.guiEnabled) {
+      gui.emplace(worker);
+      if (!gui->init(cfg.guiWidth, cfg.guiHeight)) {
+        SKW_WARN("gui: no window available; continuing headless");
+        gui.reset();
+      }
+    }
+#endif
     while (!g_stop) {
       // Data port: client bytes -> engine; delivered bytes -> client.
       auto inBytes = dataSrv.poll();
@@ -188,6 +219,26 @@ int main(int argc, char** argv) {
       for (auto& rec : worker.takeMonitorRecords()) {
         if (dataSrv.clientConnected()) dataSrv.send(rec);
       }
+#ifdef SKW_HAVE_VOICE
+      // Voice port: uplink PCM records -> encoder; decoded downlink PCM
+      // back out as records (INTERFACES.md; media is PCM only).
+      voiceParse.feed(voiceSrv.poll());
+      for (auto& rec : voiceParse.take()) {
+        if (rec.type == skw::kVoiceRecUplink) worker.submitVoicePcm(rec.pcm);
+      }
+      if (voiceSrv.clientConnected()) {
+        auto pcm = worker.takeVoicePcm(800);  // 100 ms
+        if (!pcm.empty()) {
+          skw::VoiceRecord out;
+          out.type = skw::kVoiceRecDownlink;
+          out.sequence = voiceTxSeq++;
+          out.sampleCounter = voiceSamples;
+          voiceSamples += pcm.size();
+          out.pcm = std::move(pcm);
+          voiceSrv.send(out.pack());
+        }
+      }
+#endif
       // Control port: lines -> dispatcher; EVT:/MON: notifications out.
       ctrlLines.feed(ctrlSrv.poll());
       for (auto& line : ctrlLines.takeLines()) {
@@ -196,8 +247,17 @@ int main(int argc, char** argv) {
       for (auto& note : worker.takeNotifications()) {
         if (ctrlSrv.clientConnected()) ctrlSrv.send(note + "\n");
       }
+#ifdef SKW_HAVE_GUI
+      if (gui) {
+        if (!gui->frame()) break;  // window closed
+        continue;                  // vsync paces the loop
+      }
+#endif
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+#ifdef SKW_HAVE_GUI
+    if (gui) gui->shutdown();
+#endif
     worker.stop();
   }
 

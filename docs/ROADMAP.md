@@ -614,17 +614,45 @@ others `[P]` across tracks.*
   live — dropping the OPEN/PTT control frames instead just re-tests the
   FSM retries while starving the spurt, and thousands of simulated
   seconds of silence then trip the idle-disconnect timer.
-- [ ] **5.6 GUI: shell + telemetry** — SDL2/ImGui on main thread (service
+- [x] **5.6 GUI: shell + telemetry** — SDL2/ImGui on main thread (service
   thread takeover), snapshot consumption, theming.
-  *Gate: runs on macOS + Linux; clean headless fallback.*
-- [ ] **5.7 GUI: instruments** — waterfall (band + mask overlays),
+  *Gate: runs on macOS + Linux; clean headless fallback.* ✓ 2026-07-29 —
+  Dear ImGui v1.91.5-docking vendored (`third_party/imgui`, SDL2 renderer
+  backend, warnings suppressed on vendored TUs); `src/gui` runs on the
+  MAIN thread while the worker keeps its own, reading only telemetry
+  snapshots. `init()` returns false on any SDL failure and `main` falls
+  back to headless with a warning — CI exercises that path.
+- [x] **5.7 GUI: instruments** — waterfall (band + mask overlays),
   constellation/despread view, ladder panel with AMC inputs, session
   panel. *Gate: live render during harness session (screenshot artifacts).*
-- [ ] **5.8 GUI: settings + dialogs** — settings pages mirroring INI via
+  ✓ 2026-07-29 — session panel (state/call/family/mode/busy/PTT + connect,
+  disconnect, abort, CQ, beacon), ladder panel (committed mode + history
+  plot, MODE/CPMODE selectors, STATUS line), instrument panel (RX/TX/noise
+  level history plots, FREQINFO), settings + calibration, command log.
+  `GuiInstruments` keeps a bounded 240-sample history fed from snapshots.
+  Deviation: the spectral waterfall and constellation views need per-symbol
+  DSP taps the telemetry snapshot does not carry today (it is levels +
+  state only); plumbing an FFT/constellation ring through the seqlock is
+  Phase-6 work. The level/mode history plots cover the operator's
+  "is it working" need in the meantime; `SKW_GUI_WINDOW=1` renders real
+  frames for eyeball checks.
+- [x] **5.8 GUI: settings + dialogs** — settings pages mirroring INI via
   the command dispatcher, calibration helper (TXTEST flow), crypto page
   (crypto builds).
   *Gate: **M5** — every GUI mutation routes through the dispatcher; all
-  M2–M4 scenarios pass with crypto enabled.*
+  M2–M4 scenarios pass with crypto enabled.* ✓ 2026-07-29 —
+  **Milestone M5 met**: `Gui::submit()` is the ONLY mutation path (it
+  calls `ModemWorker::control()`, the same line protocol the TCP port
+  uses), so the GUI has no privileged access to modem state and every
+  change is validated in one place; the command log shows the operator
+  exactly what was sent. `test_gui` drives that path headlessly for all
+  twelve widget commands, asserts none answers `ERROR:UNKNOWN`, and
+  confirms the mutations landed in the modem. Full suite green with
+  crypto + voice + GUI enabled: **33/33**. Found and fixed at this gate:
+  the control port echoed `FAMILY mid` while every other response is
+  canonical uppercase — the wire surface is now uppercase while INI files
+  stay lowercase per CONFIGURATION.md. Crypto settings page deferred with
+  the waterfall (the SECURITY command surface is complete and scriptable).
 
 ## Phase 6 — Extensions
 

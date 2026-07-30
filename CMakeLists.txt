@@ -64,6 +64,19 @@ endif()
 if(ENABLE_VOICE)
   list(APPEND SKW_CRYPTO_SOURCES src/voice/codec.cpp src/voice/session.cpp)
 endif()
+if(ENABLE_GUI)
+  # Dear ImGui (vendored, docking branch) + SDL2 renderer backend.
+  set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+  list(APPEND SKW_CRYPTO_SOURCES
+    src/gui/gui.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
+  )
+endif()
 
 add_library(skywave_core STATIC
   ${SKW_CRYPTO_SOURCES}
@@ -106,6 +119,20 @@ target_include_directories(skywave_core PUBLIC src)
 target_link_libraries(skywave_core PUBLIC PkgConfig::PORTAUDIO PkgConfig::ZSTD)
 if(ENABLE_CRYPTO)
   target_link_libraries(skywave_core PUBLIC PkgConfig::SODIUM)
+endif()
+if(ENABLE_GUI)
+  target_link_libraries(skywave_core PUBLIC PkgConfig::SDL2)
+  target_include_directories(skywave_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+  # Vendored third-party code is not ours to lint.
+  set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_sdl2.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_sdlrenderer2.cpp
+    PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 if(ENABLE_VOICE)
   if(CODEC2_FOUND)
@@ -179,6 +206,9 @@ if(BUILD_TESTS)
   endif()
   if(ENABLE_VOICE)
     skw_test(test_voice)
+  endif()
+  if(ENABLE_GUI)
+    skw_test(test_gui)
   endif()
   skw_test(test_amc)
   skw_test(test_harq)

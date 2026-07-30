@@ -41,6 +41,14 @@ std::string fmt1(double v) {
   return b;
 }
 
+// Control-port responses are canonical UPPERCASE (like MYCALL / MODE /
+// CPMODE); core toString() stays lowercase for INI files and logs, which
+// CONFIGURATION.md defines that way.
+std::string upperStr(std::string s) {
+  for (char& ch : s) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  return s;
+}
+
 }  // namespace
 
 ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
@@ -339,7 +347,7 @@ void ModemWorker::updateStateEventsLocked() {
                                   : fsmStateNameLocked(st)));
     if (st == FsmState::Connected) {
       notes_.push_back(evtConnected(engine_->remoteCall(),
-                                    toString(cfg_.family),
+                                    upperStr(toString(cfg_.family)),
                                     engine_->sessionMode()));
     }
     if (wasConnected) {
@@ -489,7 +497,7 @@ size_t ModemWorker::txBufferBytes() {
 
 std::string ModemWorker::family() {
   std::lock_guard lock(modemMutex_);
-  return toString(cfg_.family);
+  return upperStr(toString(cfg_.family));
 }
 
 bool ModemWorker::setFamily(const std::string& fam) {
@@ -676,7 +684,7 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
       {"STATE", state, true},
       {"CALL", cfg_.callsign, true},
       {"REMOTE", remote, true},
-      {"FAMILY", toString(cfg_.family), true},
+      {"FAMILY", upperStr(toString(cfg_.family)), true},
       {"MODE", mode, true},
       {"NET", fmt1(engine_->netBps()), false},
       {"SNR", fmt1(engine_->lastRxSnrDb()), false},
