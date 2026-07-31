@@ -278,6 +278,7 @@ class LinkEngine {
   bool txWasDraining_ = false;   // edge detector: own burst just aired
   double ctrlWaitStart_ = -1.0;  // control busy-hold (2 s cap, no jitter)
   double ackAirSec_ = 0.5;       // expected feedback airtime (listen window)
+  double dataHeldSince_ = -1.0;  // gate anti-starvation backstop
   double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};

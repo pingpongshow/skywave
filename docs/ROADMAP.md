@@ -1240,3 +1240,50 @@ doc was updated)*
   (suite, blackout soak, monkey); OPEN residuals - churn soak stalls
   in the 8-11 dB deaf dwells, and bug #10 (deterministic deep-tier
   payload failure through the radio chain) still stands.
+- **Bug-fix pass / 2026-07-30 (end of stress campaign)** — Two of the
+  three open items FIXED and verified; the third RE-DIAGNOSED, and the
+  original diagnosis was WRONG.
+  1. **Control-port stall under decode load (FIXED)**: the RX retry
+     ladder drained a capture's whole ladder - up to 90 s windows
+     through the full receiver - inside the worker mutex, so the
+     control port went unresponsive for 20+ s exactly when an
+     application most needs to watch the modem. `pumpRxLocked` now
+     spends a budget of TWO decode attempts per audio chunk; pending
+     captures continue on later chunks (~30 ms apart). Verified: suite
+     37/37, ST2 3/3, no loss of decode capability (M3 ramp IMPROVED
+     0.77 -> 0.79).
+  2. **ARQ retry burned on frames that never aired (FIXED)**: the
+     retransmit path called `nextRetransmit()` - which charges a retry
+     AND re-arms the ACK deadline - and only then discovered a copy was
+     already queued, dropping it. With a queued copy held behind the
+     CCA gate this consumed the retry budget on air that never
+     happened, and tore down healthy links. Now `peekRetransmit()`
+     checks first (no retry charged). Paired with a gate ANTI-
+     STARVATION backstop: DATA held longer than 3x the ARQ timeout airs
+     regardless of the busy verdict, so a stuck busy reading (jammer,
+     hung detector, chattier peer) can no longer convert into
+     "connected but permanently mute".
+  3. **"Deterministic deep-tier payload wedge" - MISDIAGNOSED, real
+     cause identified**: the CSS PHY is CLEAN. A dedicated repro
+     (scratchpad `cssrepro`) pushed CSS DATA frames through the FULL
+     radio chain (48 kHz audio, TX/RX bandpass, ALC, AGC, chansim) at
+     M0/M1, SNR 8-25 dB, payloads 24-235 B: 1,280 trials, ZERO
+     failures - no payload dependence at all. Instrumenting the actual
+     soak stall (`SKW_PUMP_DEBUG`) showed `pumpData` returning at its
+     FIRST line because the FSM was in CALLING, not Connected: after a
+     marginal-SNR session dies, the RECONNECT HANDSHAKE fails. Isolated
+     repro (scratchpad `callstuck`): connect clean, collapse to 9 dB
+     CCIR Moderate, abort, re-call - the call ladder exhausts, both
+     ends return to LISTENING, and the link never re-establishes for
+     the rest of the run. This single defect explains BOTH remaining
+     soak failures (churn and floor): they are not data-path stalls at
+     all, they are unrecoverable sessions after a handshake failure at
+     marginal SNR through the radio chain. NEXT STEP (not yet done):
+     characterize handshake FER vs SNR through the radio chain per
+     transport (OFDM M4 robust vs CSS M0) - conformance only ever
+     measured handshake at clean baseband - then fix whichever leg is
+     under-performing and/or make the CALL ladder alternate transports
+     more aggressively when attempts go unanswered.
+  Soak status after this pass: blackout PASS, monkey PASS, crypto
+  PASS, suite 37/37, crypto 38/38, VHF 25.5 kbps, ramp 0.79; churn and
+  floor remain RED on the reconnect defect above.

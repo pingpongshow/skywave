@@ -237,9 +237,16 @@ void ModemWorker::pumpRxLocked(double now) {
   // Grow each pending capture along the retry ladder until the engine
   // takes the frame (or the ladder ends and the monitor gets one look).
   const uint64_t histEnd = histBase_ + hist_.size();
+  // Decode-attempt budget PER CALL: long-window attempts (up to 90 s of
+  // audio through the full receiver) run under the modem mutex, and
+  // draining a capture's whole ladder - or several captures - in one
+  // pass stalled the control port for 20+ s during retransmission
+  // churn. Two attempts per chunk bounds the hold time; pending
+  // captures simply continue next round (~30 ms later in real time).
+  int decodeBudget = 2;
   for (auto it = pendingRx_.begin(); it != pendingRx_.end();) {
     bool done = false;
-    while (it->tries < kRxTries) {
+    while (it->tries < kRxTries && decodeBudget > 0) {
       const uint64_t need =
           it->start + uint64_t(kRxWindowSec[it->tries] * kFsBaseband);
       if (histEnd < need) break;  // wait for more audio
@@ -252,6 +259,7 @@ void ModemWorker::pumpRxLocked(double now) {
           engineEligible
               ? engine_->rxBurst(win, now, it->tries == kRxTries - 1)
               : false;
+      --decodeBudget;
       ++it->tries;
       if (decoded || it->tries >= kRxTries) {
         if (monitorOn_ && monitor_) {

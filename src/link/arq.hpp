@@ -58,6 +58,20 @@ class ArqTx {
     std::vector<uint8_t> payload;
   };
   std::optional<Retransmit> nextRetransmit(double now);
+  // Sequence at the head of the retransmit queue, WITHOUT consuming it
+  // or charging a retry. The caller may already hold an unsent copy of
+  // that frame; taking the retransmit anyway burned a retry (and
+  // re-armed the timer) for a frame that never aired - with a queued
+  // copy stuck behind the CCA gate this repeated until max-retries
+  // tore down a live link.
+  std::optional<uint16_t> peekRetransmit() const {
+    for (uint16_t s : retxQueue_) {
+      for (const auto& p : pending_) {
+        if (p.seq == s) return s;
+      }
+    }
+    return std::nullopt;
+  }
 
   // Fires the ACK timeout: all in-flight unacked frames requeue.
   void tick(double now);

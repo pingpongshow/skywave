@@ -147,6 +147,7 @@ int main() {
   double usableSince = -1.0;  // sim time snr has been >= 5 dB
   size_t verifiedA = 0, verifiedB = 0;
   int reconnects = 0;
+  double callingSince = -1.0;
 
   auto simNow = [&] { return double(w.clk.nowUs()) * 1e-6 - t0; };
 
@@ -230,6 +231,18 @@ int main() {
       if (sa == "STATE LISTENING" || sa == "STATE IDLE") {
         w.cmd(w.a, "CONNECT K6XYZ");
         ++reconnects;
+        callingSince = -1.0;
+      } else if (sa == "STATE CALLING" || sa == "STATE CONNECTING") {
+        // A call ladder is running. It must CONVERGE: deep-tier legs
+        // are legitimately minutes long, but a ladder that outlives
+        // its own worst case means the session is neither connected
+        // nor recovering - the state the modem must never occupy.
+        if (callingSince < 0.0) callingSince = now;
+        if (now - callingSince > 600.0) {
+          return fail("call ladder never converged (600 s in CALLING)", now);
+        }
+      } else {
+        callingSince = -1.0;
       }
       const size_t sum = w.a.dataAcc.size() + w.b.dataAcc.size();
       if (sum > lastDeliveredSum) {

@@ -148,6 +148,18 @@ bool LinkEngine::ccaDataGated(double now) {
       return true;
     }
   }
+  // Anti-starvation backstop: DATA that has been held for several ARQ
+  // timeouts MUST air, whatever the gate thinks. Otherwise a busy
+  // reading that never clears (a jammer, a stuck detector, a peer that
+  // simply transmits more than we do) silently converts into
+  // "connected but permanently mute", which the ARQ then reads as a
+  // dead peer and tears the session down.
+  if (dataHeldSince_ >= 0.0 && now - dataHeldSince_ > 3.0 * arqTx_.timeoutSec()) {
+    dataHeldSince_ = -1.0;
+    ccaWaitStart_ = -1.0;
+    ccaProceedAt_ = -1.0;
+    return false;
+  }
   if (chanBusy_) {
     ccaProceedAt_ = -1.0;
     if (ccaWaitStart_ < 0.0) ccaWaitStart_ = now;
@@ -838,6 +850,20 @@ void LinkEngine::drainFsmActions(double now) {
 }
 
 void LinkEngine::pumpData(double now) {
+  {
+    static const bool pd = getenv("SKW_PUMP_DEBUG") != nullptr;
+    static double lastLog = -1e9;
+    if (pd && now - lastLog > 20.0) {
+      lastLog = now;
+      fprintf(stderr,
+              "%s pumpENTRY t=%.0f state=%d gated=%d failed=%d "
+              "inflight=%zu backlog=%zu q=%zu\n",
+              cfg_.policy.ownCall.c_str(), now, int(fsm_.state()),
+              ccaGatedNow_ ? 1 : 0, arqTx_.failed() ? 1 : 0,
+              arqTx_.inFlight(), protoTx_.backlogBytes(),
+              outQueue_.size());
+    }
+  }
   if (fsm_.state() != FsmState::Connected) return;
   // While the CCA gate holds, leave retransmits and new segments in the
   // ARQ/proto layers: frames pulled now would burn their ACK timers
@@ -849,14 +875,6 @@ void LinkEngine::pumpData(double now) {
     if (arqDbg) {
       fprintf(stderr, "%s pumpData retx seq=%u rv=%d\n",
               cfg_.policy.ownCall.c_str(), r->seq, int(r->rv));
-    }
-    // A copy of this sequence may already be queued (aggressive timeout
-    // requeues while the TX queue is still draining): let the queued
-    // copy fly instead of stacking duplicates into the queue.
-    for (const auto& q : outQueue_) {
-      if (q.env.type == LinkType::Data && q.env.sequence == r->seq) {
-        return;
-      }
     }
     OutFrame f;
     f.env.type = LinkType::Data;
@@ -887,10 +905,25 @@ void LinkEngine::pumpData(double now) {
     outQueue_.push_back(std::move(f));
     return;
   }
+  static const bool pumpDbg = getenv("SKW_PUMP_DEBUG") != nullptr;
   for (int k = 0; k < framesPerBurst(mode_); ++k) {
-    if (!arqTx_.canSend()) return;
+    if (!arqTx_.canSend()) {
+      if (pumpDbg) {
+        fprintf(stderr, "%s pump t=%.0f BLOCKED canSend inflight=%zu\n",
+                cfg_.policy.ownCall.c_str(), now, arqTx_.inFlight());
+      }
+      return;
+    }
     auto seg = protoTx_.nextSegment(dataBudget_, now);
-    if (!seg) return;
+    if (!seg) {
+      if (pumpDbg) {
+        fprintf(stderr,
+                "%s pump t=%.0f NOSEG budget=%zu backlog=%zu idle=%d\n",
+                cfg_.policy.ownCall.c_str(), now, dataBudget_,
+                protoTx_.backlogBytes(), protoTx_.idle() ? 1 : 0);
+      }
+      return;
+    }
     std::vector<uint8_t> stored;
     stored.reserve(1 + seg->bytes.size());
     stored.push_back(seg->flags);
@@ -1064,6 +1097,17 @@ bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
   ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
+  const bool dataWaiting =
+      arqTx_.peekRetransmit().has_value() || !protoTx_.idle() ||
+      std::any_of(outQueue_.begin(), outQueue_.end(),
+                  [](const OutFrame& q) {
+                    return q.env.type == LinkType::Data;
+                  });
+  if (ccaGatedNow_ && dataWaiting) {
+    if (dataHeldSince_ < 0.0) dataHeldSince_ = now;
+  } else if (!ccaGatedNow_) {
+    dataHeldSince_ = -1.0;
+  }
   if (!chanBusy_ && ctrlWaitStart_ >= 0.0 &&
       now - ctrlWaitStart_ >= 0.0) {
     // Channel cleared while control was holding: the hold ends now;
