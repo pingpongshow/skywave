@@ -117,16 +117,34 @@ bool LinkEngine::ccaDataGated(double now) {
   }
   if (txWasDraining_) {
     txWasDraining_ = false;
-    // Our burst just finished airing. If the peer is actively sending
-    // data too, yield a jittered gap so it can key up - without this
-    // the side with more traffic captures the channel and the reverse
-    // direction starves (observed: 0 B delivered B->A over 900 s while
-    // A moved 14 KB).
+    double gap = 0.0;
+    // Our burst just finished airing - the channel HANDOFF point of a
+    // half-duplex link. Two reasons to stay quiet:
+    // (a) Feedback is owed: a keyed transmitter is deaf, so keying the
+    //     next burst over the peer's incoming ACK loses it and burns a
+    //     full ARQ timeout per window. Threshold matches the peer's
+    //     feedback cadence: per-burst on HF, per-12-frame batch on the
+    //     VHF-FM deep pipe (mid-batch, no ACK is due - containers stay
+    //     back-to-back and batch throughput is preserved).
+    const int ackAfter =
+        (activeBand() == Band::VhfFm && mode_ >= 13)
+            ? 12
+            : (cfg_.burstAggregation ? framesPerBurst(mode_) : 1);
+    if (int(arqTx_.inFlight()) >= ackAfter) {
+      gap = ackAirSec_ + 1.0;
+    }
+    // (b) Bidirectional fairness: if the peer is actively sending data
+    //     too, add a jittered yield so it can key up - without this the
+    //     side with more traffic captures the channel and the reverse
+    //     direction starves (observed: 0 B B->A over 900 s).
     if (now - lastDataRxAt_ < 15.0 && lastDataRxAt_ > 0.0) {
       ccaRng_ ^= ccaRng_ >> 12;
       ccaRng_ ^= ccaRng_ << 25;
       ccaRng_ ^= ccaRng_ >> 27;
-      ccaProceedAt_ = now + 0.25 + 0.5 * double(ccaRng_ % 1000) / 1000.0;
+      gap = std::max(gap, 0.25 + 0.5 * double(ccaRng_ % 1000) / 1000.0);
+    }
+    if (gap > 0.0) {
+      ccaProceedAt_ = now + gap;
       return true;
     }
   }
@@ -978,7 +996,8 @@ void LinkEngine::updateArqTimeout() {
   const double batch =
       (activeBand() == Band::VhfFm && mode_ >= 13) ? 4.0 : 1.0;
   const double dataAir = frameAirtimeSec(tp);
-  arqTx_.setTimeout(batch * dataAir + frameAirtimeSec(ta) + 3.0);
+  ackAirSec_ = frameAirtimeSec(ta);
+  arqTx_.setTimeout(batch * dataAir + ackAirSec_ + 3.0);
   // The flush must NOT fire between back-to-back containers of a
   // healthy stream - only when the sender actually went quiet.
   ackFlushSec_ = std::max(0.4, 1.6 * dataAir);
@@ -1055,6 +1074,15 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);
+  if (int nto = arqTx_.takeTimeouts(); nto > 0 && amc_) {
+    // Unacknowledged bursts are failure evidence for adaptation. Two
+    // per timeout keeps the 16-frame window responsive without
+    // swamping it: a mode whose bursts never arrive must demote even
+    // though the receiver, having heard nothing, reports nothing.
+    for (int i = 0; i < std::min(nto, 4) * 2; ++i) {
+      amc_->onFrameResult(false, false);
+    }
+  }
   if (arqTx_.failed() && fsm_.state() == FsmState::Connected) {
     faultDisc_ = true;  // dead link, not operator intent: resumable
     fsm_.cmdDisconnect(now);

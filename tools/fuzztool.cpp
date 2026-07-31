@@ -324,6 +324,21 @@ int runEngine(Rng& rng, long iters) {
     cb.policy.ownCall = "K6XYZ";
     ca.policy.family = cb.policy.family = Family(rng.u32(4));
     ca.policy.cssEnable = cb.policy.cssEnable = (rng.u32(2) == 0);
+#ifdef SKW_HAVE_CRYPTO
+    // Crypto-adversarial leg (campaign #55): most rounds run encrypted
+    // sessions so every corrupted/replayed/reflected burst also
+    // exercises AEAD tag rejection and replay windows; some rounds
+    // mismatch the PSKs - the sessions must refuse cleanly, never
+    // fall back to cleartext, never crash.
+    if (rng.u32(4) != 0) {
+      ca.encryptionRequested = cb.encryptionRequested = true;
+      ca.psk.assign(32, uint8_t(0xA5));
+      cb.psk.assign(32, uint8_t(0xA5));
+      if (rng.u32(5) == 0) cb.psk[7] ^= 0x01;  // wrong-PSK attempts
+      ca.policy.caps |= kCapEncryption;
+      cb.policy.caps |= kCapEncryption;
+    }
+#endif
     LinkEngine a(ca), b(cb);
     double now = 1000.0 * double(round + 1);
     std::vector<std::vector<cfloat>> replay;

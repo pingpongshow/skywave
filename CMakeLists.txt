@@ -214,6 +214,8 @@ if(BUILD_TESTS)
   # a quick smoke by default; real soaks run manually with SKW_SOAK_*.
   add_executable(soak_st2 tests/soak_st2.cpp)
   target_link_libraries(soak_st2 PRIVATE skywave_core)
+  add_executable(monkey_st2 tests/monkey_st2.cpp)
+  target_link_libraries(monkey_st2 PRIVATE skywave_core)
   if(ENABLE_CRYPTO)
     skw_test(test_crypto)
   endif()

@@ -61,6 +61,16 @@ class ArqTx {
 
   // Fires the ACK timeout: all in-flight unacked frames requeue.
   void tick(double now);
+  // Frames requeued by ACK timeout since the last call (cleared). A
+  // burst that is never acknowledged is the ONLY failure evidence a
+  // sender gets when the peer heard nothing at all - on a half-duplex
+  // link (deaf while keyed) or below the mode's floor, whole bursts
+  // vanish and the receiver-side statistics stay empty.
+  int takeTimeouts() {
+    const int n = timeouts_;
+    timeouts_ = 0;
+    return n;
+  }
 
   // Session resume (PROTOCOL.md): drop frames the peer confirmed
   // (< peerNextSeq), requeue everything still pending with fresh retry
@@ -83,6 +93,7 @@ class ArqTx {
   int maxRetries_;
   double timeoutSec_ = 10.0;
   double extraSec_ = 0.0;  // TX-queue delay ahead of newly armed timers
+  int timeouts_ = 0;       // ACK-timeout requeues (takeTimeouts)
   double deadline_ = 0.0;  // 0 = no timer armed
   uint16_t nextSeq_ = 0;
   bool failed_ = false;

@@ -1181,3 +1181,35 @@ doc was updated)*
   bandpass costs ~6 dB vs clean-baseband bertool floors), deep-tier
   stall window 900 s. Soak status: churn PASS, blackout PASS, floor
   blocked on discovery #10.
+- **Half-duplex turn-taking MAC / 2026-07-30** — The deaf-RX world
+  (receiver muted while its own TX airs - real single-transceiver PTT
+  physics) is now the PERMANENT ST2 validation environment, and the
+  MAC survives it:
+  - post-TX LISTEN WINDOW: after a burst drains, DATA holds for the
+    expected feedback airtime whenever an ACK is owed (per-burst on
+    HF, per-12-frame batch on the VHF-FM deep pipe so batch throughput
+    is preserved); a keyed transmitter is deaf, and keying over the
+    peer's incoming ACK was the failure that defeated the earlier
+    prototype;
+  - control busy-hold (2 s cap, fly-on-clear), bidirectional fairness
+    yield, and the listen-before-talk defer apply to every class;
+    handshake frames share the control hold;
+  - ACK-timeout requeues now feed the AMC as failure evidence
+    (Amc::onFrameResult via ArqTx::takeTimeouts): wholesale-lost
+    bursts - the NORM when the peer is deaf or the mode is under
+    water - previously left adaptation blind because only received
+    frames generated statistics.
+  Validated under deafness: test_st2 3/3, full suite 37/37, crypto
+  38/38, VHF M14 gate 25.5 kbps (engine-level, physics-free by
+  construction), M3 ramp 0.77, blackout soak PASS, monkey immunity
+  PASS (900 sim-s hostile audio: no crash/false-connect; 3 KiB
+  byte-exact through a tone+noise jammer). OPEN: the churn soak under
+  deafness stalls in the 8-11 dB dwells (~13 KB delivered first;
+  window-wide retransmission churn at marginal SNR, distinct from the
+  deterministic bug #10) - deep-margin bidirectional operation under
+  deafness needs further MAC tuning.
+  New tooling: tests/monkey_st2.cpp (immunity phases 1+2),
+  tests/st3_killresume.py (SIGKILL/resume hammer over real devices),
+  fuzztool engine crypto leg (encrypted sessions + wrong-PSK refusal
+  under burst corruption/replay: 160 rounds clean, crypto suite
+  38/38).

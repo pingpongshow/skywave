@@ -118,6 +118,7 @@ std::optional<ArqTx::Retransmit> ArqTx::nextRetransmit(double now) {
 void ArqTx::tick(double now) {
   if (deadline_ == 0.0 || now < deadline_ || pending_.empty()) return;
   // ACK never came: requeue every in-flight frame, oldest first.
+  ++timeouts_;
   for (auto& p : pending_) queueRetx(p);
   deadline_ = now + timeoutSec_ + extraSec_;
 }

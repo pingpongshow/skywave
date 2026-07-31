@@ -172,6 +172,12 @@ struct World {
   Shuttle ab, ba;
   bool starveB = false;  // fault injection: B's worker stops running
   uint64_t noiseRng = 0x243F6A8885A308D3ull;  // ambient-floor generator
+  // Interference injection (monkey/immunity runs): added at the RX
+  // point of each direction's path, heard only while unkeyed (a keyed
+  // half-duplex radio is deaf to jammers too).
+  double jamAmpAB = 0.0, jamToneAB = 0.0;   // into B's receiver
+  double jamAmpBA = 0.0, jamToneBA = 0.0;   // into A's receiver
+  double jamPhase = 0.0;
 
   World(double snrDb, uint64_t seed) : a(clk, "W1AW"), b(clk, "K6XYZ") {
     for (Shuttle* s : {&ab, &ba}) {
