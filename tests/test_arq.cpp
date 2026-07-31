@@ -126,8 +126,11 @@ TEST_CASE(timeout_clamp) {
   ArqTx tx(4, 8);
   tx.setTimeout(1.0);
   CHECK_NEAR(tx.timeoutSec(), 4.0, 1e-9);
+  // Ceiling 90 s: deep CSS data+ACK round trips legitimately exceed
+  // the old 45 s ceiling, which made every first transmission time out
+  // before its ACK could physically return.
   tx.setTimeout(100.0);
-  CHECK_NEAR(tx.timeoutSec(), 45.0, 1e-9);
+  CHECK_NEAR(tx.timeoutSec(), 90.0, 1e-9);
 }
 
 TEST_CASE(max_retries_teardown) {

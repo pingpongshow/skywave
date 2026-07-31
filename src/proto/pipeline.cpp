@@ -113,7 +113,7 @@ void ProtoTx::submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes) {
 }
 
 void ProtoTx::maybeSeal(double now) {
-  const size_t cap = coalesceMaxBytes();
+  const size_t cap = std::min(coalesceMaxBytes(), sealCap_);
   while (coalesce_.size() >= cap) {
     std::vector<uint8_t> chunk(coalesce_.begin(),
                                coalesce_.begin() + long(cap));

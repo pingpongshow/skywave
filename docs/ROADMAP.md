@@ -1320,3 +1320,41 @@ doc was updated)*
   is a PHY-detector change, not a handshake tweak. Recorded as the
   next phase; the speculative fallback edit was REVERTED rather than
   shipped half-working.
+- **Reconnect deadlock FIXED / 2026-07-30 (bug-fix pass, part 2)** —
+  Root cause of the unrecoverable marginal-SNR reconnect, found and
+  fixed at the session layer (the PHY was already exonerated):
+  1. A connected responder SILENTLY DROPPED fresh CALLs from its own
+     remote peer (the FSM comment promised "session-level dedup above
+     the FSM"; nothing implemented it), while
+  2. every decoded frame - including those dropped CALLs - REFRESHED
+     the responder's idle-disconnect timer. Together: the dead peer's
+     reconnect attempts kept the stale session immortal, and the link
+     stayed down forever.
+  Fix: a CALL from the current remote while Connected/Disconnecting
+  tears the stale session down as a FAULT drop (resumable) and answers
+  as a fresh responder; CALL frames no longer refresh session
+  liveness. Verified: isolated repro now reconnects in ~36 s (was:
+  never), soak reconnects observed working, suite 37/37, crypto 38/38,
+  blackout soak PASS (13.3 KB one-way through repeated dead air, zero
+  drops), monkey PASS, VHF 25.5 kbps, ramp 0.77.
+  ALSO in this pass: ARQ timeout ceiling 45->90 s (the old ceiling sat
+  below deep-CSS physical round trips), CSS modes run window-1
+  ping-pong with 2-codeword frames (preamble amortization), deep-tier
+  AMC cadence scales 8x with airtime, deep-tier stream messages seal
+  at ~8 frames for incremental delivery, and the retransmit dedup
+  keeps its ORIGINAL charge-then-check semantics - a peek-first
+  variant left the ACK timer armed, blocked pumpData head-of-line
+  every tick, and zeroed one-way goodput (found by bisect, documented
+  in pumpData).
+  REMAINING RED (floor + churn soaks): deep-tier DATA THROUGHPUT.
+  Measured live: 0.83 B/s at M1 against 32 B/s theoretical net -
+  frame traces show the channel consumed by control exchanges whose
+  wall-clock constants (2 s control hold, listen windows, mode-change
+  retry cadence) are OFDM-tuned and misfire at CSS airtimes, keying
+  each side deaf across the other's replies. Piecemeal retuning
+  oscillated (three attempts regressed other gates and were reverted);
+  this needs ONE coherent airtime-derived constant set - control
+  holds, listen windows, exchange quiescing, adaptation cadence all
+  computed from the session mode's frame airtime. Scoped as the next
+  design phase ("deep-tier MAC timing"), with all measurements and
+  traces from this session as its inputs.

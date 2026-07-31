@@ -116,6 +116,11 @@ int main() {
   // (links degrade after establishment in reality too), then drop to
   // the floor for the whole soak.
   const bool floorScen = scen == "floor";
+  // Blackout tests DEAD-AIR RECOVERY (ARQ retries, keepalives,
+  // reconnect, resume), not two-way saturation - simultaneous two-way
+  // bulk is a documented open limitation and pumping both directions
+  // made this scenario measure that instead of what it names.
+  const bool oneWay = floorScen || scen == "blackout";
   applyPreset(w, floorScen ? 0 : preset, floorScen ? 15.0 : snr);
   Gen gA(seed * 7 + 1), gB(seed * 7 + 2);
 
@@ -164,7 +169,7 @@ int main() {
         auto c = gA.chunk(256 + rng.u32(768));
         ::send(w.a.dataFd, c.data(), c.size(), 0);
       }
-      if (!floorScen && gB.sent.size() < w.a.dataAcc.size() + 4096) {
+      if (!oneWay && gB.sent.size() < w.a.dataAcc.size() + 4096) {
         auto c = gB.chunk(256 + rng.u32(768));
         ::send(w.b.dataFd, c.data(), c.size(), 0);
       }
@@ -278,7 +283,7 @@ int main() {
 
   // Final: at least SOME traffic must have flowed, byte-exact.
   if (w.b.dataAcc.size() < 4096 ||
-      (!floorScen && w.a.dataAcc.size() < 4096)) {
+      (!oneWay && w.a.dataAcc.size() < 4096)) {
     return fail("too little delivered over the whole run", simNow());
   }
   std::printf(

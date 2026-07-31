@@ -7,7 +7,12 @@ namespace skw {
 // -------------------------------------------------------------------- ArqTx
 
 void ArqTx::setTimeout(double sec) {
-  timeoutSec_ = std::clamp(sec, 4.0, 45.0);
+  // Ceiling 90 s: a runaway guard, NOT a tuning. The old 45 s ceiling
+  // sat BELOW the physical data+ACK round trip of deep CSS modes, so
+  // every first transmission timed out before its ACK could possibly
+  // return and each frame cost a full retransmission cycle (measured
+  // 0.83 B/s live at M1 against a 32 B/s theoretical net).
+  timeoutSec_ = std::clamp(sec, 4.0, 90.0);
 }
 
 ArqTx::Pending* ArqTx::find(uint16_t seq) {

@@ -54,6 +54,11 @@ ChirpSig sigForMode(int mode) {
 }
 
 int macWindow(int mode) {
+  // CSS modes run PURE PING-PONG (window 1): frame airtimes are tens
+  // of seconds, and a second in-flight frame pushes the peer's ACK
+  // past even a correctly-sized timeout (the transmitter is deaf while
+  // keyed - the ACK cannot interleave).
+  if (mode <= 3) return 1;
   if (mode <= 6) return 2;
   if (mode <= 9) return 4;
   // M13+ window 16 on VHF-FM only: the top rungs there need >= 2 full
@@ -876,6 +881,19 @@ void LinkEngine::pumpData(double now) {
       fprintf(stderr, "%s pumpData retx seq=%u rv=%d\n",
               cfg_.policy.ownCall.c_str(), r->seq, int(r->rv));
     }
+    // A copy of this sequence may already be queued (aggressive timeout
+    // requeues while the TX queue is still draining): let the queued
+    // copy fly instead of stacking duplicates. Charging the retry and
+    // re-arming the deadline BEFORE this check is deliberate - a
+    // peek-first variant that skipped the charge left the timer armed,
+    // blocked pumpData head-of-line on every tick, and starved new
+    // segments outright (one-way goodput went to ZERO). The retry
+    // budget stays honest via progress-resets in onAck.
+    for (const auto& q : outQueue_) {
+      if (q.env.type == LinkType::Data && q.env.sequence == r->seq) {
+        return;
+      }
+    }
     OutFrame f;
     f.env.type = LinkType::Data;
     f.env.sessionId = sessionId_;
@@ -1005,11 +1023,20 @@ void LinkEngine::updateArqTimeout() {
   // Codeword target: the top rungs (M13+) fill the 4095-byte PHY cap -
   // per-burst preamble/sync/header overhead is what caps VHF-FM
   // throughput, so bursts must be as long as the wire allows.
+  // CSS frames carry 2 codewords (~66 B): the chirp preamble + sync +
+  // duplicated header dominate a 1-codeword frame's airtime, and the
+  // deep tier was delivering ~1 B/s of goodput on 25 B frames.
   const int cwTarget =
       (mode_ >= 13 && activeBand() == Band::VhfFm)
           ? 6 * fpb
-          : (mode_ <= 7 ? 1 : 2) * fpb;
+          : (mode_ <= 3 ? 2 : (mode_ <= 7 ? 1 : 2)) * fpb;
   dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
+  // DEEP-TIER stream messages span at most ~8 frames (delivery stays
+  // incremental when frames carry tens of bytes - see setSealCap).
+  // OFDM modes keep full-size coalescing: capping them measurably cost
+  // the VHF and ramp throughput gates.
+  protoTx_.setSealCap(mode_ <= 3 ? std::max<size_t>(8 * dataBudget_, 192)
+                                 : size_t(-1));
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
@@ -1555,7 +1582,14 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             unsigned(f.env.sequence));
   }
   lastRxQuality_ = q;
-  fsm_.rxTraffic(now);
+  // Idle-disconnect liveness: refreshed by session traffic, and NOT by
+  // pre-session CALL frames - a dead peer's reconnect attempts used to
+  // keep the stale session alive forever (half of the reconnect
+  // deadlock handled in the Call case below). Everything except CALL
+  // refreshes: gating on exact sessionId regressed one-way transfer
+  // outright (ACKs ride containers whose envelope id can differ
+  // legitimately across resume epochs).
+  if (f.env.type != LinkType::Call) fsm_.rxTraffic(now);
   probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
     amc_->onLocalSnr(q.snrDb);
@@ -1565,6 +1599,23 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Call: {
       auto call = CallBody::parse(f.body);
       if (!call || call->dstCall != cfg_.policy.ownCall) return;
+      if ((fsm_.state() == FsmState::Connected ||
+           fsm_.state() == FsmState::Disconnecting) &&
+          call->srcCall == remoteCall_) {
+        // The peer is calling FRESH while we still hold a session with
+        // it: it lost that session (died at marginal SNR, rebooted,
+        // operator abort). This is the session-level reconnect dedup
+        // the FSM's rxCall comment always promised but nothing
+        // implemented - without it the stale side IGNORED every
+        // reconnect CALL while those same CALLs refreshed its idle
+        // timer, keeping the dead session immortal and the link down
+        // for good. Tear down as a FAULT drop (resumable: the peer may
+        // present the token in its START) and answer as a fresh
+        // responder.
+        faultDisc_ = true;
+        fsm_.cmdAbort(now);
+        drainFsmActions(now);
+      }
       if (fsm_.state() == FsmState::Calling) {
         // Simultaneous-connect collision: both stations are calling each
         // other. Deterministic tie-break - the lexically GREATER callsign

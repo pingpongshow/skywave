@@ -69,6 +69,15 @@ struct ProtoSegment {
 class ProtoTx {
  public:
   void setZstd(bool on) { zstd_ = on; }  // committed capability
+  // Seal-size ceiling for STREAM coalescing, set by the engine from the
+  // session mode's frame budget. Under saturated submit the window
+  // otherwise always fills to coalesceMaxBytes() before the deadline,
+  // and at deep modes a single 4 KiB message spans ~160 frames - the
+  // app sees NOTHING until every one of them lands (observed: a
+  // connected M0 session with zero delivered bytes for 900 s).
+  // Bounding the message to a handful of frames makes delivery
+  // incremental at every mode.
+  void setSealCap(size_t bytes) { sealCap_ = bytes ? bytes : 1; }
   // Buffer app STREAM bytes (kSvcStream); the coalesce deadline arms at
   // the first byte of an empty window.
   void submit(std::span<const uint8_t> bytes, double now);
@@ -87,6 +96,7 @@ class ProtoTx {
   void seal(uint8_t svcTag, std::span<const uint8_t> raw);
 
   bool zstd_ = false;
+  size_t sealCap_ = size_t(-1);
   std::vector<uint8_t> coalesce_;
   double deadline_ = 0.0;
   struct Msg {

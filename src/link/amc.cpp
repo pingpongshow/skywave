@@ -137,6 +137,14 @@ AmcDecision Amc::evaluate(double now) {
   const double eff = effectiveSnrDb(now);
   const double retry = retryRatio();
   degraded_ = false;
+  // Adaptation cadence scales with the mode's AIRTIME class: at CSS
+  // modes a single frame runs tens of seconds, so wall-clock dwells
+  // tuned for OFDM (6 s / 15 s) re-decide every frame and the
+  // MODE_CHANGE exchanges themselves consume the channel (measured:
+  // deep-tier goodput 0.83 B/s with a mode change every ~20 s).
+  const double cadence = mode_ <= 3 ? 8.0 : 1.0;
+  const double dwellSec = cfg_.minDwellSec * cadence;
+  const double promoteHoldSec = 15.0 * cadence;
 
   // Fast demote: applies even when pinned (safety), min dwell waived.
   if (windowFill_ >= 8 && retry > cfg_.fastDemoteRetryMin) {
@@ -175,8 +183,9 @@ AmcDecision Amc::evaluate(double now) {
   // fading: a mode flap every ~6 s with data starved behind it).
   // 15 s ~ 2.5 dwells: enough to break the flap loop while keeping the
   // M3 ramp-tracking gate (>= 0.75 of genie throughput) intact.
-  if (mode_ >= cfg_.maxMode || now - lastChange_ < cfg_.minDwellSec ||
-      now - lastDemoteAt_ < 15.0 || retry > cfg_.promoteRetryMax) {
+  if (mode_ >= cfg_.maxMode || now - lastChange_ < dwellSec ||
+      now - lastDemoteAt_ < promoteHoldSec ||
+      retry > cfg_.promoteRetryMax) {
     promoteStreak_ = 0;
     return {};
   }
