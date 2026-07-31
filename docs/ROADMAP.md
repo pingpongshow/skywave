@@ -1213,3 +1213,30 @@ doc was updated)*
   fuzztool engine crypto leg (encrypted sessions + wrong-PSK refusal
   under burst corruption/replay: 160 rounds clean, crypto suite
   38/38).
+- **Stress campaign wrap / 2026-07-30 (post half-duplex MAC)** —
+  Remaining campaign legs:
+  - RF MONKEY (#54): PASS - 900 sim-s of hostile audio (band noise,
+    fixed/swept tones, CW keying, impulse crashes, clipped garbage)
+    against a listening modem: no crash, no false connect, control
+    port responsive; 3 KiB byte-exact through a tone+noise jammer on
+    an established session (tests/monkey_st2.cpp).
+  - CRYPTO ADVERSARIAL (#55): PASS - fuzztool engine crypto leg (160
+    encrypted adversarial sessions: corrupted/replayed/reflected
+    bursts under AEAD, periodic wrong-PSK attempts refused cleanly,
+    no cleartext fallback, no crash) + crypto suite 38/38.
+  - KILL-9/RESUME HAMMER (#52): harness built
+    (tests/st3_killresume.py); resume-after-death itself is validated
+    at the ST2/engine level (test_file resume case + the resumed-mode
+    clamp), and the ST2 dead-peer probe confirms teardown fires
+    correctly (~90-120 s) with and without data in flight. The
+    REAL-DEVICE leg is blocked on a NEW OBSERVABILITY FINDING: during
+    dead-peer retransmission churn the CONTROL PORT can go
+    unresponsive for >20 s at a time (worker mutex held through
+    long-window decode attempts - the RX retry ladder runs captures up
+    to 90 s of audio inside the lock), so the harness cannot poll
+    session state. Needs either chunked/interruptible long-window
+    decodes or control handling decoupled from the decode lock.
+  Half-duplex MAC status: validated under permanent deaf-RX physics
+  (suite, blackout soak, monkey); OPEN residuals - churn soak stalls
+  in the 8-11 dB deaf dwells, and bug #10 (deterministic deep-tier
+  payload failure through the radio chain) still stands.

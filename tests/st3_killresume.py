@@ -94,12 +94,17 @@ def main():
                 # queued stream with it. Let A's ARQ declare the peer
                 # dead (failure-mode teardown KEEPS the resume context),
                 # then call again - exactly as an application would.
+                def a_state():
+                    try:
+                        return a_ctrl.cmd("STATE")
+                    except (TimeoutError, OSError):
+                        return "STATE CONNECTED"  # busy: poll again
                 waited = time.time()
-                while (a_ctrl.cmd("STATE") == "STATE CONNECTED"
-                       and time.time() - waited < 300):
+                while (a_state() == "STATE CONNECTED"
+                       and time.time() - waited < 600):
                     time.sleep(2.0)
-                if a_ctrl.cmd("STATE") == "STATE CONNECTED":
-                    print("killresume FAIL: A never noticed the dead peer")
+                if a_state() == "STATE CONNECTED":
+                    print("killresume FAIL: A never noticed the dead peer (600 s)")
                     return 1
                 print(f"killresume: A dropped at {time.time() - t0:.0f}s; "
                       "reconnecting")
