@@ -1287,3 +1287,36 @@ doc was updated)*
   Soak status after this pass: blackout PASS, monkey PASS, crypto
   PASS, suite 37/37, crypto 38/38, VHF 25.5 kbps, ramp 0.79; churn and
   floor remain RED on the reconnect defect above.
+- **Reconnect-at-marginal-SNR investigation / 2026-07-30** — Made the
+  measurement conformance never made: CALL-frame FER through the FULL
+  radio chain, per transport, archived at
+  `docs/conformance/handshake_chain.txt`. Two hard findings:
+  1. **CSS M0 carries an SNR-INDEPENDENT ~10-13% error floor under
+     CCIR Moderate** - identical at +21 dB and +9 dB, so it is
+     structural (fading during sync/tap acquisition), not noise. My
+     earlier "CSS is clean" result only covered AWGN.
+  2. **OFDM M4 beats CSS M0 everywhere above ~0 dB** (WIDE +9 dB: 0%
+     vs 13%; +3 dB: 50% vs 27%; 0 dB: 87% vs 50%). The CALL ladder
+     nevertheless spent TWO of every THREE attempts on CSS.
+  FIXED: the ladder now ALTERNATES transports 1:1
+  (`callOnCssForAttempt`, attempt%2), matching the measured crossover.
+  Suite 37/37, handshake + CSS-link tests green, ramp 0.79, VHF
+  25.5 kbps.
+  STILL RED (churn + floor soaks): the isolated repro (scratchpad
+  `callstuck`) still fails to re-establish at 9 dB set-point (~3 dB
+  effective through the chain), because at that SNR BOTH transports
+  are marginal on WIDE and a handshake needs four consecutive frames.
+  The obvious fix - retry the ladder on a NARROWER family (measured
+  MID: 3% FER at +3 dB where WIDE is 50%) - turns out to be BLOCKED BY
+  A DESIGN GAP, found while wiring it: `callFamilyForAttempt()` has
+  existed since 2.3 but was NEVER WIRED INTO THE ENGINE, and it cannot
+  simply be wired in, because the RECEIVER only ever scans its OWN
+  configured family (`rxBurst` passes `cfg_.policy.family`). A WIDE
+  listener is deaf to a MID call, so today family fallback can only
+  ever work DOWNWARD toward the listener's family (the ULTRA->WIDE
+  case). Making marginal-SNR reconnection work therefore requires
+  RECEIVER-SIDE MULTI-FAMILY DETECTION (scan the configured family
+  plus at least the next narrower one during LISTENING/CALLING), which
+  is a PHY-detector change, not a handshake tweak. Recorded as the
+  next phase; the speculative fallback edit was REVERTED rather than
+  shipped half-working.

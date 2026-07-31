@@ -55,12 +55,27 @@ uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
                                uint8_t worstSelectivity, uint8_t maxMode,
                                bool cssTier = false);
 
-// CALL transport for 0-based attempt N: OFDM robust signature first
-// (fast connect at workable SNR), then two CSS attempts for every OFDM
-// one - once the first OFDM call goes unanswered, deep-floor odds
-// dominate and CSS legs near the fading floor run ~50% each.
+// CALL transport for 0-based attempt N: OFDM robust first (fast
+// connect at workable SNR), then STRICT ALTERNATION with CSS.
+//
+// The original 2-CSS-per-OFDM split assumed CSS dominates once an OFDM
+// call goes unanswered. Measuring CALL-frame FER through the FULL
+// radio chain (docs/conformance/handshake_chain.txt - the measurement
+// conformance never made, since it only covered clean baseband) shows
+// that is only true BELOW ~0 dB:
+//
+//   WIDE, CCIR Moderate:  +9 dB  OFDM  0%  / CSS 13%
+//                         +3 dB  OFDM 50%  / CSS 27%
+//                          0 dB  OFDM 87%  / CSS 50%
+//
+// CSS also carries an SNR-INDEPENDENT ~10-13% fading floor, so
+// spending two thirds of the ladder on it made reconnection at
+// marginal SNR markedly WORSE than alternating: unanswered calls
+// happen at every SNR (the peer may simply be transmitting), and the
+// old split answered every one of them by mostly abandoning the
+// transport that actually works above 0 dB.
 inline bool callOnCssForAttempt(const HandshakePolicy& p, int attempt) {
-  return p.cssEnable && (attempt % 3) != 0;
+  return p.cssEnable && (attempt % 2) != 0;
 }
 
 // MAC burst profile id for a mode (PROTOCOL.md table rows 0/1/2).

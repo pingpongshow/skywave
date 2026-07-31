@@ -1,0 +1,36 @@
+CALL frame FER through the radio chain (AWGN, 30 trials)
+family transport snr    FER
+WIDE               21  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE               15  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE               12  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE                9  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE                6  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE                3  OFDM-M4   0.0%   CSS-M0   0.0%
+WIDE                0  OFDM-M4  23.3%   CSS-M0   0.0%
+WIDE               -3  OFDM-M4 100.0%   CSS-M0   3.3%
+MID                21  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                15  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                12  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                 9  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                 6  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                 3  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                 0  OFDM-M4   0.0%   CSS-M0   0.0%
+MID                -3  OFDM-M4   3.3%   CSS-M0   0.0%
+CALL frame FER through the radio chain (CCIR Moderate, 30 trials)
+family transport snr    FER
+WIDE               21  OFDM-M4   3.3%   CSS-M0  10.0%
+WIDE               15  OFDM-M4   0.0%   CSS-M0  10.0%
+WIDE               12  OFDM-M4   0.0%   CSS-M0   6.7%
+WIDE                9  OFDM-M4   0.0%   CSS-M0  13.3%
+WIDE                6  OFDM-M4  13.3%   CSS-M0  16.7%
+WIDE                3  OFDM-M4  50.0%   CSS-M0  26.7%
+WIDE                0  OFDM-M4  86.7%   CSS-M0  50.0%
+WIDE               -3  OFDM-M4 100.0%   CSS-M0  86.7%
+MID                21  OFDM-M4   0.0%   CSS-M0  13.3%
+MID                15  OFDM-M4   0.0%   CSS-M0  13.3%
+MID                12  OFDM-M4   0.0%   CSS-M0  13.3%
+MID                 9  OFDM-M4   0.0%   CSS-M0  13.3%
+MID                 6  OFDM-M4   0.0%   CSS-M0  10.0%
+MID                 3  OFDM-M4   3.3%   CSS-M0  20.0%
+MID                 0  OFDM-M4  10.0%   CSS-M0  23.3%
+MID                -3  OFDM-M4  76.7%   CSS-M0  23.3%
