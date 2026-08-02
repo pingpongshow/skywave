@@ -222,7 +222,11 @@ void Gui::drawInstrumentPanel() {
 }
 
 void Gui::drawSettingsPanel() {
-  ImGui::Begin("Settings");
+  // Closeable: lives behind Modem > Settings...
+  if (!ImGui::Begin("Settings", &showSettings_)) {
+    ImGui::End();
+    return;
+  }
   ImGui::InputText("MYCALL", callBuf_, sizeof(callBuf_));
   ImGui::SameLine();
   if (ImGui::Button("Apply##call")) {
@@ -356,24 +360,52 @@ bool Gui::frame() {
   ImGui_ImplSDLRenderer2_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+  // Menu bar: Settings lives in its own menu-invoked window; View
+  // toggles the operating panels.
+  if (ImGui::BeginMainMenuBar()) {
+    if (ImGui::BeginMenu("Modem")) {
+      if (ImGui::MenuItem("Settings...", nullptr, showSettings_)) {
+        showSettings_ = !showSettings_;
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("View")) {
+      ImGui::MenuItem("Session", nullptr, &showSession_);
+      ImGui::MenuItem("Ladder / AMC", nullptr, &showLadder_);
+      ImGui::MenuItem("Instruments", nullptr, &showInstruments_);
+      ImGui::MenuItem("Command log", nullptr, &showLog_);
+      ImGui::EndMenu();
+    }
+    ImGui::EndMainMenuBar();
+  }
   // First-run layout: without explicit positions every panel spawns
   // stacked at the top-left. FirstUseEver keeps user rearrangements
   // (imgui.ini) authoritative afterwards.
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(400, 230), ImGuiCond_FirstUseEver);
-  drawSessionPanel();
-  ImGui::SetNextWindowPos(ImVec2(10, 250), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(400, 270), ImGuiCond_FirstUseEver);
-  drawLadderPanel();
-  ImGui::SetNextWindowPos(ImVec2(420, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(520, 340), ImGuiCond_FirstUseEver);
-  drawInstrumentPanel();
-  ImGui::SetNextWindowPos(ImVec2(420, 360), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(520, 240), ImGuiCond_FirstUseEver);
-  drawSettingsPanel();
-  ImGui::SetNextWindowPos(ImVec2(10, 530), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(930, 240), ImGuiCond_FirstUseEver);
-  drawLogPanel();
+  if (showSession_) {
+    ImGui::SetNextWindowPos(ImVec2(10, 34), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 230), ImGuiCond_FirstUseEver);
+    drawSessionPanel();
+  }
+  if (showLadder_) {
+    ImGui::SetNextWindowPos(ImVec2(10, 274), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 270), ImGuiCond_FirstUseEver);
+    drawLadderPanel();
+  }
+  if (showInstruments_) {
+    ImGui::SetNextWindowPos(ImVec2(420, 34), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 340), ImGuiCond_FirstUseEver);
+    drawInstrumentPanel();
+  }
+  if (showSettings_) {
+    ImGui::SetNextWindowPos(ImVec2(180, 90), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560, 560), ImGuiCond_FirstUseEver);
+    drawSettingsPanel();
+  }
+  if (showLog_) {
+    ImGui::SetNextWindowPos(ImVec2(10, 554), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(930, 220), ImGuiCond_FirstUseEver);
+    drawLogPanel();
+  }
   ImGui::Render();
   auto* ren = static_cast<SDL_Renderer*>(renderer_);
   // Retina/HiDPI: the drawable is scaled relative to window points;

@@ -96,6 +96,11 @@ class Gui {
   char pttMethodBuf_[24] = {0};
   char pttPortBuf_[64] = {0};
   int pttLead_ = 50, pttTail_ = 20;
+  // Window visibility (menu-driven). Settings lives behind the menu
+  // bar; the operating panels are on by default.
+  bool showSettings_ = false;
+  bool showSession_ = true, showLadder_ = true;
+  bool showInstruments_ = true, showLog_ = true;
   double lastStrPollSec_ = -1.0;
   // Audio device picker state.
   std::vector<AudioDeviceInfo> audioDevs_;
