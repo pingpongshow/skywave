@@ -221,13 +221,33 @@ bool Gui::frame() {
   ImGui_ImplSDLRenderer2_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+  // First-run layout: without explicit positions every panel spawns
+  // stacked at the top-left. FirstUseEver keeps user rearrangements
+  // (imgui.ini) authoritative afterwards.
+  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(400, 230), ImGuiCond_FirstUseEver);
   drawSessionPanel();
+  ImGui::SetNextWindowPos(ImVec2(10, 250), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(400, 270), ImGuiCond_FirstUseEver);
   drawLadderPanel();
+  ImGui::SetNextWindowPos(ImVec2(420, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(520, 340), ImGuiCond_FirstUseEver);
   drawInstrumentPanel();
+  ImGui::SetNextWindowPos(ImVec2(420, 360), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(520, 240), ImGuiCond_FirstUseEver);
   drawSettingsPanel();
+  ImGui::SetNextWindowPos(ImVec2(10, 530), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(930, 240), ImGuiCond_FirstUseEver);
   drawLogPanel();
   ImGui::Render();
   auto* ren = static_cast<SDL_Renderer*>(renderer_);
+  // Retina/HiDPI: the drawable is scaled relative to window points;
+  // without matching the renderer scale, the whole UI draws at half
+  // size in the top-left quadrant and mouse hits land offset (the
+  // official imgui SDL_Renderer example does exactly this).
+  const ImGuiIO& io = ImGui::GetIO();
+  SDL_RenderSetScale(ren, io.DisplayFramebufferScale.x,
+                     io.DisplayFramebufferScale.y);
   SDL_SetRenderDrawColor(ren, 18, 18, 22, 255);
   SDL_RenderClear(ren);
   ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), ren);
