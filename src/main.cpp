@@ -205,6 +205,7 @@ int main(int argc, char** argv) {
         gui.reset();
       } else {
         gui->setAudioSelection(cfg.inputDevice, cfg.outputDevice);
+        gui->setPortInfo(cfg.dataPort, cfg.ctrlPort, cfg.voicePort);
       }
     }
 #endif

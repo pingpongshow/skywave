@@ -59,6 +59,7 @@ class Gui {
   // stops the old backend, opens the new one, and reports the outcome
   // back via noteAudio().
   void setAudioSelection(int inDev, int outDev);  // current devices
+  void setPortInfo(int data, int ctrl, int voice);
   std::optional<std::pair<int, int>> takeAudioRequest();
   void noteAudio(const std::string& result);
   const std::vector<GuiLogLine>& log() const { return log_; }
@@ -88,6 +89,13 @@ class Gui {
   // string helpers take the modem mutex and must not run per frame).
   std::string strFsmState_, strMyCall_, strFamily_, strMode_;
   std::string strStatus_, strFreqInfo_, strAudioLevel_;
+  double netBps_ = 0.0;
+  int portData_ = 0, portCtrl_ = 0, portVoice_ = 0;
+  bool ultraOn_ = false, listenOn_ = true, cwidOn_ = false;
+  int maxModeIdx_ = 9;      // 0 = M4 .. 9 = M13
+  char pttMethodBuf_[24] = {0};
+  char pttPortBuf_[64] = {0};
+  int pttLead_ = 50, pttTail_ = 20;
   double lastStrPollSec_ = -1.0;
   // Audio device picker state.
   std::vector<AudioDeviceInfo> audioDevs_;

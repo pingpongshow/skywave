@@ -155,7 +155,7 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
                                      : "ERROR:BADARG";
   }
   if (verb == "CHANMEM" || verb == "PROBE" || verb == "MASKING" ||
-      verb == "RESUME") {
+      verb == "RESUME" || verb == "ULTRA") {
     if (argc == 0) {
       auto v = be.feature(verb);
       return v ? verb + " " + onOff(*v) : "ERROR:STATE";

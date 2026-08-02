@@ -216,11 +216,20 @@ void ModemWorker::pumpRxLocked(double now) {
       blockDbfs_ = levelDbfs(powAcc_, powN_);
       powAcc_ = 0.0;
       powN_ = 0;
-      if (blockDbfs_ < floorDbfs_ + 1.0f) {
-        floorDbfs_ = blockDbfs_;  // fast acquisition downward
-      } else {
-        floorDbfs_ += 0.02f;      // slow rise tracks drifting bands
-      }
+      // Noise floor = MINIMUM block level over a 15 s window (longer
+      // than any legal burst, so a transmission cannot pull the floor
+      // up mid-burst; a >15 s continuous interferer becomes the new
+      // floor, which is exactly what LBT should adapt to). The old
+      // ratchet (fast down / +0.02 dB per block up) started at
+      // -120 dBFS and needed ~3 MINUTES to climb to a real ambient
+      // floor - during which EVERY block read "busy" and the whole
+      // LBT/CCA machinery ran on cap-expiries instead of real channel
+      // state (the root of the pinned-busy pathologies and the long
+      // handshake turn gaps observed live).
+      floorBlocks_.push_back(blockDbfs_);
+      if (floorBlocks_.size() > 150) floorBlocks_.pop_front();
+      floorDbfs_ =
+          *std::min_element(floorBlocks_.begin(), floorBlocks_.end());
       chanBusy_ = blockDbfs_ > floorDbfs_ + 6.0f;
     }
   }
@@ -246,7 +255,52 @@ void ModemWorker::pumpRxLocked(double now) {
   int decodeBudget = 2;
   for (auto it = pendingRx_.begin(); it != pendingRx_.end();) {
     bool done = false;
-    while (it->tries < kRxTries && decodeBudget > 0) {
+    // BURST-END attempt: the ladder's window sizes are coarse
+    // (2.5/5/10/20... s), so a burst slightly longer than one window
+    // used to sit UNDECODED until the next window's worth of audio
+    // accumulated - 4+ s of dead air after the burst already ended,
+    // observed live as 5-10 s turn-taking gaps on MID/NARROW (whose
+    // handshake bursts outgrow the 5 s window; WIDE's fit). When the
+    // channel just went QUIET, decode NOW with exactly the audio that
+    // exists - once per quiet period per capture.
+    if (getenv("SKW_RXLADDER_DEBUG") &&
+        now - ladderDbgAt_ > 1.0) {
+      ladderDbgAt_ = now;
+      fprintf(stderr,
+              "%s ladder t=%.1f busy=%d blk=%.1f floor=%.1f tries=%d "
+              "haveSec=%.1f\n",
+              cfg_.callsign.c_str(), now, chanBusy_ ? 1 : 0,
+              double(blockDbfs_), double(floorDbfs_), it->tries,
+              double(histEnd - it->start) / kFsBaseband);
+    }
+    if (!done && decodeBudget > 0 && it->tries < kRxTries && !chanBusy_ &&
+        it->quietTriedAt != histEnd && histEnd > it->start) {
+      const uint64_t have = histEnd - it->start;
+      const uint64_t nextNeed =
+          uint64_t(kRxWindowSec[it->tries] * kFsBaseband);
+      // Only worthwhile between ladder rungs: enough audio that the
+      // PREVIOUS rung failed (or 1.5 s minimum), but short of the next.
+      const double prevSec = it->tries > 0 ? kRxWindowSec[it->tries - 1]
+                                           : 1.5;
+      if (have < nextNeed && have > uint64_t(prevSec * kFsBaseband)) {
+        it->quietTriedAt = histEnd;
+        if (getenv("SKW_RXLADDER_DEBUG")) {
+          fprintf(stderr, "%s quiet-try t=%.1f haveSec=%.1f tries=%d\n",
+                  cfg_.callsign.c_str(), now,
+                  double(have) / kFsBaseband, it->tries);
+        }
+        const uint64_t w0 = std::max(it->start, histBase_);
+        std::span<const cfloat> win(hist_.data() + size_t(w0 - histBase_),
+                                    size_t(histEnd - w0));
+        const bool engineEligible =
+            listen_ || engine_->state() != FsmState::Idle;
+        --decodeBudget;
+        if (engineEligible && engine_->rxBurst(win, now, false)) {
+          done = true;
+        }
+      }
+    }
+    while (!done && it->tries < kRxTries && decodeBudget > 0) {
       const uint64_t need =
           it->start + uint64_t(kRxWindowSec[it->tries] * kFsBaseband);
       if (histEnd < need) break;  // wait for more audio
@@ -541,6 +595,11 @@ std::string ModemWorker::fsmStateNameLocked(FsmState st) {
   return "IDLE";
 }
 
+double ModemWorker::netBps() {
+  std::lock_guard lock(modemMutex_);
+  return engine_->netBps();
+}
+
 std::string ModemWorker::myCall() {
   std::lock_guard lock(modemMutex_);
   return cfg_.callsign;
@@ -747,9 +806,11 @@ bool ModemWorker::setHarq(const std::string& m) {
 std::optional<bool> ModemWorker::feature(const std::string& name) {
   std::lock_guard lock(modemMutex_);
   if (name == "CHANMEM") return cfg_.channelMemory;
+  if (name == "ULTRA") return cfg_.ultraEnable;
   if (name == "PROBE") return cfg_.probePromote;
   if (name == "MASKING") return cfg_.carrierMasking;
   if (name == "RESUME") return cfg_.resume;
+  if (name == "ULTRA") return cfg_.ultraEnable;
   return std::nullopt;
 }
 
@@ -758,6 +819,11 @@ bool ModemWorker::setFeature(const std::string& name, bool on) {
   if (engine_->state() != FsmState::Idle) return false;
   if (name == "CHANMEM") {
     cfg_.channelMemory = on;
+  } else if (name == "ULTRA") {
+    // GUI/control-port gate for the ULTRA family (config
+    // modem.ultra_enable). Without this the FAMILY ULTRA command was
+    // simply refused with no way to enable it at runtime.
+    cfg_.ultraEnable = on;
   } else if (name == "PROBE") {
     cfg_.probePromote = on;
   } else if (name == "MASKING") {

@@ -77,6 +77,7 @@ void Gui::sampleTelemetry() {
     strStatus_ = worker_.statusLine();
     strFreqInfo_ = worker_.freqInfo();
     strAudioLevel_ = worker_.audioLevel();
+    netBps_ = worker_.netBps();
   }
 }
 
@@ -114,9 +115,25 @@ bool Gui::init(int width, int height) {
     if (fam == kFamilyNames[i]) familyIdx_ = i;
   }
   monitor_ = worker_.monitoring();
+  if (auto u = worker_.feature("ULTRA")) ultraOn_ = *u;
+  listenOn_ = worker_.listening();
+  cwidOn_ = worker_.cwId();
+  maxModeIdx_ = std::clamp(worker_.maxMode() - 4, 0, 9);
+  snprintf(pttMethodBuf_, sizeof(pttMethodBuf_), "%s",
+           worker_.pttGet("METHOD").c_str());
+  snprintf(pttPortBuf_, sizeof(pttPortBuf_), "%s",
+           worker_.pttGet("PORT").c_str());
+  pttLead_ = atoi(worker_.pttGet("LEAD").c_str());
+  pttTail_ = atoi(worker_.pttGet("TAIL").c_str());
   audioDevs_ = listAudioDevices();
   ready_ = true;
   return true;
+}
+
+void Gui::setPortInfo(int data, int ctrl, int voice) {
+  portData_ = data;
+  portCtrl_ = ctrl;
+  portVoice_ = voice;
 }
 
 void Gui::setAudioSelection(int inDev, int outDev) {
@@ -172,7 +189,8 @@ void Gui::drawSessionPanel() {
 
 void Gui::drawLadderPanel() {
   ImGui::Begin("Ladder / AMC");
-  ImGui::Text("Committed: M%u", unsigned(snap_.mode));
+  ImGui::Text("Committed: M%u   Net rate: %.0f bps", unsigned(snap_.mode),
+              netBps_);
   if (!inst_.modeHistory.empty()) {
     std::vector<float> hist;
     hist.reserve(inst_.modeHistory.size());
@@ -213,9 +231,53 @@ void Gui::drawSettingsPanel() {
   if (ImGui::Combo("FAMILY", &familyIdx_, "WIDE\0MID\0NARROW\0ULTRA\0")) {
     submit(std::string("FAMILY ") + kFamilyNames[familyIdx_]);
   }
+  if (ImGui::Checkbox("ULTRA enable", &ultraOn_)) {
+    submit(std::string("ULTRA ") + (ultraOn_ ? "ON" : "OFF"));
+  }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("LISTEN", &listenOn_)) {
+    submit(std::string("LISTEN ") + (listenOn_ ? "ON" : "OFF"));
+  }
+  ImGui::SameLine();
   if (ImGui::Checkbox("MONITOR", &monitor_)) {
     submit(std::string("MONITOR ") + (monitor_ ? "ON" : "OFF"));
   }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("CWID", &cwidOn_)) {
+    submit(std::string("CWID ") + (cwidOn_ ? "ON" : "OFF"));
+  }
+  if (ImGui::Combo("MAXMODE", &maxModeIdx_,
+                   "M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
+    submit("MAXMODE M" + std::to_string(maxModeIdx_ + 4));
+  }
+  ImGui::Separator();
+  ImGui::TextUnformatted("PTT");
+  ImGui::InputText("Method", pttMethodBuf_, sizeof(pttMethodBuf_));
+  ImGui::SameLine();
+  if (ImGui::Button("Set##pttm")) {
+    submit(std::string("PTTMETHOD ") + pttMethodBuf_);
+  }
+  ImGui::InputText("Port", pttPortBuf_, sizeof(pttPortBuf_));
+  ImGui::SameLine();
+  if (ImGui::Button("Set##pttp")) {
+    submit(std::string("PTTPORT ") + pttPortBuf_);
+  }
+  ImGui::SetNextItemWidth(120);
+  if (ImGui::InputInt("Lead ms", &pttLead_)) {
+    pttLead_ = std::clamp(pttLead_, 0, 2000);
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(120);
+  if (ImGui::InputInt("Tail ms", &pttTail_)) {
+    pttTail_ = std::clamp(pttTail_, 0, 2000);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Set##pttlt")) {
+    submit("PTTLEAD " + std::to_string(pttLead_));
+    submit("PTTTAIL " + std::to_string(pttTail_));
+  }
+  ImGui::Text("TCP ports: data %d  ctrl %d  voice %d  (restart to change)",
+              portData_, portCtrl_, portVoice_);
   ImGui::Separator();
   ImGui::TextUnformatted("Audio devices");
   // Combos show "index: name"; selection is by DEVICE INDEX so a

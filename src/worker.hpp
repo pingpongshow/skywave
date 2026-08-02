@@ -85,6 +85,7 @@ class ModemWorker : public ControlBackend {
   size_t runOnce();
 
   // --- ControlBackend (locks internally) ---------------------------------
+  double netBps();
   std::string myCall() override;
   bool setMyCall(const std::string& call) override;
   bool connectTo(const std::string& call) override;
@@ -194,12 +195,15 @@ class ModemWorker : public ControlBackend {
   struct PendingRx {
     uint64_t start;    // absolute baseband sample of the preamble start
     int tries = 0;
+    uint64_t quietTriedAt = 0;  // hist end of the last burst-end attempt
   };
   std::deque<PendingRx> pendingRx_;
   std::vector<ChirpDetection> dets_;
 
   // TX staging: upconverted audio waiting for ring space.
   std::vector<float> txPending_;
+  double ladderDbgAt_ = -1e9;  // SKW_RXLADDER_DEBUG rate limit
+  std::deque<float> floorBlocks_;  // 15 s of block levels (floor = min)
   uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed
   double lastTxDropAt_ = 0.0;  // SKW_TX_IMPAIR dropout scheduler
   size_t txPendingOff_ = 0;
