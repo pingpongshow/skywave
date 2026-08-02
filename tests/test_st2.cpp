@@ -48,9 +48,12 @@ TEST_CASE(st2_scripted_session_over_tcp) {
   CHECK(w.cmd(w.a, "AUDIOLEVEL").rfind("AUDIOLEVEL RX=", 0) == 0);
   CHECK(w.cmd(w.a, "FREQINFO").rfind("FREQINFO CENTER=1500", 0) == 0);
 
-  // Orderly teardown with events.
+  // Orderly teardown with events. Budget reflects HALF-DUPLEX timing:
+  // every frame (including DISC/DISC_ACK) waits for a clear channel
+  // plus anti-collision jitter, and robust-tier bursts run seconds
+  // each - the old 1500-round budget encoded the pre-LBT overlap.
   CHECK(w.cmd(w.a, "DISCONNECT") == "DISCONNECT");
-  CHECK(w.waitState(w.a, "LISTENING", 1500));
+  CHECK(w.waitState(w.a, "LISTENING", 3500));
   CHECK(w.a.saw("EVT:DISCONNECTED NORMAL"));
   std::printf("st2 session: %zu B ctrl trace at A\n", w.a.ctrlAcc.size());
 }
@@ -71,7 +74,11 @@ TEST_CASE(st2_faults_dropout_starvation_reconnect_abort) {
     v = uint8_t(s >> 32);
   }
   ::send(w.a.dataFd, blob.data(), blob.size(), 0);
-  for (int i = 0; i < 8000 && w.b.dataAcc.size() < blob.size(); ++i) {
+  // 26000 rounds: half-duplex LBT serializes what previously
+  // overlapped, the dropout/starvation recovery adds ARQ cycles on
+  // top, and the 3 KiB message is delivered as ONE unit at the end
+  // (probe-measured completion ~18-24k rounds on this seed).
+  for (int i = 0; i < 26000 && w.b.dataAcc.size() < blob.size(); ++i) {
     w.ab.drop = (i >= 300 && i < 500);      // ~5.7 s of dead air
     w.starveB = (i >= 900 && i < 1000);     // B's worker stalls ~2.9 s
     w.round();
@@ -98,7 +105,7 @@ TEST_CASE(st2_faults_dropout_starvation_reconnect_abort) {
   const std::string more = "after reconnect";
   const size_t base = w.b.dataAcc.size();
   ::send(w.a.dataFd, more.data(), more.size(), 0);
-  for (int i = 0; i < 3000 && w.b.dataAcc.size() < base + more.size(); ++i) {
+  for (int i = 0; i < 6000 && w.b.dataAcc.size() < base + more.size(); ++i) {
     w.round();
   }
   CHECK(std::string(w.b.dataAcc.begin() + long(base), w.b.dataAcc.end()) ==

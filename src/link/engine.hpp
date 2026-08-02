@@ -276,9 +276,11 @@ class LinkEngine {
   bool ccaGatedNow_ = false;     // per-tick cached verdict
   double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
   bool txWasDraining_ = false;   // edge detector: own burst just aired
-  double ctrlWaitStart_ = -1.0;  // control busy-hold (2 s cap, no jitter)
+  double ctrlWaitStart_ = -1.0;  // control busy-hold start
+  double ctrlJitterUntil_ = 0.0; // post-clear anti-race jitter deadline
+  int ctrlRun_ = 0;              // consecutive control bursts (fairness)
   double ackAirSec_ = 0.5;       // expected feedback airtime (listen window)
-  double dataHeldSince_ = -1.0;  // gate anti-starvation backstop
+  double dataQueuedSince_ = -1.0;  // data waiting to AIR (backstop clock)
   double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};

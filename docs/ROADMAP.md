@@ -1358,3 +1358,37 @@ doc was updated)*
   computed from the session mode's frame airtime. Scoped as the next
   design phase ("deep-tier MAC timing"), with all measurements and
   traces from this session as its inputs.
+- **Half-duplex LBT hardening / 2026-07-30 (live acoustic finding)** —
+  Operating both modems over a REAL shared acoustic channel (one
+  machine's speaker + microphone) showed occasional SIMULTANEOUS
+  transmissions. Root causes fixed:
+  1. The "proceed anyway" caps (2 s control / 5 s data) GUARANTEED
+     keying over any peer burst longer than the cap. While CONNECTED,
+     both classes now hold for a clear channel (30 s runaway guard on
+     control; the 3x-ARQ-timeout anti-starvation override paces data
+     under stuck-busy).
+  2. Both ends' feedback fired "the instant the channel cleared" and
+     raced head-on at every burst boundary; post-clear jitters now
+     exceed the busy detector's own latency (control 0.10-0.60 s,
+     data 0.15-0.70 s).
+  3. Control frames stacked unboundedly into the TX ring (a DISC once
+     queued behind 7 s of staged audio, keeping the radio keyed and
+     deaf); new bursts now stage only behind <= 1 s of un-aired audio.
+  4. Two starvation bugs found while validating: control's queue
+     priority consumed every rare clear tick (a 50-byte message waited
+     200 s to air - fixed with control/data fair alternation after 2
+     consecutive control bursts), and the anti-starvation clock reset
+     on momentary clear ticks so it never fired (now measures time
+     since data was QUEUED, resets only on data actually airing, and
+     overrides both the pull and emission gates - pulling exactly one
+     airable burst so parked frames cannot burn ARQ retries).
+  test_st2 budgets updated for honest half-duplex serialization
+  (teardown 1500->3500 rounds, faults blob 8000->26000 - probe-measured
+  completion ~18-24k on that seed).
+  NEW KNOWN LIMITATION (measured, deferred to the MAC-timing phase):
+  a CONTINUOUS in-band jammer reads as permanently-busy and the LBT
+  starves a jammed-but-workable connected link (monkey phase 2 now
+  reports 0/3072 B where the pre-LBT modem passed - but the pre-LBT
+  modem also doubled with its own peer). Fix is busy-SOURCE
+  discrimination (decodable peer burst vs noise/jam), which needs the
+  airtime-coherent constants of that phase anyway.

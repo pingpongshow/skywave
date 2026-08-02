@@ -153,24 +153,19 @@ bool LinkEngine::ccaDataGated(double now) {
       return true;
     }
   }
-  // Anti-starvation backstop: DATA that has been held for several ARQ
-  // timeouts MUST air, whatever the gate thinks. Otherwise a busy
-  // reading that never clears (a jammer, a stuck detector, a peer that
-  // simply transmits more than we do) silently converts into
-  // "connected but permanently mute", which the ARQ then reads as a
-  // dead peer and tears the session down.
-  if (dataHeldSince_ >= 0.0 && now - dataHeldSince_ > 3.0 * arqTx_.timeoutSec()) {
-    dataHeldSince_ = -1.0;
-    ccaWaitStart_ = -1.0;
-    ccaProceedAt_ = -1.0;
-    return false;
-  }
   if (chanBusy_) {
     ccaProceedAt_ = -1.0;
     if (ccaWaitStart_ < 0.0) ccaWaitStart_ = now;
-    if (now - ccaWaitStart_ >= 5.0) {
-      // Fairness cap (HF politeness, not CSMA): proceed anyway rather
-      // than starve behind a continuous foreign carrier.
+    // CONNECTED sessions hold for a CLEAR channel: the busy source is
+    // almost always our own peer, and "proceeding anyway" keys straight
+    // over it - observed as simultaneous transmissions on a live shared
+    // acoustic channel whenever a burst outlived the old 5 s cap. A
+    // CONTINUOUS jammer (busy that never clears) is instead broken by
+    // the 3x-timeout anti-starvation override in pumpData/emission -
+    // data still moves, one forced burst per backstop period. The 5 s
+    // courtesy cap stands only OUTSIDE a session.
+    if (fsm_.state() != FsmState::Connected &&
+        now - ccaWaitStart_ >= 5.0) {
       ccaWaitStart_ = -1.0;
       return false;
     }
@@ -183,7 +178,8 @@ bool LinkEngine::ccaDataGated(double now) {
     ccaRng_ ^= ccaRng_ >> 12;
     ccaRng_ ^= ccaRng_ << 25;
     ccaRng_ ^= ccaRng_ >> 27;
-    ccaProceedAt_ = now + 0.05 + 0.25 * double(ccaRng_ % 1000) / 1000.0;
+    // Spread wider than busy-detection latency (see control jitter).
+    ccaProceedAt_ = now + 0.15 + 0.55 * double(ccaRng_ % 1000) / 1000.0;
   }
   if (ccaProceedAt_ >= 0.0) {
     if (now < ccaProceedAt_) return true;
@@ -872,8 +868,26 @@ void LinkEngine::pumpData(double now) {
   if (fsm_.state() != FsmState::Connected) return;
   // While the CCA gate holds, leave retransmits and new segments in the
   // ARQ/proto layers: frames pulled now would burn their ACK timers
-  // sitting in the TX queue behind a busy channel.
-  if (ccaGatedNow_) return;
+  // sitting in the TX queue behind a busy channel. The anti-starvation
+  // clock overrides here too - the emission-side override is useless
+  // if the gate never lets a frame be PULLED in the first place
+  // (observed: a station busy ACKing the peer's stream never once
+  // pulled its own queued message).
+  const bool forcePull =
+      dataQueuedSince_ >= 0.0 &&
+      now - dataQueuedSince_ > 3.0 * arqTx_.timeoutSec();
+  if (ccaGatedNow_) {
+    if (!forcePull) return;
+    // Forced pull fetches exactly ONE airable burst: the emission-side
+    // override fires it this same tick. Pulling more would park frames
+    // behind the gate with their ACK timers running - each parked
+    // frame then burned a retry per timeout cycle until a healthy
+    // session tore itself down (observed as session death mid
+    // transfer).
+    for (const auto& q : outQueue_) {
+      if (q.env.type == LinkType::Data) return;
+    }
+  }
   static const bool arqDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
   // Retransmits first (arbiter priority), then new segments.
   if (auto r = arqTx_.nextRetransmit(now)) {
@@ -1124,16 +1138,21 @@ bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
   ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
+  // Anti-starvation clock: measures how long DATA has been waiting to
+  // AIR, resetting only when a data frame is actually emitted. The old
+  // version measured continuous gate-hold time and reset on every
+  // momentary clear tick - which control traffic then consumed - so a
+  // queued container once sat 234 s without the backstop ever firing.
   const bool dataWaiting =
       arqTx_.peekRetransmit().has_value() || !protoTx_.idle() ||
       std::any_of(outQueue_.begin(), outQueue_.end(),
                   [](const OutFrame& q) {
                     return q.env.type == LinkType::Data;
                   });
-  if (ccaGatedNow_ && dataWaiting) {
-    if (dataHeldSince_ < 0.0) dataHeldSince_ = now;
-  } else if (!ccaGatedNow_) {
-    dataHeldSince_ = -1.0;
+  if (dataWaiting) {
+    if (dataQueuedSince_ < 0.0) dataQueuedSince_ = now;
+  } else {
+    dataQueuedSince_ = -1.0;
   }
   if (!chanBusy_ && ctrlWaitStart_ >= 0.0 &&
       now - ctrlWaitStart_ >= 0.0) {
@@ -1398,8 +1417,51 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     }
     return std::nullopt;
   }
+  // BOUNDED KEYING: never stage a new burst behind more than ~1 s of
+  // un-aired audio (voice exempt). Control stacked freely here and a
+  // DISC was observed queueing behind 7 s of staged control - every
+  // frame in that pile keeps the transmitter keyed (deaf) and extends
+  // the airtime the peer must wait out. One second admits a short
+  // control tail behind a data burst; a robust-tier control frame
+  // (3.5-7 s air) can never pile onto another.
+  if (txQueueSec_ > 1.0 &&
+      !usesVoiceSequence(outQueue_.front().env.type)) {
+    return std::nullopt;
+  }
   auto pick = outQueue_.begin();
-  if (pick->env.type == LinkType::Data && ccaGatedNow_) {
+  // Backstop: DATA waiting longer than 3 ARQ timeouts airs NOW -
+  // overriding the CCA gate, control precedence, everything except
+  // voice and the keying bound above. Without a hard override, a busy
+  // channel plus a steady control stream can starve data indefinitely
+  // while the ARQ concludes the peer is dead.
+  bool forceData =
+      dataQueuedSince_ >= 0.0 &&
+      lastNow_ - dataQueuedSince_ > 3.0 * arqTx_.timeoutSec();
+  if (forceData) {
+    auto d = std::find_if(outQueue_.begin(), outQueue_.end(),
+                          [](const OutFrame& q) {
+                            return q.env.type == LinkType::Data;
+                          });
+    if (d != outQueue_.end()) {
+      pick = d;
+    } else {
+      forceData = false;
+    }
+  }
+  // Fair alternation: control frames insert AHEAD of data by design
+  // (feedback priority), and emission is one burst per tick - so on a
+  // busy shared channel the rare clear ticks were consumed ENTIRELY by
+  // the control stream and a queued DATA frame starved for minutes
+  // (observed: 200 s from queue to air for a 50-byte message). After
+  // two consecutive control bursts with data waiting, data goes next.
+  if (!forceData && ctrlRun_ >= 2 && !ccaGatedNow_) {
+    auto d = std::find_if(outQueue_.begin(), outQueue_.end(),
+                          [](const OutFrame& q) {
+                            return q.env.type == LinkType::Data;
+                          });
+    if (d != outQueue_.end()) pick = d;
+  }
+  if (!forceData && pick->env.type == LinkType::Data && ccaGatedNow_) {
     // Data holds for the gate, but a control frame queued behind it
     // must not suffer priority inversion: emit the first non-DATA
     // frame instead, or nothing this tick.
@@ -1418,12 +1480,44 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (pick->env.type != LinkType::Data && !usesVoiceSequence(pick->env.type) &&
       chanBusy_) {
     if (ctrlWaitStart_ < 0.0) ctrlWaitStart_ = now;
-    if (now - ctrlWaitStart_ < 2.0) return std::nullopt;
+    // While connected the busy source is our own peer's burst: keying
+    // over it is ALWAYS wasted (the peer is deaf while keyed) and
+    // doubles on a shared channel. Hold for CLEAR with only a runaway
+    // guard; outside a session keep the short courtesy cap.
+    const double cap =
+        fsm_.state() == FsmState::Connected ? 30.0 : 2.0;
+    if (now - ctrlWaitStart_ < cap) return std::nullopt;
+    ctrlJitterUntil_ = 0.0;  // cap expired: fire now, no jitter on top
+  } else if (pick->env.type != LinkType::Data &&
+             !usesVoiceSequence(pick->env.type) && ctrlWaitStart_ >= 0.0) {
+    // Channel just cleared after a hold: fire after a SMALL random
+    // jitter. Both ends often have feedback queued at a burst boundary
+    // and firing "the instant the channel clears" made their control
+    // frames race head-on (simultaneous TX on a shared channel).
+    if (ctrlJitterUntil_ <= 0.0) {
+      ccaRng_ ^= ccaRng_ >> 12;
+      ccaRng_ ^= ccaRng_ << 25;
+      ccaRng_ ^= ccaRng_ >> 27;
+      // Jitter spread must EXCEED the busy detector's latency
+      // (~100-300 ms energy blocks + audio path), or both ends key
+      // inside the window where neither can yet hear the other.
+      ctrlJitterUntil_ =
+          now + 0.10 + 0.50 * double(ccaRng_ % 1000) / 1000.0;
+    }
+    if (now < ctrlJitterUntil_) return std::nullopt;
+    // Jitter elapsed and the channel is STILL clear: transmit.
   }
   // Disarm on emission AND whenever the channel is clear - a stale
   // armed timestamp would make the cap look already-expired and let
   // the next control frame key over a live transmission.
   ctrlWaitStart_ = -1.0;
+  ctrlJitterUntil_ = 0.0;
+  if (pick->env.type == LinkType::Data) {
+    ctrlRun_ = 0;
+    dataQueuedSince_ = -1.0;  // the anti-starvation clock rearms fresh
+  } else if (!usesVoiceSequence(pick->env.type)) {
+    ++ctrlRun_;
+  }
   OutFrame f = std::move(*pick);
   outQueue_.erase(pick);
   {
