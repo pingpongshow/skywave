@@ -223,6 +223,11 @@ The companion app may additionally:
   informational — it keys channel-memory buckets, nothing else)
 - consume `STATUS JSON` polling or `EVT:` streams for its UI
 
+A reference companion (`tools/companion.py`, Python/Tk) implements the
+split: chat over the DATA port, session control + status/event display
+over the CONTROL port, and dial-frequency reporting. One instance per
+modem: `tools/companion.py --data 9200 --ctrl 9201 --title W1AW`.
+
 ## Built-in GUI
 
 SDL2 + Dear ImGui application in the same process (`--gui`), rendering from
