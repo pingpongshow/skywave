@@ -12,9 +12,12 @@
 #ifdef SKW_HAVE_GUI
 
 #include <deque>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "io/audio.hpp"
 #include "worker.hpp"
 
 namespace skw {
@@ -50,6 +53,14 @@ class Gui {
 
   // Exposed for tests: run the dispatcher exactly as the widgets do.
   std::string submit(const std::string& cmd);
+  // --- audio device selection (Settings panel) ------------------------
+  // The AUDIO STREAM is owned by main(), not the worker, so a device
+  // change is a request the main loop performs between frames: it
+  // stops the old backend, opens the new one, and reports the outcome
+  // back via noteAudio().
+  void setAudioSelection(int inDev, int outDev);  // current devices
+  std::optional<std::pair<int, int>> takeAudioRequest();
+  void noteAudio(const std::string& result);
   const std::vector<GuiLogLine>& log() const { return log_; }
   const GuiInstruments& instruments() const { return inst_; }
   void sampleTelemetry();  // pull a snapshot into the instrument history
@@ -73,6 +84,11 @@ class Gui {
   char connectBuf_[16] = {0};
   int familyIdx_ = 0;
   int modeIdx_ = 0;   // 0 = AUTO, else M4..M13
+  // Audio device picker state.
+  std::vector<AudioDeviceInfo> audioDevs_;
+  int audioInSel_ = -1;   // device INDEX (not combo position)
+  int audioOutSel_ = -1;
+  std::optional<std::pair<int, int>> audioReq_;
   int cpIdx_ = 0;     // 0 = AUTO
   bool monitor_ = false;
 };

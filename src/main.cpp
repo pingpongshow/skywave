@@ -203,6 +203,8 @@ int main(int argc, char** argv) {
       if (!gui->init(cfg.guiWidth, cfg.guiHeight)) {
         SKW_WARN("gui: no window available; continuing headless");
         gui.reset();
+      } else {
+        gui->setAudioSelection(cfg.inputDevice, cfg.outputDevice);
       }
     }
 #endif
@@ -250,6 +252,36 @@ int main(int argc, char** argv) {
 #ifdef SKW_HAVE_GUI
       if (gui) {
         if (!gui->frame()) break;  // window closed
+        // Audio device change from the Settings panel. The stream is
+        // owned HERE, so the swap happens between frames: stop, reopen
+        // on the requested devices, fall back to the old pair if the
+        // new one refuses to start. The worker keeps running - the
+        // rings just pause while the stream is down.
+        if (auto req = gui->takeAudioRequest(); req && !fileMode) {
+          audio->stop();
+          audio = skw::makeDeviceBackend({req->first, req->second,
+                                          cfg.inputGainDb, cfg.outputGainDb},
+                                         rxRing, txRing);
+          if (audio->start()) {
+            cfg.inputDevice = req->first;    // persists via --config save
+            cfg.outputDevice = req->second;
+            gui->noteAudio("OK: stream running on in=" +
+                           std::to_string(req->first) + " out=" +
+                           std::to_string(req->second));
+          } else {
+            SKW_WARN("gui: audio device change failed; reverting");
+            audio = skw::makeDeviceBackend({cfg.inputDevice,
+                                            cfg.outputDevice,
+                                            cfg.inputGainDb,
+                                            cfg.outputGainDb},
+                                           rxRing, txRing);
+            const bool back = audio->start();
+            gui->noteAudio(back ? "FAILED: kept previous devices"
+                                : "FAILED: previous devices also refused "
+                                  "- audio is DOWN");
+            gui->setAudioSelection(cfg.inputDevice, cfg.outputDevice);
+          }
+        }
         continue;                  // vsync paces the loop
       }
 #endif

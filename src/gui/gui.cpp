@@ -98,8 +98,25 @@ bool Gui::init(int width, int height) {
     if (fam == kFamilyNames[i]) familyIdx_ = i;
   }
   monitor_ = worker_.monitoring();
+  audioDevs_ = listAudioDevices();
   ready_ = true;
   return true;
+}
+
+void Gui::setAudioSelection(int inDev, int outDev) {
+  audioInSel_ = inDev;
+  audioOutSel_ = outDev;
+}
+
+std::optional<std::pair<int, int>> Gui::takeAudioRequest() {
+  auto r = audioReq_;
+  audioReq_.reset();
+  return r;
+}
+
+void Gui::noteAudio(const std::string& result) {
+  log_.push_back({"(audio device change)", result});
+  if (log_.size() > 200) log_.erase(log_.begin());
 }
 
 void Gui::shutdown() {
@@ -183,6 +200,46 @@ void Gui::drawSettingsPanel() {
   if (ImGui::Checkbox("MONITOR", &monitor_)) {
     submit(std::string("MONITOR ") + (monitor_ ? "ON" : "OFF"));
   }
+  ImGui::Separator();
+  ImGui::TextUnformatted("Audio devices");
+  // Combos show "index: name"; selection is by DEVICE INDEX so a
+  // rescan that reorders the list cannot silently retarget.
+  auto deviceCombo = [&](const char* label, bool wantInput, int& sel) {
+    const AudioDeviceInfo* cur = nullptr;
+    for (const auto& d : audioDevs_) {
+      if (d.index == sel) cur = &d;
+    }
+    char preview[96];
+    if (cur) {
+      snprintf(preview, sizeof(preview), "%d: %s", cur->index,
+               cur->name.c_str());
+    } else {
+      snprintf(preview, sizeof(preview), "%s",
+               sel < 0 ? "(system default)" : "(missing device)");
+    }
+    if (ImGui::BeginCombo(label, preview)) {
+      for (const auto& d : audioDevs_) {
+        if (wantInput ? d.maxInputChannels <= 0 : d.maxOutputChannels <= 0) {
+          continue;
+        }
+        char item[96];
+        snprintf(item, sizeof(item), "%d: %s%s", d.index, d.name.c_str(),
+                 (wantInput ? d.defaultInput : d.defaultOutput) ? " *" : "");
+        if (ImGui::Selectable(item, d.index == sel)) sel = d.index;
+      }
+      ImGui::EndCombo();
+    }
+  };
+  deviceCombo("Input", true, audioInSel_);
+  deviceCombo("Output", false, audioOutSel_);
+  if (ImGui::Button("Apply audio")) {
+    audioReq_ = std::make_pair(audioInSel_, audioOutSel_);
+    log_.push_back({"(audio device change)",
+                    "requested in=" + std::to_string(audioInSel_) +
+                        " out=" + std::to_string(audioOutSel_)});
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Rescan")) audioDevs_ = listAudioDevices();
   ImGui::Separator();
   ImGui::TextUnformatted("Calibration");
   if (ImGui::Button("TXTEST 5 s")) submit("TXTEST 5");
