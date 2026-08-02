@@ -84,6 +84,11 @@ class Gui {
   char connectBuf_[16] = {0};
   int familyIdx_ = 0;
   int modeIdx_ = 0;   // 0 = AUTO, else M4..M13
+  // Cached status strings (refreshed at 4 Hz in sampleTelemetry - the
+  // string helpers take the modem mutex and must not run per frame).
+  std::string strFsmState_, strMyCall_, strFamily_, strMode_;
+  std::string strStatus_, strFreqInfo_, strAudioLevel_;
+  double lastStrPollSec_ = -1.0;
   // Audio device picker state.
   std::vector<AudioDeviceInfo> audioDevs_;
   int audioInSel_ = -1;   // device INDEX (not combo position)

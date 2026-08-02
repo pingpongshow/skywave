@@ -62,6 +62,22 @@ std::string Gui::submit(const std::string& cmd) {
 void Gui::sampleTelemetry() {
   snap_ = worker_.telemetry();
   inst_.push(snap_);
+  // Status STRINGS take the modem mutex; polling them every vsync
+  // frame (8 acquisitions/frame at 60 fps) contended hard against the
+  // worker under decode load. 4 Hz is indistinguishable to a human and
+  // two orders of magnitude less lock traffic.
+  const double nowSec =
+      double(SDL_GetTicks64()) / 1000.0;
+  if (nowSec - lastStrPollSec_ >= 0.25) {
+    lastStrPollSec_ = nowSec;
+    strFsmState_ = worker_.fsmState();
+    strMyCall_ = worker_.myCall();
+    strFamily_ = worker_.family();
+    strMode_ = worker_.modeStr();
+    strStatus_ = worker_.statusLine();
+    strFreqInfo_ = worker_.freqInfo();
+    strAudioLevel_ = worker_.audioLevel();
+  }
 }
 
 bool Gui::init(int width, int height) {
@@ -132,10 +148,10 @@ void Gui::shutdown() {
 
 void Gui::drawSessionPanel() {
   ImGui::Begin("Session");
-  ImGui::Text("State: %s", worker_.fsmState().c_str());
-  ImGui::Text("Call: %s", worker_.myCall().c_str());
-  ImGui::Text("Family: %s   Mode: %s", worker_.family().c_str(),
-              worker_.modeStr().c_str());
+  ImGui::Text("State: %s", strFsmState_.c_str());
+  ImGui::Text("Call: %s", strMyCall_.c_str());
+  ImGui::Text("Family: %s   Mode: %s", strFamily_.c_str(),
+              strMode_.c_str());
   ImGui::Text("Busy: %s   PTT: %s", snap_.busy ? "yes" : "no",
               snap_.ptt ? "KEYED" : "-");
   ImGui::Separator();
@@ -171,7 +187,7 @@ void Gui::drawLadderPanel() {
   if (ImGui::Combo("CPMODE", &cpIdx_, "AUTO\0SHORT\0MEDIUM\0LONG\0")) {
     submit(std::string("CPMODE ") + kCpNames[cpIdx_]);
   }
-  ImGui::Text("%s", worker_.statusLine().c_str());
+  ImGui::Text("%s", strStatus_.c_str());
   ImGui::End();
 }
 
@@ -183,7 +199,7 @@ void Gui::drawInstrumentPanel() {
   plotSeries("rx", inst_.rxLevel, -120.0f, 0.0f);
   plotSeries("tx", inst_.txLevel, -120.0f, 0.0f);
   plotSeries("floor", inst_.noiseFloor, -120.0f, 0.0f);
-  ImGui::Text("%s", worker_.freqInfo().c_str());
+  ImGui::Text("%s", strFreqInfo_.c_str());
   ImGui::End();
 }
 
@@ -245,7 +261,7 @@ void Gui::drawSettingsPanel() {
   if (ImGui::Button("TXTEST 5 s")) submit("TXTEST 5");
   ImGui::SameLine();
   if (ImGui::Button("Stop")) submit("TXTEST OFF");
-  ImGui::Text("%s", worker_.audioLevel().c_str());
+  ImGui::Text("%s", strAudioLevel_.c_str());
   ImGui::End();
 }
 

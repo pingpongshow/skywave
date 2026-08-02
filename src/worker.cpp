@@ -514,6 +514,14 @@ void ModemWorker::threadMain() {
     const size_t processed = processChunk();
     if (processed == 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } else {
+      // Fairness gap: under continuous audio this loop re-acquires the
+      // modem mutex back-to-back and pthread mutexes are NOT fair - the
+      // GUI/control threads starved for SECONDS (beachball) while the
+      // detector ran chunk after chunk. One millisecond costs ~3% of
+      // the 30.7 ms real-time chunk budget and guarantees waiters a
+      // window.
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
   SKW_INFO("worker: stopped");
