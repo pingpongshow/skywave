@@ -26,6 +26,12 @@ struct PhyHeader {
   uint8_t frameType = 0;   // 6 bits (PROTOCOL.md)
   uint16_t length = 0;     // total link payload bytes (12 bits)
   uint8_t seqLow = 0;
+  // CSS frames only: number of header copies on air (1 or 2). Carried
+  // in a former pad bit (0 = two copies, the v1 layout, so the wire is
+  // unchanged unless a single-copy frame is deliberately sent). The
+  // receiver learns the layout from copy 1, which it decodes before it
+  // needs to know where the payload starts.
+  uint8_t cssHeaderCopies = 2;
 };
 
 inline constexpr int kPhyHeaderBytes = 9;  // 50 field bits + pad + crc16
@@ -72,6 +78,9 @@ struct TxFrameParams {
   CpMode cpMode = CpMode::Medium;  // payload CP
   uint8_t frameType = 0;
   uint8_t seqLow = 0;
+  // CSS frames: header copies on air (2 = v1 time-diversity layout; 1 =
+  // connected-session short layout, capability-gated). See PhyHeader.
+  uint8_t cssHeaderCopies = 2;
   std::span<const uint8_t> payload;  // link frame bytes, <= 4095
   // Session carrier mask, PAYLOAD symbols only (LINK_ADAPTATION.md);
   // nullptr = all carriers usable.

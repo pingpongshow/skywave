@@ -331,6 +331,8 @@ handshake):
 | `frame_type` | 6 | link frame type ([PROTOCOL.md](PROTOCOL.md)) |
 | `length` | 12 | payload bytes |
 | `seq_low` | 8 | low 8 bits of link sequence (dedup aid) |
+| `css_hdr1` | 1 | CSS frames only: `1` = a single header copy is on air (connected-session short layout, capability-gated), `0` = two copies (the v1 time-diversity layout). Former pad bit, so v1 frames are byte-identical. The receiver decodes copy 1 before it needs the payload position, so the layout never has to be known in advance |
+| `pad` | 5 | zero |
 | `crc16` | 16 | header CRC |
 
 Header transport (fixed, family-wide, never negotiated):
@@ -435,6 +437,18 @@ decays over a few pilots rather than vanishing the instant it fades).
 Hard-decision Hamming remains the header transport and the aligned
 modem-layer API; measured ~4–6 dB shy of soft LDPC for long payload
 sections under fading (the 1-error-per-codeword cliff).
+
+**Header copies — measured (2026-09-05).** The second SF8 header copy is
+~1.9 s per frame on WIDE and ~9.6 s on NARROW, so a single-copy
+"connected short layout" (`css_hdr1` header bit, `bertool --css-frames
+--css-hdr 1`) was built and swept at the fading floors, CCIR Moderate,
+24 trials/point: it saves ~11% of frame airtime (WIDE M1 17.2 → 15.3 s,
+MID M0 57.2 → 52.6 s) and costs it back many times over in header loss —
+MID M0 FER 42% → 71% at the floor and 12.5% → 42% at +3 dB, MID M1 0% →
+29% at +3 dB, WIDE M1 8% → 12.5% at +3 dB — and a lost header is a lost
+35–57 s frame. Net loss everywhere the tier operates; the time-diversity
+argument above stands. The layout bit and sweep remain as measurement
+infrastructure; no frame is sent single-copy.
 
 **Symbol layer.** LoRa-style chirp spread spectrum: a symbol is the base
 up-chirp cyclically shifted by the symbol value, `2^SF` chips per symbol

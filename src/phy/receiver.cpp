@@ -358,16 +358,25 @@ std::optional<RxFrameResult> cssReceiveFrame(
     return cssDecode(syms, sectionSf, byteCount);
   };
 
-  // Both header copies must be walked (the payload starts after them);
-  // the CRC-16 arbitrates - a fade takes at most one copy.
+  // Walk the header copies; the CRC-16 arbitrates - a fade takes at most
+  // one copy. The payload starts after ALL copies on air, and copy 1
+  // (decoded first) states how many there are: two on the v1 layout, one
+  // on the capability-gated connected-session short layout. A frame
+  // whose single copy is lost is lost outright - the accepted trade for
+  // the saved airtime; a lost first copy on the two-copy layout still
+  // recovers from copy 2 as before.
   std::optional<PhyHeader> hdr;
-  for (int c = 0; c < kCssHeaderCopies; ++c) {
+  int copies = kCssHeaderCopies;
+  for (int c = 0; c < copies; ++c) {
     auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
     if (!hdrBytes) {
       if (!hdr) return std::nullopt;
       break;  // ran out of samples but an earlier copy already parsed
     }
-    if (!hdr) hdr = parsePhyHeader(*hdrBytes);
+    if (!hdr) {
+      hdr = parsePhyHeader(*hdrBytes);
+      if (hdr) copies = int(hdr->cssHeaderCopies);
+    }
   }
   if (!hdr) return std::nullopt;
   if (hdr->waveform != Waveform::Css || cssSf(hdr->mode) == 0 ||

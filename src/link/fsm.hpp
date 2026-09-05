@@ -63,6 +63,13 @@ struct FsmConfig {
   double idleDisconnectSec = 120.0;
   double keepaliveSec = 20.0;
   bool keepaliveEnabled = false;  // initiator-only, M8+ sessions only
+  // Per-station seed for CALL-retry backoff jitter (the callsign hash).
+  // Two stations that call each other in the same instant are both deaf
+  // to each other's CALL (half-duplex), and with a FIXED retry interval
+  // they re-collide on every attempt until the ladder is exhausted
+  // (measured: both ends still CALLING after ~540 s). ALOHA's answer:
+  // randomise the backoff per station so the retries desynchronise.
+  uint32_t jitterSeed = 0;
 };
 
 double clampResponseTimeout(double raw);  // [12, 45]

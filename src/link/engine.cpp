@@ -42,6 +42,7 @@ FsmConfig fsmConfigFor(const HandshakePolicy& p) {
     c.callAttempts = 8;
     c.startAttempts = 8;
   }
+  c.jitterSeed = callsignHash24(p.ownCall);  // CALL-retry backoff jitter
   return c;
 }
 
@@ -337,8 +338,11 @@ uint8_t LinkEngine::ackRxFlags() const {
 // still flowing). Called on every mode change and whenever the lossy
 // verdict flips.
 void LinkEngine::applySealCap() {
+  static const bool kLossyCap = getenv("SKW_NO_LOSSY_CAP") == nullptr;  // A/B
   const size_t bounded = std::max<size_t>(8 * dataBudget_, 192);
-  protoTx_.setSealCap(mode_ <= 3 || lossyCoalesce_ ? bounded : size_t(-1));
+  protoTx_.setSealCap(mode_ <= 3 || (kLossyCap && lossyCoalesce_)
+                          ? bounded
+                          : size_t(-1));
 }
 
 void LinkEngine::setTurnRole(TurnRole r, double now) {
@@ -1395,6 +1399,11 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   }
   mode_ = mode;
   cpMode_ = cp;
+  // NOTE: queued DATA frames keep the mode they were built for. Re-
+  // labelling them to the new mode was tried (2026-09-05) and regressed
+  // the M3 fading ramp 0.84 -> 0.61: a frame's payload is sized to its
+  // mode's exact codeword budget and burst geometry, and the ramp
+  // changes mode constantly.
   // Deep-tier sessions survive routine multi-minute decode droughts
   // (only a DECODED frame refreshes the idle clock at ~50% frame FER);
   // OFDM sessions keep the tight 120 s hang detection.
@@ -1436,6 +1445,40 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
                ModeChangeBody{uint8_t(target), uint8_t(cp), modeEpoch_}
                    .pack(),
                sigForMode(txMode), txMode);
+  // APPLY AT ANNOUNCE. The old scheme applied here only on MODE_ACK
+  // while the responder applied on receipt, so a lost MODE_ACK left the
+  // two ends one rung apart for the whole retry window (measured as
+  // A at M7 against B at M6 through ~100 s of fading, with the
+  // responder's feedback riding the wrong transport the whole time).
+  // Now both ends move at the same event: we at the announcement, the
+  // responder at the announcement OR at the first DATA frame it decodes
+  // at the new mode - its PHY header states the mode, and the only
+  // other legitimate reason a session DATA frame rides a mode other
+  // than the committed one is an HARQ-IR step-down, which is a known
+  // function of the committed mode (see the DATA handler). MODE_ACK
+  // becomes a confirmation, not a gate.
+  modeChangeFrom_ = mode_;
+  // DEMOTIONS ONLY. A promotion rides a healthy channel by definition
+  // and its MODE_ACK arrives; applying it at announce made the initiator
+  // run ahead of the responder for one announcement's propagation - the
+  // responder's ARQ window and ACK batching still at the old mode while
+  // M14 containers arrived - measured as a one-time ~1 s transient that
+  // took the VHF sustained gate from 25.5 to 24.0 kbps. The split this
+  // exists to fix is the demotion under fading whose MODE_ACK is lost.
+  // (SKW_NO_APPLY_AT_ANNOUNCE: diagnostic A/B - always apply on ACK.)
+  static const bool kApplyAtAnnounce =
+      getenv("SKW_NO_APPLY_AT_ANNOUNCE") == nullptr;
+  if (getenv("SKW_MODE_DEBUG")) {
+    fprintf(stderr, "%s ANNOUNCE t=%.1f M%d->M%d epoch=%u tx@M%d\n",
+            cfg_.policy.ownCall.c_str(), now, mode_, target,
+            unsigned(modeEpoch_), txMode);
+  }
+  if (kApplyAtAnnounce && target < mode_) applyMode(target, cp, now);
+  // Arm the confirmation deadline from the NEW mode's timeout: a
+  // demotion into the CSS tier armed it from the old fast-mode timeout
+  // (~10 s) and re-announced inside its own first 30 s burst - measured
+  // as 6 MODE_CHANGE bursts for one pin, each a robust-M4 frame ahead
+  // of data, and deep-tier throughput at 11% of net against a 15% gate.
   modeChangeDeadline_ = now + arqTx_.timeoutSec();
 }
 
@@ -1635,7 +1678,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // Mode-change retry / expiry, then AMC evaluation.
   if (fsm_.state() == FsmState::Connected) {
     if (pendingMode_ >= 0 && now >= modeChangeDeadline_) {
-      if (++modeChangeTries_ >= 3) {
+      // One re-announcement, then stop: with apply-at-announce and
+      // DATA-header adoption at the responder, MODE_ACK is confirmation
+      // only, and every retry is robust-tier airtime taken from data.
+      if (++modeChangeTries_ >= 2) {
         // KNOWN BUG, deliberately left as-is for now: the responder
         // applies a MODE_CHANGE on receipt while the initiator applies
         // only on the MODE_ACK, so a lost MODE_ACK splits the two ends
@@ -1659,9 +1705,13 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         applyMode(pendingMode_, pendingCp_, now);
         pendingMode_ = -1;
       } else {
+        // Re-announce on the transport the ORIGINAL announcement used:
+        // mode_ is already the new mode (applied at announce), so the
+        // demotion/promotion test must run against the mode we left.
         const int txMode =
-            mode_ <= 3 ? mode_
-                       : (pendingMode_ < mode_ ? 4 : mode_);  // see above
+            modeChangeFrom_ <= 3
+                ? modeChangeFrom_
+                : (pendingMode_ < modeChangeFrom_ ? 4 : modeChangeFrom_);
         queueControl(LinkType::ModeChange,
                      ModeChangeBody{uint8_t(pendingMode_),
                                     uint8_t(pendingCp_), modeEpoch_}
@@ -2070,6 +2120,16 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       !usesVoiceSequence(outQueue_.front().env.type)) {
     return std::nullopt;
   }
+  static const bool kEmitDbg = getenv("SKW_EMIT_DEBUG") != nullptr;
+  if (kEmitDbg && !outQueue_.empty()) {
+    fprintf(stderr,
+            "%s EMIT t=%.1f front=%d q=%zu busy=%d gated=%d txq=%.2f "
+            "ctrlWait=%.1f role=%s\n",
+            cfg_.policy.ownCall.c_str(), now, int(outQueue_.front().env.type),
+            outQueue_.size(), chanBusy_ ? 1 : 0, ccaGatedNow_ ? 1 : 0,
+            txQueueSec_, ctrlWaitStart_,
+            turnRole_ == TurnRole::Iss ? "ISS" : "IRS");
+  }
   auto pick = outQueue_.begin();
   // Backstop: DATA waiting longer than 3 ARQ timeouts airs NOW -
   // overriding the CCA gate, control precedence, everything except
@@ -2368,7 +2428,8 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
     // kRxFlagRxFail and our ack_base, and the sender resends that frame.
     // Header-less failures are not attributed (could be noise, could be
     // a third party) and probes have their own verdict below.
-    if (res && !res->payloadOk && finalAttempt &&
+    static const bool kNak = getenv("SKW_NO_NAK") == nullptr;  // diagnostic A/B
+    if (kNak && res && !res->payloadOk && finalAttempt &&
         fsm_.state() == FsmState::Connected &&
         (res->header.frameType == uint8_t(LinkType::Data) ||
          res->header.frameType == kBurstContainerFrameType)) {
@@ -2705,6 +2766,11 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto d = DataBody::parse(f.body);
 #endif
       if (!d || fsm_.state() != FsmState::Connected) return;
+      // (Responder mode adoption from the DATA header was tried here
+      // 2026-09-05 and removed: across a 900 s half-duplex churn soak with
+      // ten mode changes it never fired once - apply-at-announce plus the
+      // MODE_CHANGE-on-receipt path keep both ends in step - while it cost
+      // the deep-tier throughput gate 19% -> 11% of net.)
       if (turnSchedActive()) {
         // A DATA frame proves the peer holds (or just took) the sending
         // role: an outstanding grant is confirmed, and a station that
@@ -2805,12 +2871,14 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         // so without this the AMC never heard of a single lost burst -
         // measured on the static M3 ramp as one frame NAKed 22 times at
         // an unchanged mode until the retry budget tore the session
-        // down. Same weight as one timeout event (two charges): one
-        // lost burst is one lost burst, whichever way we learn of it.
-        if (amc_) {
-          amc_->onFrameResult(false, false);
-          amc_->onFrameResult(false, false);
-        }
+        // down. ONE charge per NAK: a NAK is one lost burst. The timeout
+        // path charges two per timeout EVENT however many bursts were in
+        // flight; a NAK arrives per burst, and on the 16-deep VHF-FM pipe
+        // several bursts fail inside one RTO - two per NAK drew several
+        // times the old demotion pressure for the same loss and knocked
+        // M14 down mid-run (VHF sustained gate 24.0 vs 25.0 kbps). The
+        // static M3 case that needed charging at all had 22 NAKs.
+        if (amc_) amc_->onFrameResult(false, false);
       }
       // Turn-taking: mirror the peer's break request. Tracking the
       // LATEST ACK (set or clear) means a withdrawn request cannot

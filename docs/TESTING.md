@@ -44,6 +44,18 @@ range (±5 / ±20 Hz), sample-clock offset tolerance (±50 ppm), long-CP
 performance on CCIR Poor. Quick profile (`--quick`: Moderate only, 3 SNR
 points) gates CI; full sweeps run nightly.
 
+Frame-structure trade-offs are measured here too, not guessed:
+`--css-frames` runs the CSS tier (`M0–M3`) through the **full PHY frame
+path** (preamble, sync, header copies, LDPC payload → `receiveFrame`) —
+unlike `--css`, which measures payload-only FER through the modem-layer
+API and cannot see header loss — and `--css-hdr 1` sends a single header
+copy (the `css_hdr1` layout). `--payload N` overrides the frame payload
+length for any mode. Recorded verdicts (WAVEFORM.md "Header copies —
+measured", ROADMAP 2026-09-05): a single CSS header copy saves ~11% of
+airtime and costs 20–30 percentage points of FER at the fading floors
+(kept at two); doubling OFDM frame length at `M8/M9` on Moderate raises
+FER from 29–50% to 54–58% (frame-length adaptation upward not adopted).
+
 ### 3. Two-Modem Integration
 
 Two in-process modem instances cross-wired through two independent chansim

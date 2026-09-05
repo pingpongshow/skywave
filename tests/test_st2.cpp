@@ -147,4 +147,52 @@ TEST_CASE(st2_simultaneous_tx_collision) {
   CHECK(settled);
 }
 
+// THROUGHPUT GATE (ROADMAP "Decode-latency lever"): sustained one-way
+// bulk on a clean 30 dB channel must deliver a floor number of bytes,
+// byte-exact, in 300 sim-s. The byte-exact and ramp gates never caught
+// a throughput regression - turn-taking's full-duplex cost went
+// unnoticed until a soak was read by hand. Reference on landing:
+// 40,960 B (ten 4 KiB coalesced messages); the floor is 70% of that so
+// the half-duplex variant and channel-seed jitter pass while a real
+// regression (a lost window, a stuck head-of-line frame) fails.
+TEST_CASE(st2_oneway_throughput_floor) {
+  World w(30.0, 11);
+  for (Shuttle* sh : {&w.ab, &w.ba}) {
+    sh->chain.channel = ChansimParams{};
+    sh->chain.channel.fading = false;
+    sh->chain.channel.snr3kDb = 30.0;
+  }
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  CHECK(w.waitState(w.a, "CONNECTED", 12000));
+
+  // Deterministic incompressible stream, <= 4 KiB in flight.
+  uint64_t s = 0x9E3779B97F4A7C15ull;
+  std::vector<uint8_t> sent;
+  const double t0 = double(w.clk.nowUs()) * 1e-6;
+  size_t verified = 0;
+  while (double(w.clk.nowUs()) * 1e-6 - t0 < 300.0) {
+    if (sent.size() < w.b.dataAcc.size() + 4096) {
+      std::vector<uint8_t> c(512);
+      for (auto& b : c) {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        b = uint8_t(s >> 32);
+      }
+      sent.insert(sent.end(), c.begin(), c.end());
+      ::send(w.a.dataFd, c.data(), c.size(), 0);
+    }
+    w.round();
+    if (w.b.dataAcc.size() > verified) {
+      CHECK(w.b.dataAcc.size() <= sent.size());
+      CHECK(std::memcmp(w.b.dataAcc.data() + verified, sent.data() + verified,
+                        w.b.dataAcc.size() - verified) == 0);
+      verified = w.b.dataAcc.size();
+    }
+  }
+  std::printf("oneway throughput: %zu B in 300 sim-s (floor 28672)\n",
+              w.b.dataAcc.size());
+  CHECK(w.b.dataAcc.size() >= 28672);
+}
+
 SKYTEST_MAIN

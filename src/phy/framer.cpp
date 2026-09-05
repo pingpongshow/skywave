@@ -84,7 +84,8 @@ void packPhyHeader(const PhyHeader& h, uint8_t out[kPhyHeaderBytes]) {
   w.put(h.frameType, 6);
   w.put(h.length, 12);
   w.put(h.seqLow, 8);
-  w.put(0, 6);  // pad to 56 bits = 7 bytes
+  w.put(h.cssHeaderCopies == 1 ? 1u : 0u, 1);  // CSS single-header layout
+  w.put(0, 5);  // pad to 56 bits = 7 bytes
   uint16_t crc = crc16({w.bytes.data(), w.bytes.size()});
   w.put(crc, 16);
   std::copy(w.bytes.begin(), w.bytes.end(), out);
@@ -107,6 +108,7 @@ std::optional<PhyHeader> parsePhyHeader(std::span<const uint8_t> bytes) {
   h.frameType = uint8_t(r.get(6));
   h.length = uint16_t(r.get(12));
   h.seqLow = uint8_t(r.get(8));
+  h.cssHeaderCopies = r.get(1) ? 1 : 2;
   return h;
 }
 
@@ -240,7 +242,8 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
     g.preambleSamples =
         int(chirpPattern(ChirpSig::Css).size()) * chirpRepSamples();
     g.zcSymbols = 0;  // CSS frames sync on their own known symbols
-    const size_t hAll = size_t(kCssHeaderCopies) * (hSyms + pilots(hSyms));
+    const size_t copies = p.cssHeaderCopies == 1 ? 1 : 2;
+    const size_t hAll = copies * (hSyms + pilots(hSyms));
     g.headerSymbols = int(kCssSyncSymbols + hAll);
     g.payloadSymbols = int(pSyms + pilots(pSyms));
     g.payloadCodewords = 0;  // Hamming, not LDPC
@@ -326,6 +329,7 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
   h.frameType = p.frameType;
   h.length = uint16_t(p.payload.size());
   h.seqLow = p.seqLow;
+  h.cssHeaderCopies = p.cssHeaderCopies == 1 ? 1 : 2;
   uint8_t hdr[kPhyHeaderBytes];
   packPhyHeader(h, hdr);
 
@@ -351,10 +355,12 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
                    data.begin() + long((s + 1) * symLen));
     }
   };
-  // Header: Hamming bit layer, duplicated for time diversity.
+  // Header: Hamming bit layer, duplicated for time diversity (or sent
+  // once on the capability-gated connected-session short layout - the
+  // second SF8 copy is ~1.9 s on WIDE and ~9.6 s on NARROW per frame).
   const auto hdrSyms =
       cssEncode({hdr, size_t(kPhyHeaderBytes)}, kCssHeaderSf);
-  for (int c = 0; c < kCssHeaderCopies; ++c) {
+  for (int c = 0; c < int(h.cssHeaderCopies); ++c) {
     appendSymbols(kCssHeaderSf, hdrSyms);
   }
   // Payload: LDPC r1/2 (N=648 only) coded bits over soft symbols.

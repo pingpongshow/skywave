@@ -70,47 +70,104 @@ inline int connectLoopback(uint16_t port) {
   return fd;
 }
 
-// Burst-accumulating channel: silence passes straight through; an active
-// burst is collected until its trailing silence, then run through the
-// radio chain in one piece (the chain's filters are per-capture).
+// STREAMING channel transport. The worker stages a whole burst into its
+// TX ring in one write (the world's ring is sized so even a deep-tier
+// frame fits), and the ring drains at real time - one round of samples
+// per round - which is what the modem's keying and txq accounting see.
+// Everything that APPEARS in the ring is run through the radio chain
+// that same round, as one capture (the chain's filters are per-capture),
+// and the chain output is released to the peer in step with the drain:
+// sample n reaches the receiver on the round the sender airs it, exactly
+// as over a real audio path.
+//
+// The previous shuttle accumulated a burst and forwarded it only after
+// its trailing silence - one full burst-duration of latency per hop that
+// no radio has. Measured: a 13 s ST2 round trip against ~3.5 s of
+// airtime on a clean channel, and the ROADMAP's "ST2 roughly 2x harsher
+// than real audio (ST3 handshake legs 4.5 s vs 8.6 s)". Every RTT-scaled
+// timer in the link (ARQ, grant handoff, reclaim, turn quantum) was
+// being sized to that artifact.
 struct Shuttle {
   RadioChainParams chain;
-  std::vector<float> acc;
-  int quiet = 0;
-  std::deque<float> outQ;
   uint64_t seedCtr = 1;
-  bool drop = false;  // fault injection: audio dropout
-  int idleRounds = 0;  // rounds with no TX samples at all
+  bool drop = false;         // fault injection: audio dropout
+  uint64_t consumed = 0;     // ring samples drained (aired) so far
+  uint64_t processed = 0;    // ring samples already through the chain
+  std::deque<float> staged;  // chain output not yet released to the peer
+  std::deque<float> outQ;    // released audio awaiting the peer's RX clock
+  // Per-capture accounting. The chain returns MORE samples than it was
+  // given (filter tail, delay-spread ringing), so releasing output "in
+  // step with the drained count" left every burst's excess in `staged`;
+  // under back-to-back bulk the ring never went idle to flush it and
+  // each later burst reached the receiver later than the last (measured:
+  // srtt climbing 11 -> 21 s over 300 s and zero bytes delivered). Each
+  // capture's output is released as ITS OWN input drains, and its tail
+  // is flushed the moment that input has fully aired - the ringing then
+  // precedes the next burst, as it does on a real receiver.
+  struct Capture {
+    size_t inLeft;   // input samples of this capture still to drain
+    size_t outLeft;  // chain-output samples of it still to release
+  };
+  std::deque<Capture> caps;
 
-  void push(std::span<const float> in) {
-    for (float s : in) {
-      if (drop) s = 0.0f;
+  // Channel-process everything that appeared in `ring` since last round.
+  void processNew(const SampleRing& ring) {
+    const size_t avail = ring.readAvailable();
+    const uint64_t seen = consumed + avail;
+    if (seen <= processed) return;
+    const size_t n = size_t(seen - processed);
+    std::vector<float> x(n);
+    ring.peek(x, avail - n);
+    bool signal = false;
+    for (float s : x) {
       if (std::fabs(s) > 1e-5f) {
-        acc.push_back(s);
-        quiet = 0;
-        // Safety cap: sustained continuous TX must not accumulate an
-        // unbounded capture (the chain processes per capture).
-        if (acc.size() > size_t(12 * kFsAudio)) flush();
-      } else if (!acc.empty()) {
-        acc.push_back(s);
-        if (++quiet > int(0.12 * kFsAudio)) flush();
-      } else {
-        outQ.push_back(0.0f);
+        signal = true;
+        break;
       }
     }
+    if (signal) {
+      chain.channel.seed = chain.seed + (seedCtr++) * 7919;
+      auto y = radioChain(chain, x);
+      staged.insert(staged.end(), y.begin(), y.end());
+      caps.push_back({n, y.size()});
+    } else {
+      staged.insert(staged.end(), x.begin(), x.end());  // lead/tail pad
+      caps.push_back({n, n});
+    }
+    processed = seen;
   }
-  void flush() {
-    chain.channel.seed = chain.seed + (seedCtr++) * 7919;
-    auto y = radioChain(chain, acc);
-    for (float v : y) outQ.push_back(v);
-    acc.clear();
-    quiet = 0;
+  void emit(size_t k) {
+    for (size_t i = 0; i < k && !staged.empty(); ++i) {
+      outQ.push_back(drop ? 0.0f : staged.front());
+      staged.pop_front();
+    }
+  }
+  // Release chain output for `drained` ring samples, capture by capture.
+  void release(size_t drained) {
+    while (drained > 0 && !caps.empty()) {
+      Capture& c = caps.front();
+      const size_t take = c.inLeft < drained ? c.inLeft : drained;
+      c.inLeft -= take;
+      drained -= take;
+      const size_t out = c.outLeft < take ? c.outLeft : take;
+      emit(out);
+      c.outLeft -= out;
+      if (c.inLeft == 0) {
+        emit(c.outLeft);  // the capture has aired: its tail follows now
+        c.outLeft = 0;
+        caps.pop_front();
+      }
+    }
   }
 };
 
 struct Node {
   SampleRing rxRing{size_t(kFsAudio) * 8};
-  SampleRing txRing{size_t(kFsAudio) * 8};
+  // 64 s TX ring (the modem's own is 8 s): the streaming shuttle runs a
+  // burst through the radio chain as ONE capture the round it is staged,
+  // so even a deep-tier CSS frame (up to ~35 s) must fit whole. The
+  // worker's txq accounting is pending+ring and does not depend on size.
+  SampleRing txRing{size_t(kFsAudio) * 64};
   Config cfg;
   std::optional<ModemWorker> w;
   TcpServer dataSrv, ctrlSrv;
@@ -196,16 +253,23 @@ struct World {
   double jamAmpBA = 0.0, jamToneBA = 0.0;   // into A's receiver
   double jamPhase = 0.0;
 
-  // HALF-DUPLEX (SKW_HALF_DUPLEX=1): model a single SSB transceiver -
-  // deaf to the channel while its own PTT is keyed. This is the physical
-  // reality scheduled turn-taking exists to handle; the default
-  // full-duplex world (split TX/RX / virtual cables) never punishes
-  // simultaneous transmission, so an occupancy-gate scheduler that keys
-  // over the peer looks fine there and turn-taking's one-at-a-time
-  // discipline only costs parallelism. Under half-duplex the collision
-  // is real: two stations keying at once are both deaf and both lose the
-  // exchange (the documented CCA stall), and turn-taking's value shows.
-  bool halfDuplex = std::getenv("SKW_HALF_DUPLEX") != nullptr;
+  // HALF-DUPLEX IS THE DEFAULT WORLD: a single SSB transceiver, deaf to
+  // the channel while its own PTT is keyed and for a TX/RX switching
+  // interval after it unkeys. This is the physical reality scheduled
+  // turn-taking exists to handle. SKW_FULL_DUPLEX=1 selects the old
+  // split-TX/RX world, which never punishes keying over the peer - an
+  // occupancy-gate scheduler looks fine there and one-at-a-time
+  // discipline only costs parallelism - and is kept only as a variant.
+  // (SKW_HALF_DUPLEX=1, the pre-default knob, remains accepted.)
+  bool halfDuplex = std::getenv("SKW_FULL_DUPLEX") == nullptr;
+  // TX/RX switching time (SKW_TXRX_SWITCH_MS, default 50): a rig's
+  // receiver is blanked for tens of ms after unkey (relay/PIN switching,
+  // AGC recovery). Modelled as continued deafness after keying drops.
+  double switchSec =
+      (std::getenv("SKW_TXRX_SWITCH_MS") ? std::atof(std::getenv("SKW_TXRX_SWITCH_MS"))
+                                          : 50.0) / 1000.0;
+  int deafRoundsA = 0, deafRoundsB = 0;  // post-unkey blanking countdown
+  bool wasKeyedA = false, wasKeyedB = false;
 
   World(double snrDb, uint64_t seed) : a(clk, "W1AW"), b(clk, "K6XYZ") {
     for (Shuttle* s : {&ab, &ba}) {
@@ -217,26 +281,24 @@ struct World {
   }
 
   void moveAudio(Node& from, Node& to, Shuttle& sh, bool toDeaf = false) {
-    // REAL-TIME TX drain: a real audio driver consumes exactly one
-    // round of samples per round of wall clock. Draining the whole
-    // ring here let a modem transmit ~100x faster than real time -
-    // under two-way load the shuttle queue grew unboundedly, ACKs
-    // arrived tens of seconds late, and every ARQ timer fired first
-    // (found by the bidirectional saturation soak).
+    // 1) Channel-process what appeared in the ring this round (whole
+    //    burst on the round it is staged - see Shuttle).
+    sh.processNew(from.txRing);
+    // 2) REAL-TIME TX drain: a real audio driver consumes exactly one
+    //    round of samples per round of wall clock. Draining the whole
+    //    ring here let a modem transmit ~100x faster than real time -
+    //    under two-way load the shuttle queue grew unboundedly, ACKs
+    //    arrived tens of seconds late, and every ARQ timer fired first
+    //    (found by the bidirectional saturation soak).
     float buf[8192];
     static_assert(sizeof(buf) / sizeof(buf[0]) >= kRoundSamples);
-    const size_t got = from.txRing.read(
-        {buf, std::min(kRoundSamples, from.txRing.readAvailable())});
-    const size_t total = got;
-    if (got > 0) sh.push({buf, got});
-    // The worker writes only bursts to its TX ring (a real audio driver
-    // emits silence on its own): an empty ring for a few rounds marks
-    // the burst end, so flush it through the radio chain.
-    if (total == 0) {
-      if (!sh.acc.empty() && ++sh.idleRounds >= 3) sh.flush();
-    } else {
-      sh.idleRounds = 0;
-    }
+    const size_t availNow = from.txRing.readAvailable();
+    const size_t got =
+        from.txRing.read({buf, std::min(kRoundSamples, availNow)});
+    sh.consumed += got;
+    // 3) Release chain output for what just aired, capture by capture
+    //    (a capture's tail follows the instant its input has aired).
+    sh.release(got);
     // Keep the receiver's audio clock running: exactly one round of
     // samples per round, silence when the channel is quiet.
     size_t want = std::min(kRoundSamples, to.rxRing.writeAvailable());
@@ -278,11 +340,21 @@ struct World {
     if (!starveB) b.w->runOnce();
     // Snapshot keying BEFORE either moveAudio drains a TX ring: a station
     // with audio queued to transmit is keyed this round, and a keyed
-    // half-duplex radio is deaf to the incoming channel.
+    // half-duplex radio is deaf to the incoming channel - and stays deaf
+    // for the TX/RX switching interval after it unkeys.
     const bool keyedA = a.txRing.readAvailable() > 0;
     const bool keyedB = b.txRing.readAvailable() > 0;
-    moveAudio(a, b, ab, halfDuplex && keyedB);  // B deaf while B keys
-    moveAudio(b, a, ba, halfDuplex && keyedA);  // A deaf while A keys
+    const int switchRounds = int(std::ceil(switchSec / kRoundSec));
+    if (wasKeyedA && !keyedA) deafRoundsA = switchRounds;
+    if (wasKeyedB && !keyedB) deafRoundsB = switchRounds;
+    const bool deafA = halfDuplex && (keyedA || deafRoundsA > 0);
+    const bool deafB = halfDuplex && (keyedB || deafRoundsB > 0);
+    if (!keyedA && deafRoundsA > 0) --deafRoundsA;
+    if (!keyedB && deafRoundsB > 0) --deafRoundsB;
+    wasKeyedA = keyedA;
+    wasKeyedB = keyedB;
+    moveAudio(a, b, ab, deafB);  // B deaf while B keys / switches
+    moveAudio(b, a, ba, deafA);  // A deaf while A keys / switches
     a.pumpTcp();
     b.pumpTcp();
     clk.advanceSec(kRoundSec);

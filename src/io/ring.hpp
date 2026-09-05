@@ -41,6 +41,22 @@ class SampleRing {
     return n;
   }
 
+  // Consumer-side LOOKAHEAD: copy up to out.size() samples starting
+  // `offset` past the consumer position WITHOUT consuming them. Used by
+  // the ST2 test world to channel-process a burst the round it is staged
+  // while the ring keeps draining at real time (the modem's keying and
+  // txq clock). Returns samples copied.
+  size_t peek(std::span<float> out, size_t offset = 0) const {
+    size_t tail = tail_.load(std::memory_order_relaxed);
+    size_t head = head_.load(std::memory_order_acquire);
+    size_t avail = (head - tail) & sizeMask();
+    if (offset >= avail) return 0;
+    size_t n = avail - offset;
+    if (out.size() < n) n = out.size();
+    for (size_t i = 0; i < n; ++i) out[i] = buf_[(tail + offset + i) & mask_];
+    return n;
+  }
+
   // Consumer side. Returns samples actually read.
   size_t read(std::span<float> out) {
     size_t tail = tail_.load(std::memory_order_relaxed);

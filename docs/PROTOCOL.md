@@ -200,6 +200,23 @@ no per-frame-type transport exceptions except:
   the initiator through ACK/keepalive SNR reports. Two independent
   controllers would collide mid-air (crossing MODE_CHANGEs diverge the
   committed mode). Responder-side `MODE` pinning is a v1 limitation.
+- **mode-change commit (2026-09-05)**: a **demotion** is applied by the
+  initiator **at the announcement**, not on `MODE_ACK`; the responder
+  applies on receiving `MODE_CHANGE` as before, so a lost `MODE_ACK` no
+  longer leaves the initiator one rung above the responder for the whole
+  retry window with feedback riding the wrong transport. A **promotion**
+  still applies on `MODE_ACK`: its channel is healthy by definition and
+  the ACK arrives, while applying early made the initiator run ahead of
+  the responder's ARQ window and ACK batching for one announcement's
+  propagation (measured as a ~1 s transient on the VHF-FM pipe). The
+  `MODE_ACK` is re-announced once if missing, with its deadline armed
+  from the mode in force after the announcement.
+  Responder adoption of the mode from `DATA` PHY headers was measured
+  and rejected: it never fired across a 900 s half-duplex churn soak
+  with ten mode changes, and cost the deep-tier throughput gate
+  19% → 11%. Re-labelling already-queued `DATA` to the new mode was
+  likewise rejected (frames are sized to their mode's codeword budget;
+  it regressed the fading ramp 0.84 → 0.61).
 
 ### ARQ
 

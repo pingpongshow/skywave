@@ -309,8 +309,11 @@ class LinkEngine {
     return hsOnCss_ ? ChirpSig::Css : ChirpSig::Calling;
   }
   int hsMode() const { return hsOnCss_ ? 0 : 4; }
-  // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK).
+  // In-flight MODE_CHANGE we initiated (awaiting MODE_ACK). The new mode
+  // is APPLIED at announce time (see requestModeChange); pendingMode_
+  // now only drives the announcement retries and the MODE_ACK match.
   int pendingMode_ = -1;
+  int modeChangeFrom_ = 4;  // committed mode the announcement left from
   CpMode pendingCp_ = kCpDefault;
   uint8_t modeEpoch_ = 0;
   double modeChangeDeadline_ = 0.0;

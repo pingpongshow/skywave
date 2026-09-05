@@ -212,24 +212,23 @@ if(BUILD_TESTS)
   skw_test(test_proto)
   skw_test(test_file)
   skw_test(test_bcast)
+  # test_st2 runs over the HALF-DUPLEX world by default: each station
+  # deaf while its own PTT is keyed and for the TX/RX switching interval
+  # after (tests/st2_world.hpp) - the radio this modem is built for. The
+  # old split-TX/RX world never punished keying over the peer and cannot
+  # judge a scheduler; it is kept as the full-duplex VARIANT below.
   skw_test(test_st2)
-  # The same scripted fault sessions over the HALF-DUPLEX world: each
-  # station deaf while its own PTT is keyed (tests/st2_world.hpp,
-  # SKW_HALF_DUPLEX). The default world is full-duplex and never punishes
-  # keying over the peer, so it cannot judge a scheduler; this variant is
-  # where turn-taking's collision handling is actually exercised
-  # (st2_simultaneous_tx_collision in particular).
-  add_test(NAME test_st2_halfduplex COMMAND test_st2)
-  set_tests_properties(test_st2_halfduplex PROPERTIES
-    ENVIRONMENT "SKW_CHANMEM_PATH=;SKW_HALF_DUPLEX=1")
+  add_test(NAME test_st2_fullduplex COMMAND test_st2)
+  set_tests_properties(test_st2_fullduplex PROPERTIES
+    ENVIRONMENT "SKW_CHANMEM_PATH=;SKW_FULL_DUPLEX=1")
   # Long-run endurance scenarios (soak_st2): built always, NOT registered
   # with ctest (each scenario is 900 sim-s, minutes of wall clock, and
   # churn/floor are still gated on the decode-latency lever - see
-  # ROADMAP). Run manually: SKW_SOAK_SCENARIO={churn,floor,blackout}
-  # with SKW_HALF_DUPLEX=1 for the deaf-while-keyed radio model (the one
-  # scheduler behaviour must be judged on) and SKW_SOAK_COUPLED=1 to
-  # reproduce the historical schedule. Scripted fault sessions over the
-  # same world are the registered test_st2 (+ its half-duplex variant).
+  # ROADMAP). Run manually: SKW_SOAK_SCENARIO={churn,floor,blackout}. The
+  # world is half-duplex by default (SKW_FULL_DUPLEX=1 for the old split
+  # world) and SKW_SOAK_COUPLED=1 reproduces the historical schedule.
+  # Scripted fault sessions over the same world are the registered
+  # test_st2 (+ its full-duplex variant).
   add_executable(soak_st2 tests/soak_st2.cpp)
   target_link_libraries(soak_st2 PRIVATE skywave_core)
   add_executable(monkey_st2 tests/monkey_st2.cpp)

@@ -141,7 +141,17 @@ void SessionFsm::tick(double now) {
         if (attemptsLeft_ > 0) {
           --attemptsLeft_;
           emit(FsmAction::SendCall);
-          deadline_ = now + timeoutSec_;
+          // Randomised backoff, deterministic per (station, attempt):
+          // 0.6x..1.4x of the response timeout. A simultaneous caller
+          // draws from a different seed, so the two ladders separate
+          // by up to 0.8 x timeout within one retry and one of them
+          // hears the other's CALL (see FsmConfig::jitterSeed).
+          uint32_t h = cfg_.jitterSeed ^ (0x9E3779B9u * uint32_t(attemptsLeft_ + 1));
+          h ^= h >> 16;
+          h *= 0x85EBCA6Bu;
+          h ^= h >> 13;
+          const double u = double(h & 0xFFFFu) / 65536.0;
+          deadline_ = now + timeoutSec_ * (0.6 + 0.8 * u);
         } else {
           toIdle(FsmDiscCause::CallRetriesExhausted);
         }

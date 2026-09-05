@@ -2131,6 +2131,13 @@ Trajectory for turn-taking churn (coupled, HD): 8,930 B / t=541 before
 the lever -> 12,690 / t=741 with NAK+finalization -> 19,241 / t=701
 after the quiet-try fix.
 
+NOTE (added 2026-09-05, later the same day): every soak figure in this
+entry and the ones above was measured on the STORE-AND-FORWARD ST2
+shuttle, which delivered a burst to the peer only after it had fully
+aired - one burst-duration of latency per hop that no radio has (see the
+next entry). They are internally comparable but NOT comparable to
+figures measured after the streaming shuttle landed.
+
 NOTE on the coupled pass/fail: legacy's PASS and turn-taking's FAIL on
 that row are schedule luck, not scheduler quality. The coupled schedule
 draws its staircase from the RNG that also paces delivery, so once the
@@ -2182,3 +2189,104 @@ knob to turn. Deliberately NOT retuned here.
   not a link-layer one.
 - floor recalibration (above), owned by bertool.
 - ST3 hardware soak with turn-taking on: not yet run; the OTA gate.
+
+## Latency / duplex-fidelity round (2026-09-05, later)
+
+Six follow-on items. The headline is a MEASUREMENT correction that
+reverses an earlier claim, so read the verdict before the parts.
+
+### The ST2 shuttle was store-and-forward (fixed) - and it reverses the scheduler verdict
+
+The two-modem world forwarded a burst to the peer only AFTER it had
+fully aired (accumulate to trailing silence, then run the whole capture
+through the radio chain). That injected one burst-duration of latency
+per hop that no radio has, and blinded each station's busy detector
+during the peer's ACTUAL transmission. It is the real source of the
+"12.4 s one-way latency" this log chased, and of the earlier "legacy CCA
+collapses to CSS, one direction starved" result: legacy was keying over
+a peer it could not hear because the world delivered that peer's audio
+late.
+
+Rewritten as a STREAMING transport (tests/st2_world.hpp): the ring is
+`peek`ed and channel-processed the round a burst is staged, and each
+capture's chain output is released to the peer IN STEP with the
+real-time drain, so sample n reaches the receiver on the round the
+sender airs it. World TX ring grown to 64 s so a deep-tier frame fits
+whole. Effects: one-way srtt 13 -> 6-8 s; clean 300 s repro 40,960 ->
+49,152 B (+20%); registered gate `st2_oneway_throughput_floor`.
+
+With real-time audio AND half-duplex the default, the scheduler verdict
+on the symmetric two-station world INVERTS the store-and-forward result:
+
+| corrected world, churn | turn-taking | legacy CCA |
+|---|---|---|
+| coupled (static start) | 35,464 B balanced, FAIL t=781 | **95,849 B balanced, PASS** |
+| decoupled (fade from t=0) | chaotic ~7-20 KB, FAIL | chaotic ~9-15 KB, FAIL |
+| blackout (one-way), 3 seeds | **0 B, FAIL x3** | 4.1-13.6 KB, PASS x3 |
+
+Legacy CCA now BEATS turn-taking here. The reason is sound: a working
+busy detector on a symmetric two-station link makes listen-before-talk
+cheap, and turn-taking's structural overhead (>=45 s quantum,
+drain-before-grant, RTT-paced grant handoffs) costs more than CCA's
+occasional collisions. Turn-taking's one-way blackout 0 is not a
+deadlock - the IRS does emit ACKs (verified), but only in the ISS's
+transmit gaps, so under continuous one-way bulk its feedback is slow and
+the single 4 KiB coalesced message never completes across the dead-air
+windows: the same decode-latency + message-granularity wall as floor,
+worse under turn-taking's overhead.
+
+CONCLUSION: the ST2 evidence no longer shows turn-taking winning. It is
+kept as the default on the OPERATOR's direction and because the case for
+scheduled turn-taking is hidden nodes, asymmetric propagation and ACK
+timing on a REAL link - none of which a symmetric, zero-hidden-node
+two-station sim exercises. But its overhead is now the measured cost,
+and reducing the quantum / handoff cadence is the next lever if it is to
+earn the default on-air. The churn soak is deterministic but CHAOTIC
+(tiny timing changes flip pass/fail); compare only seed spreads, never
+single runs, and only on the decoupled schedule.
+
+### Items that landed cleanly
+
+- **#4 mode-change commit**: DEMOTION applied at announce (removes the
+  lost-MODE_ACK one-rung split); promotion still on MODE_ACK (applying
+  early ran the initiator ahead of the responder's window and cost the
+  VHF gate 25.5 -> 24.0 kbps); one re-announce; deadline armed from the
+  post-change mode. Responder DATA-header adoption and queued-DATA
+  re-labelling both MEASURED and REJECTED (see PROTOCOL.md).
+- **#1 CSS single-header layout** (`css_hdr1` bit, `bertool
+  --css-frames --css-hdr 1`): measured - saves ~11% airtime, costs
+  20-30 pp FER at the fading floors. Kept at two copies; bit + sweep
+  remain as infrastructure.
+- **#3 OFDM frame-length adaptation: NOT adopted** - `bertool
+  --payload` shows doubling M8/M9 length on Moderate raises FER 29-50%
+  -> 54-58%. Longer frames are strictly worse under fading.
+- **#12 half-duplex is the default ST2 world** (`SKW_FULL_DUPLEX=1` for
+  the old split world); `test_st2` + `test_st2_fullduplex` both
+  registered. **#13 TX/RX switching blank** modelled
+  (`SKW_TXRX_SWITCH_MS`, default 50 ms). **#14 throughput floor gate**
+  registered (byte-exact/ramp gates never caught a throughput
+  regression; turn-taking's full-duplex cost went unseen until read by
+  hand).
+- CALL-retry backoff jittered per station (`FsmConfig::jitterSeed`): a
+  simultaneous mutual call under faithful half-duplex timing used to
+  deadlock (both stuck in CALLING ~540 s); ALOHA-style randomised
+  backoff separates the ladders. `st2_simultaneous_tx_collision` passes.
+
+### Latent bug found and fixed
+
+The receiver's burst-end "quiet-try" was keyed on the history-END
+sample (advances every ~30 ms chunk), so a failing capture in a quiet
+gap re-ran a full `receiveFrame` chirp scan every chunk until the next
+rung - 36k attempts in a 560 s deep-tier soak, the sim at ~6 sim-s/min,
+floor/blackout LOOKING hung at t~480 (100% CPU in `receiveFrame`).
+Now keyed on the rung index (once per rung). Full ctest 1400 s -> ~340 s;
+every earlier soak wall-time in this log was ~10x inflated by it. Also:
+a 12-bit length field admits ~1000 s of implied deep-tier airtime, which
+must never drive burst-end finalization - capped at the 90 s envelope.
+
+### Gate summary (final binary, 40/40 ctest)
+
+M3 ramp 0.94 fading / 0.67 static, 0 drops; VHF sustained 25.5 kbps;
+CSS deep-tier MAC 19% of net; m2 bidirectional 0.87; one-way repro
+49,152 B / 300 s; `st2_simultaneous_tx_collision` + both duplex
+`test_st2` variants green.

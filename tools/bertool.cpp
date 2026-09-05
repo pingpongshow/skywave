@@ -40,6 +40,18 @@ struct Args {
   std::string csv;
   uint64_t seed = 1000;
   bool css = false;
+  // --css-frames: run the FULL PHY frame path (chirp preamble, sync,
+  // header copies, LDPC payload -> receiveFrame) for the CSS modes
+  // M0-M3, unlike --css which measures payload-only FER through the
+  // modem-layer API and cannot see header loss. --css-hdr N sets the
+  // header copies on air (2 = v1 layout, 1 = connected-session short
+  // layout) so the time-diversity trade-off can be measured.
+  bool cssFrames = false;
+  int cssHdrCopies = 2;
+  // --payload N overrides the per-mode frame payload length (default
+  // 60 B robust / 300 B fast): sweeps frame length against FER at the
+  // fading floor, the input to any frame-length adaptation policy.
+  int payloadLen = 0;
   Band band = Band::Hf;
 };
 
@@ -194,6 +206,9 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
     else if (!strcmp(argv[i], "--css")) a.css = true;
+    else if (!strcmp(argv[i], "--css-frames")) a.cssFrames = true;
+    else if (!strcmp(argv[i], "--css-hdr")) a.cssHdrCopies = atoi(need("--css-hdr").c_str());
+    else if (!strcmp(argv[i], "--payload")) a.payloadLen = atoi(need("--payload").c_str());
     else if (!strcmp(argv[i], "--band")) {
       auto bb = bandFromString(need("--band"));
       if (!bb) { fprintf(stderr, "bad band\n"); return 2; }
@@ -214,10 +229,10 @@ int main(int argc, char** argv) {
 
   FILE* csv = a.csv.empty() ? nullptr : fopen(a.csv.c_str(), "w");
 
+  // The OFDM mode list default does not apply to the CSS tier.
+  const std::vector<int> ofdmDefault = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+  if ((a.css || a.cssFrames) && a.modes == ofdmDefault) a.modes = {0, 1, 2, 3};
   if (a.css) {
-    // The OFDM mode list default does not apply to the CSS tier.
-    const std::vector<int> ofdmDefault = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
-    if (a.modes == ofdmDefault) a.modes = {0, 1, 2, 3};
     const int rc = cssSweep(a, csv);
     if (csv) fclose(csv);
     return rc;
@@ -236,23 +251,31 @@ int main(int argc, char** argv) {
   for (Family fam : a.families) {
     for (int mode : a.modes) {
       const ModeDef& md = kModes[size_t(mode)];
-      if (!md.active || md.waveform != Waveform::Ofdm) continue;
+      const bool cssMode = md.waveform == Waveform::Css;
+      if (!md.active) continue;
+      if (cssMode ? !a.cssFrames : a.cssFrames) continue;
       // Offsets are relative to the floor that matches the channel: the
       // AWGN reference for --preset awgn, the measured fading floor for
       // the fading presets (WAVEFORM.md fading conformance annex).
-      const double floor = a.preset == "awgn" ? floorDb(fam, mode)
-                                              : fadingFloorDb(fam, mode);
+      const double floor =
+          a.preset == "awgn"
+              ? (cssMode ? cssFloorDb(fam, mode) : floorDb(fam, mode))
+              : fadingFloorDb(fam, mode);
       if (floor >= 90.0) continue;  // kFadingNA: no fading conformance
       const bool robust = mode <= 7;
-      const size_t payloadLen = robust ? 60 : 300;
+      const size_t payloadLen =
+          a.payloadLen > 0 ? size_t(std::min(a.payloadLen, 4095))
+                           : (robust ? 60 : 300);
 
       // Build the frame once per config; the channel varies per trial.
       std::vector<uint8_t> payload(payloadLen);
       for (size_t i = 0; i < payloadLen; ++i) payload[i] = uint8_t(i * 41 + 3);
       TxFrameParams tp;
       tp.family = fam;
-      tp.sig = robust ? ChirpSig::Robust : ChirpSig::Fast;
+      tp.sig = cssMode ? ChirpSig::Css
+                       : (robust ? ChirpSig::Robust : ChirpSig::Fast);
       tp.mode = mode;
+      tp.cssHeaderCopies = uint8_t(a.cssHdrCopies == 1 ? 1 : 2);
       tp.payload = payload;
       auto frame = buildFrameBaseband(tp);
       auto geo = computeGeometry(tp);
@@ -261,8 +284,16 @@ int main(int argc, char** argv) {
           double(kFftBaseband +
                  cpSamplesAudio(tp.cpMode) / kDecimation) /
           double(kFsBaseband);
+      // CSS: report GROSS efficiency over the whole frame (preamble +
+      // sync + header copies + payload) - the overhead IS the question.
+      const double airSec = double(geo.totalSamples) / double(kFsBaseband);
       const double netEff =
-          paySec > 0 ? (payloadLen - 30) * 8.0 / paySec : 0.0;
+          cssMode ? (airSec > 0 ? payloadLen * 8.0 / airSec : 0.0)
+                  : (paySec > 0 ? (payloadLen - 30) * 8.0 / paySec : 0.0);
+      if (cssMode) {
+        printf("# %s M%d: %zu B frame, %.1f s on air, header copies %d\n",
+               plan(fam).name, mode, payloadLen, airSec, int(tp.cssHeaderCopies));
+      }
 
       std::vector<cfloat> x(2000, cfloat(0, 0));
       x.insert(x.end(), frame.begin(), frame.end());
@@ -317,8 +348,11 @@ int main(int argc, char** argv) {
   // +3 given trial count) against the same floor family as the offsets.
   int fail = 0;
   for (const auto& r : all) {
-    const double base = a.preset == "awgn" ? floorDb(r.fam, r.mode)
-                                           : fadingFloorDb(r.fam, r.mode);
+    const bool cssR = kModes[size_t(r.mode)].waveform == Waveform::Css;
+    const double base =
+        a.preset == "awgn"
+            ? (cssR ? cssFloorDb(r.fam, r.mode) : floorDb(r.fam, r.mode))
+            : fadingFloorDb(r.fam, r.mode);
     double off = r.snrDb - base;
     // AWGN decays as a coding waterfall (steep); fading FER is outage-
     // limited and falls off far more gently above the floor. Gates carry
