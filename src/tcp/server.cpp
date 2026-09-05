@@ -58,6 +58,7 @@ void TcpServer::dropClient() {
     ::close(client_);
     client_ = -1;
   }
+  txBuf_.clear();  // a fresh client must not inherit a dead one's tail
 }
 
 std::vector<uint8_t> TcpServer::poll() {
@@ -84,6 +85,8 @@ std::vector<uint8_t> TcpServer::poll() {
   }
 
   if (client_ < 0) return rx;
+  flush();  // retry anything the socket could not take last time
+  if (client_ < 0) return rx;
   uint8_t buf[4096];
   for (;;) {
     ssize_t n = ::recv(client_, buf, sizeof(buf), 0);
@@ -104,27 +107,41 @@ std::vector<uint8_t> TcpServer::poll() {
 
 void TcpServer::send(const std::vector<uint8_t>& bytes) {
   if (client_ < 0 || bytes.empty()) return;
-  size_t off = 0;
+  txBuf_.insert(txBuf_.end(), bytes.begin(), bytes.end());
+  flush();
+}
+
+// A socket that reports EAGAIN is momentarily full, not broken - a GUI
+// companion that pauses for a frame while a bulk transfer lands will do
+// this routinely. Dropping the client there cost the application its
+// session mid-transfer; instead the remainder is buffered and retried on
+// the next poll. The cap is the backstop: a client that genuinely stopped
+// reading is disconnected rather than growing the modem's memory without
+// bound.
+void TcpServer::flush() {
+  if (client_ < 0 || txBuf_.empty()) return;
 #ifdef MSG_NOSIGNAL
   constexpr int kSendFlags = MSG_NOSIGNAL;  // Linux: no SIGPIPE
 #else
   constexpr int kSendFlags = 0;  // macOS: SO_NOSIGPIPE set at accept
 #endif
-  while (off < bytes.size()) {
-    ssize_t n = ::send(client_, bytes.data() + off, bytes.size() - off,
+  size_t off = 0;
+  while (off < txBuf_.size()) {
+    ssize_t n = ::send(client_, txBuf_.data() + off, txBuf_.size() - off,
                        kSendFlags);
     if (n > 0) {
       off += size_t(n);
       continue;
     }
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      // Localhost client not draining: bounded retry via short spin is
-      // not acceptable in the worker; drop the laggard instead.
-      dropClient();
-      return;
-    }
-    dropClient();
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+    txBuf_.clear();
+    dropClient();  // error
     return;
+  }
+  txBuf_.erase(txBuf_.begin(), txBuf_.begin() + long(off));
+  if (txBuf_.size() > kTxBufferCap) {
+    txBuf_.clear();
+    dropClient();  // client is not reading at all
   }
 }
 
@@ -135,12 +152,23 @@ void TcpServer::send(const std::string& s) {
 void LineBuffer::feed(const std::vector<uint8_t>& bytes) {
   for (uint8_t b : bytes) {
     if (b == '\n') {
+      if (dropping_) {           // tail of an oversize line: discard it
+        dropping_ = false;
+        acc_.clear();
+        continue;
+      }
       if (!acc_.empty() && acc_.back() == '\r') acc_.pop_back();
       lines_.push_back(std::move(acc_));
       acc_.clear();
-    } else {
+    } else if (!dropping_) {
       acc_.push_back(char(b));
-      if (acc_.size() > 4096) acc_.clear();  // oversize: drop
+      // Oversize line: drop everything up to and including the next
+      // newline. Clearing the accumulator alone would let the TAIL of an
+      // over-long line be parsed as a command in its own right.
+      if (acc_.size() > kMaxLineBytes) {
+        acc_.clear();
+        dropping_ = true;
+      }
     }
   }
 }

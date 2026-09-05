@@ -1,5 +1,7 @@
 #include "dsp/updown.hpp"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cmath>
 
@@ -30,7 +32,18 @@ std::vector<float> rxStage1Taps() {
 // anti-alias filter (HF: pass 1400 covers ULTRA's +-1350, stop 1650).
 std::vector<float> rxStage2Taps() {
   const double half = maxHalfBandHz();
-  return designKaiserLowpass(24000.0, half + 50.0, half + 300.0, 70.0);
+  // Guard between the widest family's outermost carrier and this
+  // filter's passband edge. A Kaiser response is not flat right up to
+  // its edge, and ULTRA's outermost carrier sits AT `half` - so at the
+  // shipped +50 Hz it rode the knee while WIDE's, 150 Hz further in,
+  // did not. Overridable for measurement.
+  double margin = 50.0;
+  if (const char* e = getenv("SKW_RXBAND_MARGIN_HZ")) {
+    const double v = std::atof(e);
+    if (v > 0.0) margin = v;
+  }
+  return designKaiserLowpass(24000.0, half + margin, half + margin + 250.0,
+                             70.0);
 }
 // TX stage 1 (at 24 kHz, from 12 kHz): kill the zero-stuff image around
 // +-(12000 - f). Gain 2 restores amplitude after x2 upsampling.

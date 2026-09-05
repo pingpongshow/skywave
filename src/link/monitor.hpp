@@ -6,6 +6,7 @@
 // stream would be ambiguous); MON: lines always flow.
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -30,19 +31,35 @@ class Monitor {
 
   int decodedFrames() const { return decoded_; }
 
-  // Completed BCAST_DATA reassemblies (fragment chains joined).
-  std::vector<std::vector<uint8_t>> takeBroadcasts() {
+  // Callsign the last decoded frame was attributed to ("?" when unknown).
+  const std::string& lastSource() const { return lastSrc_; }
+
+  // Completed BCAST_DATA reassemblies (fragment chains joined), each
+  // paired with the callsign it was attributed to. Chains are kept per
+  // sender, so overlapping broadcasts no longer corrupt each other.
+  std::vector<std::pair<std::string, std::vector<uint8_t>>>
+  takeBroadcasts() {
     auto out = std::move(bcastOut_);
     bcastOut_.clear();
     return out;
   }
+  size_t openBroadcastChains() const { return bcastChains_.size(); }
 
  private:
   Family family_;
   bool localConnected_ = false;
-  int bcastCount_ = 0;  // fragment count of the chain being collected
-  std::vector<std::vector<uint8_t>> bcastFrags_;
-  std::vector<std::vector<uint8_t>> bcastOut_;
+  // One reassembly chain PER SENDER, keyed on the 16-bit sender tag the
+  // transmitter puts in the envelope's session-id field. Before this,
+  // two stations broadcasting in the same period shared a single global
+  // chain and silently corrupted each other's payloads.
+  struct BcastChain {
+    uint8_t count = 0;
+    std::vector<std::vector<uint8_t>> frags;
+    std::string src;
+  };
+  std::map<uint16_t, BcastChain> bcastChains_;
+  // Completed payloads with the callsign they were attributed to.
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> bcastOut_;
   // Callsign context: full calls appear only in handshake/broadcast
   // frames; session frames are attributed to the last observed exchange.
   std::string lastSrc_ = "?";

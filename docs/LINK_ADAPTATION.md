@@ -71,8 +71,19 @@ Avoids restarting every reconnect from a naive guess.
   available; bucket 1 kHz; "unknown" is its own bucket)
 - family
 
-Store: 64 entries, LRU eviction, persisted to the config directory as a
+Store: 64 entries, LRU eviction, persisted to `~/.skywave/chanmem.bin` as a
 small binary cache (survives restarts).
+
+Wiring: the worker owns the store and hands the engine a pointer only while
+`modem.channel_memory` is on, so `CHANMEM OFF` disables both seeding **and**
+recording. The recommendation is installed into the handshake policy just
+before each handshake decision and clamps the quality-derived proposal on
+*both* sides — the initiator's `START.initial_mode` and the responder's own
+view — so the lower of memory and live measurement always wins. Observations
+are folded in when a session ends, not continuously: mid-session samples
+during a handshake or a collapse would bias the EMA toward transients.
+Frequency buckets come from `FREQINFO <hz>` ([INTERFACES.md](INTERFACES.md));
+with no dial report the store keys on callsigns and family alone.
 
 ### Stored State
 
@@ -166,3 +177,34 @@ closed-form least-squares trends over short bounded histories:
 - control: environment variables only (`SKW_ADVISOR=off|shadow|assist`,
   per-domain confidence floors); default `shadow` until validated in
   hardware, then `assist`
+
+## Channel Character (floor-table selection)
+
+The AMC operates against the measured **fading** floors by default. That
+is the safe assumption and the wrong one at both extremes, both measured:
+
+- a genuinely **static** path leaves most of its capacity unused (an AWGN
+  ramp delivered 39% of an AWGN-floor oracle);
+- a **CCIR-Poor-class** path cannot carry the upper ladder at all — WIDE
+  never reaches 10% FER at *any* mode or SNR
+  ([conformance/poor_findings.md](conformance/poor_findings.md)).
+
+`link/chanclass.hpp` classifies the path from evidence the receiver
+already produces — no extra measurement on air, no wire format, no
+negotiation:
+
+| Signal | Static | Fading (Good) | Severe (Poor) |
+|---|---:|---:|---:|
+| pilot residual / channel power | 0.003–0.025 | 0.010–0.057 | 1.77–1.83 |
+| delay spread | ~0 | ~0.5–1 ms | ≥ 2 ms |
+| SNR variance | low | moderate | high |
+| frame error rate | ~0 | low | ≥ 35% |
+
+`Static` requires **all** gates; `Severe` requires **any two**; a verdict
+must repeat (`confirmRuns`) before it replaces the last one, because
+switching floor tables mid-session is disruptive and flapping is worse
+than being wrong in one direction. `Unknown` keeps the fading floors.
+
+Consumption: `Static` switches `Amc::operatingFloorDb()` to the AWGN
+reference table (measured effect: static ramp 0.39 → 0.67 of its oracle);
+`Severe` caps the ladder at `severeMaxMode` (M7, the robust tier).

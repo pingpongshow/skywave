@@ -141,6 +141,57 @@ TEST_CASE(css_link_gate_ccir_moderate_minus13) {
   CHECK(ok);
 }
 
+
+// DEEP-TIER THROUGHPUT. The MAC-timing pass (airtime-scaled handoff
+// constants) exists because every wall-clock constant was OFDM-tuned and
+// therefore ~zero against a 35-55 s CSS frame: the 30 s control busy-hold
+// expired INSIDE a single peer burst and keyed over it, and the 15 s
+// "peer sent data recently" window was shorter than one frame so fairness
+// never engaged. Recorded symptom: 0.83 B/s at M1 against 32 B/s of
+// theoretical net.
+//
+// That fix shipped WITHOUT this measurement, which is the gap this case
+// closes. It is a ratio against the mode's own NET rate, not an absolute,
+// so it stays meaningful if the ladder is retuned.
+TEST_CASE(css_deep_tier_throughput) {
+  ChansimParams ch;
+  ch.fading = false;
+  ch.snr3kDb = 25.0;            // clean: this measures the MAC, not the PHY
+  Pair p(ch, 20250818, Family::Mid);
+  CHECK(p.connect(90));
+  CHECK(p.a.state() == FsmState::Connected);
+
+  // Pin both ends into the deep tier: the throughput question is about
+  // CSS airtimes, and AMC would climb out of them on a clean channel.
+  CHECK(p.a.pinMode(1, p.now));
+  for (int i = 0; i < 200 && p.a.sessionMode() != 1; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), 1);
+
+  const double t0 = p.now;
+  const size_t want = 1024;
+  std::vector<uint8_t> payload(want);
+  for (size_t i = 0; i < want; ++i) payload[i] = uint8_t(i * 7 + 3);
+  p.a.sendData(payload);
+
+  size_t got = 0;
+  for (int i = 0; i < 20000 && got < want; ++i) {
+    p.step();
+    got += p.b.takeReceivedData().size();
+  }
+  const double secs = p.now - t0;
+  const double bps = secs > 0.0 ? double(got) / secs : 0.0;
+  const double netBps = netRate(Family::Mid, 1, kCpDefault) / 8.0;
+  std::printf("deep-tier M1: %zu B in %.0f s = %.2f B/s (net %.2f B/s, "
+              "%.0f%% of net)\n",
+              got, secs, bps, netBps, 100.0 * bps / netBps);
+
+  CHECK_EQ(int(got), int(want));          // it must actually arrive
+  // The recorded failure delivered 2.6% of net. A MAC that is merely
+  // "not broken" clears 15%; the remaining gap is preamble and
+  // turnaround overhead, which at deep-tier airtimes is large and real.
+  CHECK(bps > 0.15 * netBps);
+}
+
 TEST_CASE(css_amc_promotes_out_of_deep_tier) {
   // Connect deep, then the channel improves: AMC climbs M0 -> ... -> M4+
   // across the tier boundary.

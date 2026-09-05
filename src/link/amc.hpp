@@ -10,10 +10,17 @@
 #include <optional>
 
 #include "core/constants.hpp"
+#include "link/chanclass.hpp"
 
 namespace skw {
 
 struct AmcConfig {
+  // Highest mode allowed once the channel is classified SEVERE
+  // (CCIR-Poor-like). Measured 2026-08-17: on Poor, MID closes only
+  // M4-M6 and NARROW only M4-M7, while WIDE never closes at any mode.
+  // The robust tier is the only thing that works, so promoting past it
+  // is guaranteed waste.
+  uint8_t severeMaxMode = 7;
   Family family = Family::Wide;
   uint8_t maxMode = 13;
   // Bottom rung: kFirstMode (M4) normally, 0 when the session
@@ -32,7 +39,19 @@ struct AmcConfig {
   int demoteFailStreak = 3;
   // High-mode gates.
   double m11RetryMax = 0.10;
-  double pilotStabilityMax = 0.15;   // phase-innovation variance units
+  // Pilot-residual energy relative to channel power (phy/receiver.hpp
+  // RxFrameResult::pilotStability). CALIBRATED 2026-08-17 at M10 WIDE,
+  // 12 frames per point:
+  //     AWGN 25 dB 0.003   AWGN 15 dB 0.025
+  //     Good 25 dB 0.010   Good 15 dB 0.057 (worst frame 0.156)
+  //     Mod  25 dB 0.381   Mod  15 dB 0.545
+  //     Poor 25 dB 1.766   Poor 15 dB 1.830
+  // M11+ wants a well-tracked channel: admit Good, refuse Moderate. The
+  // old 0.15 predated any implementation of this measurement (nothing
+  // fed the gate, so it evaluated a constant 0) and sits INSIDE Good's
+  // worst-frame spread, which cost the M3 ramp 3 points when the gate
+  // first went live.
+  double pilotStabilityMax = 0.25;
   uint8_t selectivityMax = 96;       // M12+ gate (0..255)
   // kFadingNA rows (near-static-only modes): require a clean probe and
   // this margin above the AWGN reference floor.
@@ -54,6 +73,13 @@ class Amc {
   void onRemoteSnr(double snrDb, double now);
   void onFrameResult(bool wasRetransmit, bool decodeOk);  // 16-frame window
   void onQualityIndicators(uint8_t selectivity, double pilotStability);
+  // Channel character (link/chanclass.hpp). STATIC switches the floor
+  // table to the AWGN reference - the fading floors leave large
+  // throughput unused on a static path; SEVERE caps the ladder at the
+  // robust tier. UNKNOWN/FADING keep the fading floors, which is the
+  // long-standing behaviour.
+  void setChannelClass(ChannelClass c) { chanClass_ = c; }
+  ChannelClass channelClass() const { return chanClass_; }
   void onProbeResult(bool clean, double now);  // 3.6 feeds this
   void onModeApplied(uint8_t mode, double now);  // MODE_CHANGE committed
 
@@ -79,6 +105,7 @@ class Amc {
   double retryRatio() const;
   bool degraded() const { return degraded_; }
   uint8_t mode() const { return mode_; }
+  const AmcConfig& config() const { return cfg_; }
 
  private:
   bool modeEligible(uint8_t k, double effSnr,
@@ -97,6 +124,7 @@ class Amc {
   double remoteSnr_ = 0.0;
   double remoteTime_ = -1e9;
   uint8_t selectivity_ = 0;
+  ChannelClass chanClass_ = ChannelClass::Unknown;
   double pilotStability_ = 0.0;
   bool probeClean_ = false;
   int advisorBias_ = 0;  // one-shot, consumed by evaluate()

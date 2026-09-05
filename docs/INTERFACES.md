@@ -29,9 +29,16 @@ byte 2     family (0=WIDE 1=MID 2=NARROW 3=ULTRA)
 byte 3     mode (ladder index)
 bytes 4-6  source callsign hash (24-bit BE)
 bytes 7-9  destination hash (24-bit BE; broadcast = 0xFFFFFF)
-bytes 10-11 payload length (BE)
-bytes 12.. payload bytes
+bytes 10-11 frame length (BE)
+bytes 12.. the complete link frame: 8-byte envelope, body, CRC-32
+           ([PROTOCOL.md](PROTOCOL.md) "Link Frame Format")
 ```
+
+Byte 12 onward is the **raw link frame**, not a decoded body: a client that
+wants the body parses the envelope itself (and may verify the CRC). The
+callsign hashes are one-way, so the human-readable callsigns come either
+from the frame body (`CALL`/`CQ`/`BEACON` carry them) or from the control
+port's `MON:` lines, which report the modem's cached callsign context.
 
 (The record self-describes type/family/mode — tooling never needs the
 control port to interpret it.)
@@ -97,7 +104,7 @@ gated feature from a typo.
 | `AUDIOLEVEL` | input/output level meters (dBFS) |
 | `MONITOR ON\|OFF` | passive frame monitoring |
 | `TXTEST [seconds\|OFF]` | transmit a representative OFDM calibration signal (IDLE only, max 30 s) |
-| `FREQINFO` | waveform center, TX alignment shift, last RX CFO (`CENTER=<hz> SHIFT=<hz> CFO=<hz>`) |
+| `FREQINFO [hz]` | query, or report the rig's dial frequency; answers `CENTER=<hz> SHIFT=<hz> CFO=<hz>` either way |
 | `VERSION` | version string |
 
 #### PTT
@@ -159,7 +166,28 @@ EVT:FILE_RX <name> <size> <crc32ok>
 EVT:FILE_ERROR <name> <reason>
 EVT:VOICE <state>
 MON:<src>:<dst|*>:<frame_type>:<family>:<Mx>:<hex_payload>
+EVT:BROADCAST <src> <hex_payload>
+EVT:SNR <local_db> <remote_db|->
+EVT:CFO_WARN <tx_align_hz>
+EVT:TX_WATCHDOG <seconds_keyed>
 ```
+
+`MON:` carries the **complete link frame** as hex (envelope + body + CRC),
+so a client can verify it and reassemble multi-frame broadcasts; an
+encrypted or undecodable frame reports an empty payload field and metadata
+only. `frame_type` is the numeric type from
+[PROTOCOL.md](PROTOCOL.md).
+
+`EVT:BROADCAST` fires when the monitor has reassembled a complete
+`BCAST_DATA` fragment chain — the payload an operator actually sent. It is
+the control-port counterpart of the data port's binary records, and unlike
+them it keeps flowing while a session is connected.
+
+`EVT:SNR` is emitted whenever the measured link SNR moves by ≥ 1 dB while
+connected (not on a timer), so an idle link costs nothing.
+
+`EVT:TX_WATCHDOG` reports that the TX watchdog force-released PTT; it is
+always a bug, never a normal operating event.
 
 `MON:` lines carry the real ladder mode — there is no legacy level field
 anywhere in the interface.
@@ -182,14 +210,23 @@ The modem owns burst-accurate keying only:
 | Method | Behavior |
 |---|---|
 | `NONE` | no keying (external control) |
-| `RTS` / `DTR` | serial control line |
-| `VOX` | rely on radio VOX |
-| `TCP` | send `KEY\n` / `UNKEY\n` to a companion-app PTT server |
+| `RTS` / `DTR` | assert/release the named serial control line (`PTTPORT` device, `PTTBAUD`); the port is opened raw with hardware flow control disabled, since `CRTSCTS` would fight the driver for RTS |
+| `VOX` | rely on radio VOX — the burst's lead/tail silence padding is what keys the rig |
+| `TCP` | send `KEY\n` / `UNKEY\n` to a companion-app PTT server (`PTTPORT host[:port]`, default port 4532) |
+
+The key is asserted just before the first sample of a burst enters an empty
+TX ring and released once the ring has drained, so `ptt_lead_ms` covers the
+rig's keying latency and `ptt_tail_ms` protects the final symbol. A serial
+port or PTT server that cannot be opened is reported and the modem runs
+**without keying** rather than refusing to start — losing the radio is
+better than losing the modem.
 
 Sequence per burst: assert → wait `ptt_lead_ms` (default 50) → audio →
 wait `ptt_tail_ms` (default 20) → release. A TX watchdog
 ([DSP.md](DSP.md)) force-releases PTT if any transmission exceeds
-`tx_watchdog_s`.
+`tx_watchdog_s` (default 120 s), discards the staged audio, and emits
+`EVT:TX_WATCHDOG`. It is a safety net against a wedged modem holding a
+transmitter down, so it is deliberately far above any legitimate burst.
 
 ### TX Drive Calibration
 
@@ -220,7 +257,9 @@ troubleshooting section of the GUI help.
 The companion app may additionally:
 
 - push dial frequency to the modem (`FREQINFO <hz>` control command,
-  informational — it keys channel-memory buckets, nothing else)
+  informational — it keys channel-memory buckets into 1 kHz slots so the
+  store distinguishes the same peer worked on different bands; `FREQINFO 0`
+  clears it)
 - consume `STATUS JSON` polling or `EVT:` streams for its UI
 
 A reference companion (`tools/companion.py`, Python/Tk) implements the
@@ -238,7 +277,10 @@ the telemetry snapshot (never touching modem internals):
 - ladder panel: current mode, AMC inputs (SNR, retry, selectivity), floor
   markers
 - session panel: state, peer, rates, ARQ window occupancy
-- settings pages mirroring the INI schema ([CONFIGURATION.md](CONFIGURATION.md))
+- settings pages mirroring the INI schema ([CONFIGURATION.md](CONFIGURATION.md)),
+  including a Security page on crypto builds (PSK entry is masked and the
+  buffer is wiped once installed; a non-crypto build shows the modem's own
+  `ERROR:UNSUPPORTED` answer rather than a dead control)
 
 Everything the GUI can change routes through the same command dispatcher as
 the control port — the GUI is a control-port client that happens to live

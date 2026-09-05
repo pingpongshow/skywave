@@ -31,7 +31,18 @@ int oracleMode(double snrDb) {
   return best;
 }
 
-RampResult runRamp(bool genie, uint64_t seed) {
+// Oracle for a STATIC path: the AWGN reference floors, which is what a
+// static channel can actually carry. Before the channel classifier the
+// AMC always used the fading floors and left most of this on the table.
+int oracleModeStatic(double snrDb) {
+  int best = kFirstMode;
+  for (int m = kFirstMode; m < kNumModes; ++m) {
+    if (snrDb >= floorDb(Family::Wide, m) + 1.5) best = m;
+  }
+  return best;
+}
+
+RampResult runRamp(bool genie, uint64_t seed, bool staticChannel = false) {
   EngineConfig ca, cb;
   ca.policy.ownCall = "W1AW";
   cb.policy.ownCall = "K6XYZ";
@@ -51,6 +62,10 @@ RampResult runRamp(bool genie, uint64_t seed) {
       x.insert(x.end(), burst->begin(), burst->end());
       x.insert(x.end(), 2000, cfloat(0, 0));
       ChansimParams ch = ccirGood();
+      if (staticChannel) {
+        ch = ChansimParams{};
+        ch.fading = false;   // AWGN: no Doppler, no multipath
+      }
       ch.snr3kDb = snr;
       ch.seed = sbase + (sc++) * 7919;
       auto y = Chansim::run(ch, x);
@@ -95,7 +110,7 @@ RampResult runRamp(bool genie, uint64_t seed) {
   for (double seg : sched) {
     snr = seg;
     if (genie) {
-      const int want = oracleMode(seg);
+      const int want = staticChannel ? oracleModeStatic(seg) : oracleMode(seg);
       if (want != lastPinned) {
         a.pinMode(want, now);
         lastPinned = want;
@@ -122,7 +137,8 @@ RampResult runRamp(bool genie, uint64_t seed) {
     if (getenv("SKW_RAMP_DEBUG")) {
       std::printf("  %s seg %+5.1f dB: mode M%d (oracle M%d) %zu B\n",
                   genie ? "GEN" : "AMC", seg, a.sessionMode(),
-                  oracleMode(seg), segBytes);
+                  staticChannel ? oracleModeStatic(seg) : oracleMode(seg),
+                  segBytes);
     }
   }
   return res;
@@ -141,6 +157,24 @@ TEST_CASE(m3_snr_ramp_gate) {
               amc.bytes, gen.bytes, ratio, amc.drops);
   CHECK_EQ(amc.drops, 0);       // zero session drops across the traversal
   CHECK(ratio >= 0.75);         // >= 75%% of oracle throughput
+}
+
+// The channel-character classifier's reason to exist. On a genuinely
+// STATIC path the fading floor table is far too conservative: an AWGN
+// ramp measured 39% of an AWGN-floor oracle (ROADMAP 3.11 finding).
+// With the classifier switching floor tables the AMC must close most of
+// that gap - and still never drop the session.
+TEST_CASE(m3_static_channel_ramp_uses_awgn_floors) {
+  RampResult amc = runRamp(false, 7700, /*staticChannel=*/true);
+  RampResult gen = runRamp(true, 7700, /*staticChannel=*/true);
+  CHECK(amc.connected);
+  CHECK(gen.connected);
+  const double ratio =
+      gen.bytes > 0 ? double(amc.bytes) / double(gen.bytes) : 0.0;
+  std::printf("static ramp: amc=%zu B genie=%zu B ratio=%.2f drops=%d\n",
+              amc.bytes, gen.bytes, ratio, amc.drops);
+  CHECK_EQ(amc.drops, 0);
+  CHECK(ratio >= 0.60);   // was 0.39 against this same oracle
 }
 
 SKYTEST_MAIN

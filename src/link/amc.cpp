@@ -68,6 +68,15 @@ double Amc::effectiveSnrDb(double now) const {
 }
 
 double Amc::operatingFloorDb(uint8_t k) const {
+  // A STATIC channel is the one case where the AWGN reference floors are
+  // the honest table: they were measured without the diversity-2 outage
+  // margin that fading demands. Using fading floors everywhere is safe
+  // but costs a measured 61% of achievable throughput on static paths
+  // (ROADMAP 3.11). kFadingNA rungs become ordinary rungs here - that
+  // sentinel means "no fading point", not "unusable".
+  if (chanClass_ == ChannelClass::Static) {
+    return floorDb(cfg_.family, int(k));
+  }
   return fadingFloorDb(cfg_.family, int(k));
 }
 
@@ -91,6 +100,11 @@ uint8_t Amc::demoteTarget(int steps) const {
 
 bool Amc::modeEligible(uint8_t k, double effSnr,
                        bool assumeProbeClean) const {
+  // SEVERE: nothing above the robust tier closes on a Poor-class
+  // channel at any SNR, so the ladder simply stops there.
+  if (chanClass_ == ChannelClass::Severe && k > cfg_.severeMaxMode) {
+    return false;
+  }
   const bool probeOk = probeClean_ || assumeProbeClean;
   const double floor = operatingFloorDb(k);
   if (floor >= 90.0) {

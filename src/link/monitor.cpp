@@ -8,6 +8,12 @@
 
 namespace skw {
 
+namespace {
+// Concurrent senders tracked on one frequency. Well past anything a
+// real channel sustains; the cap only stops unbounded growth.
+constexpr size_t kMaxBcastChains = 8;
+}  // namespace
+
 std::vector<uint8_t> makeMonitorRecord(uint8_t frameType, Family family,
                                        int mode, uint32_t srcHash,
                                        uint32_t dstHash,
@@ -56,27 +62,37 @@ std::optional<MonitorEvent> Monitor::rxBurst(
           break;
         case LinkType::BcastData:
           if (auto b = BcastDataBody::parse(f->body)) {
-            // Reassemble the 4-bit fragment chain (one broadcast at a
-            // time on frequency - v1 has no per-sender demux).
-            if (b->fragCount != bcastCount_) {
-              bcastCount_ = b->fragCount;
-              bcastFrags_.assign(size_t(b->fragCount), {});
+            // Reassemble the 4-bit fragment chain, one chain PER SENDER.
+            // The sender's 16-bit tag rides the envelope session-id
+            // field, which is meaningless for a connectionless frame.
+            const uint16_t tag = f->env.sessionId;
+            BcastChain& ch = bcastChains_[tag];
+            if (b->fragCount != ch.count) {
+              ch.count = b->fragCount;
+              ch.frags.assign(size_t(b->fragCount), {});
             }
+            // Attribute to whatever callsign context we have; a sender
+            // that announced itself (CQ/BEACON/CALL) is named exactly.
+            if (lastSrc_ != "?") ch.src = lastSrc_;
             if (b->fragIndex < b->fragCount) {
-              bcastFrags_[b->fragIndex] = std::move(b->payload);
+              ch.frags[b->fragIndex] = std::move(b->payload);
               bool all = true;
-              for (auto& fr : bcastFrags_) {
+              for (auto& fr : ch.frags) {
                 if (fr.empty()) all = false;
               }
               if (all) {
                 std::vector<uint8_t> whole;
-                for (auto& fr : bcastFrags_) {
+                for (auto& fr : ch.frags) {
                   whole.insert(whole.end(), fr.begin(), fr.end());
                 }
-                bcastOut_.push_back(std::move(whole));
-                bcastCount_ = 0;
-                bcastFrags_.clear();
+                bcastOut_.emplace_back(ch.src, std::move(whole));
+                bcastChains_.erase(tag);
               }
+            }
+            // Bound the map: a busy frequency must not accumulate
+            // half-finished chains from stations that went away.
+            if (bcastChains_.size() > kMaxBcastChains) {
+              bcastChains_.erase(bcastChains_.begin());
             }
           }
           break;
@@ -89,13 +105,17 @@ std::optional<MonitorEvent> Monitor::rxBurst(
   if (lastDst_ != "*") dstHash = callsignHash24(lastDst_);
 
   // Encrypted or undecodable payloads surface as metadata only.
+  //
+  // The WHOLE link frame is emitted. An earlier 64-byte cap made every
+  // longer frame unverifiable (the CRC-32 lives at the end) and made
+  // broadcast reassembly impossible for clients, while saving nothing
+  // that matters on a localhost socket.
   std::string hex;
   if (res->payloadOk) {
-    const size_t cap = std::min<size_t>(res->payload.size(), 64);
-    hex.reserve(cap * 2);
+    hex.reserve(res->payload.size() * 2);
     char b[4];
-    for (size_t i = 0; i < cap; ++i) {
-      snprintf(b, sizeof(b), "%02X", res->payload[i]);
+    for (uint8_t v : res->payload) {
+      snprintf(b, sizeof(b), "%02X", v);
       hex += b;
     }
   }

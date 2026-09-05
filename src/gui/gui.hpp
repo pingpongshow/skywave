@@ -79,6 +79,16 @@ class Gui {
   bool ready_ = false;
   Telemetry snap_{};
   GuiInstruments inst_;
+  // Waterfall history: a ring of spectrum rows, newest last. Rendered as
+  // a texture-free ImDrawList blit so no GPU resources are needed.
+  static constexpr int kWaterfallRows = 96;
+  std::vector<float> waterfall_;      // kWaterfallRows * kSpectrumBins
+  int waterfallHead_ = 0;
+  uint32_t lastSpectrumSeq_ = 0;
+  float wfFloorDb_ = -100.0f, wfCeilDb_ = -30.0f;
+  bool wfAutoScale_ = true;
+  void drawWaterfallPanel();
+  void drawConstellationPanel();
   std::vector<GuiLogLine> log_;
   // Settings-panel edit buffers (applied via submit()).
   char callBuf_[16] = {0};
@@ -96,9 +106,18 @@ class Gui {
   char pttMethodBuf_[24] = {0};
   char pttPortBuf_[64] = {0};
   int pttLead_ = 50, pttTail_ = 20;
+  // Crypto page (5.8's deferred item). The PSK never leaves this buffer
+  // except through the same command dispatcher as everything else; it is
+  // masked on screen and cleared once installed.
+  char pskBuf_[80] = {0};
+  bool encryptOn_ = false;
+  std::string securityLine_;
+  void drawCryptoSection();
   // Window visibility (menu-driven). Settings lives behind the menu
   // bar; the operating panels are on by default.
   bool showSettings_ = false;
+  bool showWaterfall_ = true;
+  bool showConstellation_ = true;
   bool showSession_ = true, showLadder_ = true;
   bool showInstruments_ = true, showLog_ = true;
   double lastStrPollSec_ = -1.0;

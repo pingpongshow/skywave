@@ -82,6 +82,16 @@ struct RxFrameResult {
   double snrDb = 0.0;              // tracker estimate at end of frame
   std::vector<float> carrierSnrDb;  // per active carrier, at frame end
   double delaySpreadMs = 0.0;       // tap-extent estimate, at frame end
+  // Pilot-residual energy relative to channel power: 0 = perfectly
+  // tracked, rising as the channel outruns the estimator. Feeds the
+  // AMC's M11+ stability gate and the channel-character classifier.
+  double pilotStability = 0.0;
+  // Frequency selectivity: spread of per-carrier SNR across the band,
+  // in AMC index units (0..255). Feeds the M12+ gate.
+  uint8_t selectivity = 0;
+  // Equalized payload symbols for the GUI constellation view. Bounded;
+  // empty unless the caller asked for it.
+  std::vector<cfloat> constellation;
 };
 
 // Detect and decode the first frame of the given family in rx.
@@ -91,11 +101,16 @@ struct RxFrameResult {
 // receptions of the same frame identity before the retry decode.
 // payloadMask: session carrier mask applied to PAYLOAD symbols only
 // (header symbols always use the full carrier set).
+// wantConstellation: fill RxFrameResult::constellation with equalized
+// payload symbols for the GUI instrument. Off by default - it costs a
+// divide per symbol and an allocation, neither of which the modem path
+// should pay.
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut = nullptr,
                                           HarqChase* harq = nullptr,
                                           const CarrierMask* payloadMask =
-                                              nullptr);
+                                              nullptr,
+                                          bool wantConstellation = false);
 
 }  // namespace skw

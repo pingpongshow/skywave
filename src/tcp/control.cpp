@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace skw {
@@ -167,7 +168,21 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
   }
   if (verb == "NOISEFLOOR") return "NOISEFLOOR " + be.noiseFloor();
   if (verb == "AUDIOLEVEL") return "AUDIOLEVEL " + be.audioLevel();
-  if (verb == "FREQINFO") return "FREQINFO " + be.freqInfo();
+  if (verb == "FREQINFO") {
+    // With an argument this is the companion app PUSHING the dial
+    // frequency; without one it is a query. Both answer with the current
+    // waveform alignment, so a client can use one command for both.
+    if (argc == 1) {
+      char* end = nullptr;
+      const double hz = std::strtod(tok[1].c_str(), &end);
+      if (end == tok[1].c_str() || *end != '\0' || !be.setDialFreqHz(hz)) {
+        return "ERROR:BADARG";
+      }
+    } else if (argc != 0) {
+      return "ERROR:BADARG";
+    }
+    return "FREQINFO " + be.freqInfo();
+  }
   if (verb == "PTTMETHOD" || verb == "PTTPORT" || verb == "PTTBAUD" ||
       verb == "PTTLEAD" || verb == "PTTTAIL") {
     const std::string key = verb.substr(3);
@@ -247,6 +262,41 @@ std::string evtMode(int mode, double netBps) {
 
 std::string evtBusy(bool busy) {
   return std::string("EVT:BUSY ") + (busy ? "1" : "0");
+}
+
+std::string evtSnr(double localDb, double remoteDb, bool remoteValid) {
+  char buf[96];
+  if (remoteValid) {
+    snprintf(buf, sizeof(buf), "EVT:SNR %.1f %.1f", localDb, remoteDb);
+  } else {
+    snprintf(buf, sizeof(buf), "EVT:SNR %.1f -", localDb);
+  }
+  return buf;
+}
+
+std::string evtCfoWarn(double shiftHz) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "EVT:CFO_WARN %.1f", shiftHz);
+  return buf;
+}
+
+std::string evtTxWatchdog(double seconds) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "EVT:TX_WATCHDOG %.1f", seconds);
+  return buf;
+}
+
+std::string evtBroadcast(const std::string& src,
+                         const std::vector<uint8_t>& payload) {
+  std::string hex;
+  hex.reserve(payload.size() * 2);
+  char b[4];
+  for (uint8_t v : payload) {
+    snprintf(b, sizeof(b), "%02X", v);
+    hex += b;
+  }
+  return "EVT:BROADCAST " + (src.empty() ? std::string("?") : src) + " " +
+         hex;
 }
 
 std::string monLine(const std::string& src, const std::string& dst,

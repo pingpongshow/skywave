@@ -49,17 +49,35 @@ StartBody makeStart(const HandshakePolicy& p, const CallAckBody& peerAck,
   s.initialMode = initialModeFromQuality(p.family, effSnr, worstSel,
                                          p.maxMode,
                                          (s.caps & kCapCssTier) != 0);
+  if (p.chanMemMode) {
+    s.initialMode = std::min(s.initialMode, *p.chanMemMode);
+  }
   s.cpMode = uint8_t(kCpDefault);
   s.maxMode = p.maxMode;
   s.macProfile = macProfileForMode(s.initialMode);
   return s;
 }
 
+Family narrowerFamily(Family f) {
+  switch (f) {
+    case Family::Ultra: return Family::Wide;
+    case Family::Wide: return Family::Mid;
+    case Family::Mid: return Family::Narrow;
+    case Family::Narrow: break;
+  }
+  return Family::Narrow;
+}
+
 Family callFamilyForAttempt(const HandshakePolicy& p, int attempt,
                             int totalAttempts) {
-  if (p.family != Family::Ultra || !p.familyFallback) return p.family;
-  const int ultraAttempts = (totalAttempts + 1) / 2;
-  return attempt < ultraAttempts ? Family::Ultra : Family::Wide;
+  if (!p.familyFallback) return p.family;
+  // First half of the attempts on the configured family, then one step
+  // narrower. This only lands because the RESPONDER also scans one family
+  // below its own (LinkEngine::rxBurst) - without that a WIDE listener is
+  // simply deaf to a MID call, which is why the schedule existed for
+  // three phases without ever being wired in.
+  const int ownAttempts = (totalAttempts + 1) / 2;
+  return attempt < ownAttempts ? p.family : narrowerFamily(p.family);
 }
 
 std::optional<CallAckBody> respondToCall(const HandshakePolicy& p,
@@ -115,9 +133,10 @@ std::variant<StartAckBody, StartNakBody> evaluateStart(
 
   StartAckBody ack;
   const bool cssTier = (start.caps & p.caps & kCapCssTier) != 0;
-  const uint8_t ownView =
+  uint8_t ownView =
       initialModeFromQuality(Family(call.family), ownMeas.snrDb,
                              ownMeas.selectivity, p.maxMode, cssTier);
+  if (p.chanMemMode) ownView = std::min(ownView, *p.chanMemMode);
   ack.finalMode = std::min(start.initialMode, ownView);  // only lower
   return ack;
 }

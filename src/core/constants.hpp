@@ -5,6 +5,8 @@
 // v1 profile; a future VHF-FM profile is a second BandProfile instance.
 #pragma once
 
+#include <cstdlib>
+
 #include <array>
 #include <cstdint>
 
@@ -215,12 +217,25 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // SNR; AMC admits it only on near-static channels)
     {{-11.0, -9.0, -8.0, -7.0,
       -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0, kFadingNA}},
-    // ULTRA (robust tier ~3 dB worse than WIDE: outermost carriers ride
-    // the TX band-FIR transition - candidate for a wider FIR margin.
-    // M6/M7 provisional: slow outage tails, see ROADMAP 1.13 known
-    // issues)
+    // ULTRA - RE-MEASURED 2026-08-17 (bertool, 60 trials, M4-M7 on CCIR
+    // Moderate and M8-M9 on Good, i.e. each mode's designated channel):
+    //   M4 4.0 (unchanged)  M5 6.5 -> 4.5   M6 16.0 -> 10.0
+    //   M7 12.5 (knee, no clean 10% point)  M8 8.5 -> 10.5
+    //   M9 13.5 -> 15.5
+    // The old M6/M7 pair ran 16.0/12.5 - DECREASING as the mode got
+    // faster, which is physically backwards and was flagged provisional.
+    // M8/M9 were optimistic by ~2 dB, so the AMC was promoting into
+    // modes that do not hold up.
+    //
+    // The recorded cause of ULTRA's remaining ~3 dB deficit vs WIDE
+    // ("outermost carriers ride the TX band-FIR transition, 40 Hz
+    // margin") is REFUTED: sweeping that margin 40/120/200 Hz changes
+    // the floors not at all (see ROADMAP). ~0.5 dB is simple noise
+    // bandwidth (72 vs 64 carriers at equal total power); the rest is
+    // still unexplained and pilot extrapolation is ruled out too -
+    // pilots are evenly spaced across every family's full carrier set.
     {{-4.0, -2.0, kFadingNA, kFadingNA,
-      4.0, 6.5, 16.0, 12.5, 8.5, 13.5, 14.5, 18.5, 24.5, 28.5, kFadingNA}},
+      4.0, 4.5, 10.0, 12.5, 10.5, 15.5, 14.5, 18.5, 24.5, 28.5, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile
 
@@ -365,9 +380,48 @@ inline constexpr double kKeepaliveSec           = 20.0;
 inline constexpr uint16_t kPortData  = 9100;
 inline constexpr uint16_t kPortCtrl  = 9101;
 inline constexpr uint16_t kPortVoice = 9102;
+// Companion-app PTT server (INTERFACES.md `PTTMETHOD TCP`) when `PTTPORT`
+// names a host without an explicit port. Matches Hamlib's rigctld default,
+// which is what most companion apps front.
+inline constexpr uint16_t kPttTcpDefaultPort = 4532;
 
 // -------------------------------------------------------------------- safety
 inline constexpr double kTxWatchdogDefaultSec = 120.0;
 inline constexpr double kTxTestMaxSec         = 30.0;
+
+// ------------------------------------------------- half-duplex MAC timing
+// Ceiling on the airtime scale that derives every handoff constant from
+// the session mode's frame airtime (LinkEngine::airScale_).
+//
+// The purpose of the scale is that a courtesy gap or a busy-hold must
+// outlast ONE peer burst - not many. At 24 the deep-tier control hold
+// became 720 s, long enough to look like a stall (test_st2 ran 10 min
+// against its usual 2). 6x covers a 35-55 s CSS frame against a robust
+// OFDM reference of a few seconds with margin to spare.
+inline constexpr double kAirtimeScaleMax = 6.0;
+
+// Deep-tier (CSS) adaptive frame length, in LDPC codewords per frame.
+// The floor is the fade-safe shape the tier shipped with; the ceiling is
+// bounded by the 4095-byte PHY length field and by how much airtime one
+// unacknowledged frame may risk.
+inline constexpr int kCssCwMin = 2;
+inline constexpr int kCssCwMax = 16;
+inline constexpr int kCssGrowRun = 2;   // clean deliveries before growing
+
+// Anti-starvation backstop: how many ARQ timeouts queued DATA may wait
+// behind a busy channel before it airs regardless of the busy verdict.
+// On a link where BOTH ends have traffic the channel is busy essentially
+// all the time - each end hears the other - so this backstop, not the
+// CCA gate, is what actually paces data. At 3x it delivered a trickle
+// (~940 B per 60-100 s in the ST2 soaks, every scenario stalling).
+// Tunable for measurement: SKW_DATA_STARVE_X.
+inline double dataStarveTimeouts() {
+  static const double v = [] {
+    const char* e = std::getenv("SKW_DATA_STARVE_X");
+    const double d = e ? std::atof(e) : 3.0;
+    return d > 0.0 ? d : 3.0;
+  }();
+  return v;
+}
 
 }  // namespace skw

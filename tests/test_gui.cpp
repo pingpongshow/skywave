@@ -12,7 +12,11 @@
 #include <string>
 #include <vector>
 
+#include <cmath>
+
 #include "core/clock.hpp"
+#include "io/ring.hpp"
+#include "worker.hpp"
 #include "gui/gui.hpp"
 #include "skytest.hpp"
 
@@ -135,6 +139,55 @@ TEST_CASE(gui_headless_fallback_is_clean) {
     f.gui.shutdown();
   }
   CHECK(true);  // either outcome is acceptable; a crash is not
+}
+
+
+// The waterfall and constellation need real DSP taps through the
+// telemetry seqlock - the gap that deferred them since step 5.7. This
+// drives the whole path: audio in -> worker spectrum -> snapshot.
+TEST_CASE(instrument_taps_reach_telemetry) {
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = true;
+  cfg.guiEnabled = true;   // enables the constellation tap
+  cfg.pttMethod = PttMethod::None;
+
+  FakeClock clock{1000000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+
+  // Feed a steady tone so the spectrum has something to show.
+  std::vector<float> tone(size_t(kFsAudio / 10));
+  for (size_t i = 0; i < tone.size(); ++i) {
+    tone[i] = 0.2f * std::sin(2.0f * float(M_PI) * 1500.0f *
+                              float(i) / float(kFsAudio));
+  }
+
+  uint32_t seq = 0;
+  for (int i = 0; i < 60 && seq == 0; ++i) {
+    rxRing.write(tone);
+    worker.runOnce();
+    clock.advanceSec(0.1);
+    seq = worker.telemetry().spectrumSeq;
+  }
+  const Telemetry t = worker.telemetry();
+  CHECK(t.spectrumSeq > 0);            // a spectrum was published
+
+  // The tone must actually appear: at least one bin well above the
+  // quietest. A flat spectrum would mean the tap is wired to nothing.
+  float lo = 0.0f, hi = -200.0f;
+  for (int i = 0; i < kSpectrumBins; ++i) {
+    lo = std::min(lo, t.spectrumDbfs[i]);
+    hi = std::max(hi, t.spectrumDbfs[i]);
+  }
+  std::printf("gui spectrum: %d bins, %.1f .. %.1f dBFS (seq %u)\n",
+              kSpectrumBins, double(lo), double(hi), unsigned(t.spectrumSeq));
+  CHECK(hi > lo + 10.0f);
+
+  // The mask overlay must describe the active family, not a stale width.
+  CHECK_EQ(int(t.maskCarriers), plan(cfg.family).carriers());
+  // Nothing masked on a fresh session: every carrier bit set.
+  CHECK(t.maskBits[0] == 0xFF);
 }
 
 SKYTEST_MAIN

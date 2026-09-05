@@ -1,5 +1,7 @@
 #include "phy/framer.hpp"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -55,7 +57,17 @@ std::vector<uint8_t> bytesToBits(std::span<const uint8_t> bytes) {
 }
 
 std::vector<float> familyTxBandTaps(Family family) {
-  const double half = plan(family).carriers() * kSubcarrierHz / 2.0 + 40.0;
+  // Guard between the outermost carrier and the filter's passband edge.
+  // A Kaiser response is not flat right up to its edge, so a carrier
+  // sitting in the knee is attenuated and phase-distorted - and ULTRA's
+  // outermost carriers sit closest to the edge of the rig passband the
+  // family exists to fill. Overridable for measurement.
+  double margin = 40.0;
+  if (const char* e = getenv("SKW_TXBAND_MARGIN_HZ")) {
+    const double v = std::atof(e);
+    if (v > 0.0) margin = v;
+  }
+  const double half = plan(family).carriers() * kSubcarrierHz / 2.0 + margin;
   return designKaiserLowpass(kFsBaseband, half, half + 300.0, 50.0);
 }
 

@@ -1,5 +1,7 @@
 #include "fec/ldpc.hpp"
 
+#include <algorithm>
+
 #include <cmath>
 #include <stdexcept>
 

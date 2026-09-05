@@ -59,6 +59,10 @@ struct ControlBackend {
   virtual std::string noiseFloor() = 0;  // payload after the verb
   virtual std::string audioLevel() = 0;
   virtual std::string freqInfo() = 0;
+  // `FREQINFO <hz>`: the companion app reporting the rig's dial frequency
+  // (INTERFACES.md "Companion App Split"). Informational - it keys the
+  // channel-memory buckets and nothing else. False rejects the value.
+  virtual bool setDialFreqHz(double hz) = 0;
   // PTT config: METHOD/PORT/BAUD/LEAD/TAIL (INTERFACES.md).
   virtual std::string pttGet(const std::string& key) = 0;
   virtual bool pttSet(const std::string& key, const std::string& val) = 0;
@@ -95,6 +99,17 @@ std::string evtConnected(const std::string& remoteCall,
 std::string evtDisconnected(const std::string& reason);
 std::string evtMode(int mode, double netBps);
 std::string evtBusy(bool busy);
+// Link-quality notification. The modem emits this whenever its measured RX
+// SNR moves materially, so a client need not poll STATUS to track the link.
+std::string evtSnr(double localDb, double remoteDb, bool remoteValid);
+// Fires past the +-40 Hz alignment envelope: the operator must retune.
+std::string evtCfoWarn(double shiftHz);
+// The TX watchdog force-released PTT after `seconds` of continuous keying.
+std::string evtTxWatchdog(double seconds);
+// A monitored broadcast (CQ/BEACON/BCAST_DATA) whose fragment chain
+// completed. Payload is hex so it survives the line protocol intact.
+std::string evtBroadcast(const std::string& src,
+                         const std::vector<uint8_t>& payload);
 std::string monLine(const std::string& src, const std::string& dst,
                     uint8_t frameType, const std::string& family, int mode,
                     const std::string& hexPayload);

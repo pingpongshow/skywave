@@ -98,10 +98,10 @@ add_library(skywave_core STATIC
   src/link/fsm.cpp
   src/link/handshake.cpp
   src/link/arq.cpp
-  src/link/arbiter.cpp
   src/link/advisor.cpp
   src/link/engine.cpp
   src/link/amc.cpp
+  src/link/chanclass.cpp
   src/link/chanmem.cpp
   src/link/probe.cpp
   src/link/mask.cpp
@@ -115,6 +115,7 @@ add_library(skywave_core STATIC
   src/fec/ldpc_tables.cpp
   src/io/wav.cpp
   src/io/audio.cpp
+  src/io/ptt.cpp
   src/worker.cpp
 )
 target_include_directories(skywave_core PUBLIC src)
@@ -179,6 +180,9 @@ if(BUILD_TESTS)
     add_executable(${name} tests/${name}.cpp)
     target_link_libraries(${name} PRIVATE skywave_core)
     add_test(NAME ${name} COMMAND ${name})
+    # Tests must never touch the operator's real channel-memory store.
+    set_tests_properties(${name} PROPERTIES
+      ENVIRONMENT "SKW_CHANMEM_PATH=")
   endfunction()
   skw_test(test_core)
   skw_test(test_config)
@@ -201,7 +205,6 @@ if(BUILD_TESTS)
   skw_test(test_fsm)
   skw_test(test_handshake)
   skw_test(test_arq)
-  skw_test(test_arbiter)
   skw_test(test_tcp)
   skw_test(test_m2)
   skw_test(test_m3_ramp)
@@ -216,6 +219,9 @@ if(BUILD_TESTS)
   target_link_libraries(soak_st2 PRIVATE skywave_core)
   add_executable(monkey_st2 tests/monkey_st2.cpp)
   target_link_libraries(monkey_st2 PRIVATE skywave_core)
+  # Minimal one-way bulk repro (diagnostic, not a registered test).
+  add_executable(repro_oneway tests/repro_oneway.cpp)
+  target_link_libraries(repro_oneway PRIVATE skywave_core)
   if(ENABLE_CRYPTO)
     skw_test(test_crypto)
   endif()
@@ -239,9 +245,11 @@ if(BUILD_TESTS)
       SKIP_RETURN_CODE 77
       DISABLED $<NOT:$<BOOL:$ENV{SKW_HARDWARE_TESTS}>>)
   endif()
+  skw_test(test_ptt)
   skw_test(test_amc)
   skw_test(test_advisor)
   skw_test(test_harq)
+  skw_test(test_chanclass)
   skw_test(test_chanmem)
   skw_test(test_probe)
 endif()

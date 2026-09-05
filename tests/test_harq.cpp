@@ -62,7 +62,7 @@ TEST_CASE(chase_combining_gain) {
   // below the single-tx point, combined decode must beat what a single
   // transmission achieves AT the point.
   const double base = floorDb(Family::Wide, 8) + 1.0;  // single-tx ~ok
-  const int trials = 12;
+  const int trials = getenv("SKW_HARQ_TRIALS") ? atoi(getenv("SKW_HARQ_TRIALS")) : 12;
   int single = successes(base, 1, false, trials, 500);
   int combinedDeep = successes(base - 2.5, 2, true, trials, 900);
   int singleDeep = successes(base - 2.5, 1, false, trials, 900);
@@ -159,7 +159,7 @@ TEST_CASE(ir_beats_chase_for_high_rate_modes) {
   // two M9 receptions; IR retransmits at M8 with systematic priors from
   // the failed M9 attempt. Gate: IR > chase.
   const double snr = floorDb(Family::Wide, 9) - 5.0;  // deep for M9
-  const int trials = 10;
+  const int trials = getenv("SKW_HARQ_TRIALS") ? atoi(getenv("SKW_HARQ_TRIALS")) : 10;
   int chase = 0, ir = 0, m8alone = 0;
   for (int t = 0; t < trials; ++t) {
     uint64_t seed = 4000 + uint64_t(t) * 7919;

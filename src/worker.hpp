@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>
@@ -28,16 +29,26 @@
 
 #include "core/clock.hpp"
 #include "core/config.hpp"
+#include "io/ptt.hpp"
 #include "dsp/chirp.hpp"
 #include "dsp/updown.hpp"
 #include "io/ring.hpp"
+#include "link/chanmem.hpp"
 #include "link/engine.hpp"
+#include "link/handshake.hpp"
 #include "link/monitor.hpp"
 #include "tcp/control.hpp"
 
 namespace skw {
 
 // POD snapshot published by the worker; readers (GUI, TCP, main) copy it.
+// Spectral / constellation taps for the GUI instruments (INTERFACES.md
+// "Built-in GUI"). Fixed-size so the whole Telemetry struct stays
+// trivially copyable through the seqlock - a vector here would allocate
+// under the publish and break the no-allocation rule for the worker.
+inline constexpr int kSpectrumBins = 128;    // 0..6 kHz of the baseband
+inline constexpr int kConstellationPts = 96;  // most recent data carriers
+
 struct Telemetry {
   int64_t clockUs = 0;
   uint64_t rxSamplesTotal = 0;
@@ -49,6 +60,22 @@ struct Telemetry {
   bool ptt = false;
   uint8_t fsmState = 0;
   uint8_t mode = 4;
+
+  // --- instrument taps -------------------------------------------------
+  // RX spectrum in dBFS, bin i covering i * (kFsBaseband/2) / kSpectrumBins
+  // Hz from DC. Refreshed from the receive path, not per symbol: the GUI
+  // renders at frame rate and does not need every OFDM symbol.
+  float spectrumDbfs[kSpectrumBins] = {};
+  uint32_t spectrumSeq = 0;      // bumps when a new spectrum lands
+  // Equalized data-carrier symbols from the most recent decode, for the
+  // constellation view. `constellationN` is how many are valid.
+  float constellationI[kConstellationPts] = {};
+  float constellationQ[kConstellationPts] = {};
+  uint16_t constellationN = 0;
+  uint32_t constellationSeq = 0;
+  // Carrier mask overlay: bit c set = carrier c excised this session.
+  uint8_t maskBits[24] = {};
+  uint16_t maskCarriers = 0;     // carriers in the active family plan
 };
 
 struct WorkerCommand {
@@ -122,6 +149,7 @@ class ModemWorker : public ControlBackend {
   std::string noiseFloor() override;
   std::string audioLevel() override;
   std::string freqInfo() override;
+  bool setDialFreqHz(double hz) override;
   std::string pttGet(const std::string& key) override;
   bool pttSet(const std::string& key, const std::string& val) override;
   bool cryptoSupported() override;
@@ -199,9 +227,51 @@ class ModemWorker : public ControlBackend {
   };
   std::deque<PendingRx> pendingRx_;
   std::vector<ChirpDetection> dets_;
+  // Acquisition for the next-narrower family. A chirp sweep is
+  // family-specific, so without this a listener cannot even OPEN a
+  // capture window for a caller that stepped down the ladder - the
+  // engine's family scan would never get a window to look at. Run only
+  // while no session exists, so an established link pays nothing.
+  std::optional<ChirpDetector> detAlt_;
+  std::vector<ChirpDetection> detsAlt_;
 
   // TX staging: upconverted audio waiting for ring space.
   std::vector<float> txPending_;
+
+  // --- physical keying (INTERFACES.md "PTT") ---------------------------
+  // The driver is asserted just before the first sample of a burst enters
+  // an empty TX ring and released once the ring has drained, so the
+  // burst's own lead/tail silence padding covers the rig's keying
+  // latency. `txWatchdogAt_` is the hard safety net: any transmission
+  // longer than modem.tx_watchdog_s force-releases the key.
+  // Channel memory (LINK_ADAPTATION.md): owned here so it survives
+  // engine rebuilds and is persisted to the config directory. The engine
+  // gets a pointer only while `modem.channel_memory` is on, which is what
+  // makes `CHANMEM OFF` a real switch rather than a stored flag.
+  ChannelMemory chanMem_;
+  std::string chanMemPath_;
+  int32_t freqBucketKhz_ = -1;   // from `FREQINFO <hz>`
+
+  std::unique_ptr<PttDriver> ptt_;
+  bool pttKeyed_ = false;
+  double pttKeyedAt_ = 0.0;
+  bool txWatchdogTripped_ = false;
+  // True when the busy channel is (or may still be) a station rather
+  // than noise; only this defers transmission.
+  bool peerBusyLocked(double now) const;
+  void runMonitorLocked(std::span<const cfloat> win);
+  // GUI instrument taps: a periodic Welch-style spectrum over the RX
+  // baseband, and the equalized constellation from the last decode.
+  void updateSpectrumLocked(std::span<const cfloat> bb);
+  std::vector<cfloat> specAcc_;   // accumulating window of baseband
+  std::vector<float> specAvg_;    // running average magnitude, linear
+  uint32_t specSeq_ = 0;
+  double specLastAt_ = -1e9;
+  static std::string defaultChanMemPath();
+  void saveChanMem();
+  void pttKeyLocked(double now);
+  void pttUnkeyLocked();
+  void pttWatchdogLocked(double now);
   double ladderDbgAt_ = -1e9;  // SKW_RXLADDER_DEBUG rate limit
   std::deque<float> floorBlocks_;  // 15 s of block levels (floor = min)
   uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed
@@ -215,6 +285,8 @@ class ModemWorker : public ControlBackend {
   float blockDbfs_ = -120.0f;
   float floorDbfs_ = -120.0f;
   bool chanBusy_ = false;
+  double busySince_ = -1.0;   // start of the current busy period
+  bool busyIsPeer_ = false;   // a chirp preamble claimed this period
 
 #ifdef SKW_HAVE_VOICE
   VoiceMode voiceMode_ = VoiceMode::Off;
@@ -225,6 +297,9 @@ class ModemWorker : public ControlBackend {
   FsmState lastState_ = FsmState::Idle;
   int lastMode_ = -1;
   bool lastBusyEvt_ = false;
+  double lastSnrEvt_ = -999.0;        // EVT:SNR change threshold
+  double lastRemoteSnrEvt_ = -999.0;
+  bool cfoWarned_ = false;            // EVT:CFO_WARN edge state
 
   // Bridges (their own mutex; touched by TCP owner + worker).
   std::mutex bridgeMutex_;

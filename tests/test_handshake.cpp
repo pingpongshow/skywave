@@ -185,9 +185,30 @@ TEST_CASE(ultra_fallback_schedule) {
   // Fallback off: all ULTRA.
   A.familyFallback = false;
   CHECK(callFamilyForAttempt(A, 3, 4) == Family::Ultra);
-  // Non-ULTRA families never switch.
+
+  // EVERY family now steps one rung down for its later attempts, not just
+  // ULTRA. This was previously ULTRA-only because a responder could not
+  // hear a narrower call at all; with the receiver-side family scan in
+  // LinkEngine::rxBurst the narrower attempts actually land, and a
+  // narrower family is the measured way to close a marginal handshake
+  // (docs/conformance/handshake_chain.txt).
   auto W = stationA();
+  CHECK(W.family == Family::Wide);
+  CHECK(callFamilyForAttempt(W, 0, 4) == Family::Wide);
+  CHECK(callFamilyForAttempt(W, 1, 4) == Family::Wide);
+  CHECK(callFamilyForAttempt(W, 2, 4) == Family::Mid);
+  CHECK(callFamilyForAttempt(W, 3, 4) == Family::Mid);
+  W.familyFallback = false;
   CHECK(callFamilyForAttempt(W, 3, 4) == Family::Wide);
+
+  // NARROW has nowhere to go and must stay put.
+  auto N = stationA();
+  N.family = Family::Narrow;
+  CHECK(callFamilyForAttempt(N, 3, 4) == Family::Narrow);
+  CHECK(narrowerFamily(Family::Narrow) == Family::Narrow);
+  CHECK(narrowerFamily(Family::Ultra) == Family::Wide);
+  CHECK(narrowerFamily(Family::Wide) == Family::Mid);
+  CHECK(narrowerFamily(Family::Mid) == Family::Narrow);
 }
 
 TEST_CASE(final_mode_only_lowers) {
@@ -204,6 +225,72 @@ TEST_CASE(final_mode_only_lowers) {
                                            poor.selectivity, B.maxMode);
   CHECK_EQ(int(std::get<StartAckBody>(r).finalMode), int(ownView));
   CHECK(std::get<StartAckBody>(r).finalMode < 9);
+}
+
+
+// Channel memory clamps the handshake on BOTH sides (LINK_ADAPTATION.md:
+// "the LOWER of the two wins"). Before this was wired, the store was built,
+// tested, and never consulted by anything.
+TEST_CASE(chanmem_seed_clamps_the_initial_mode) {
+  HandshakePolicy p;
+  p.ownCall = "W1AW";
+  p.family = Family::Wide;
+  p.caps = kCapZstd;
+  p.maxMode = 13;
+
+  CallAckBody peerAck;
+  peerAck.caps = kCapZstd;
+  peerAck.snrHalfDb = int8_t(40);   // +20 dB: a healthy channel
+  peerAck.selectivity = 0;
+  QualityMeasurement own;
+  own.snrDb = 20.0;
+  own.selectivity = 0;
+
+  const uint8_t unclamped = makeStart(p, peerAck, own).initialMode;
+  CHECK(unclamped > 4);  // a clean measurement justifies a fast mode
+
+  // A memory of trouble on this channel pulls the proposal down...
+  p.chanMemMode = 5;
+  CHECK_EQ(int(makeStart(p, peerAck, own).initialMode), 5);
+
+  // ...but never UP: the store only ever lowers.
+  p.chanMemMode = 13;
+  CHECK_EQ(int(makeStart(p, peerAck, own).initialMode), int(unclamped));
+}
+
+TEST_CASE(chanmem_seed_clamps_the_responder_view) {
+  HandshakePolicy p;
+  p.ownCall = "K6XYZ";
+  p.family = Family::Wide;
+  p.caps = kCapZstd;
+  p.maxMode = 13;
+
+  CallBody call;
+  call.srcCall = "W1AW";
+  call.dstCall = "K6XYZ";
+  call.version = kProtocolVersion;
+  call.family = uint8_t(Family::Wide);
+  call.caps = kCapZstd;
+
+  StartBody start;
+  start.caps = kCapZstd;
+  start.initialMode = 9;
+  start.maxMode = 13;
+
+  QualityMeasurement good;
+  good.snrDb = 20.0;
+  good.selectivity = 0;
+
+  // Without memory the responder accepts the (lower) proposal.
+  auto r = evaluateStart(p, call, start, good);
+  CHECK(std::holds_alternative<StartAckBody>(r));
+  CHECK_EQ(int(std::get<StartAckBody>(r).finalMode), 9);
+
+  // With a memory of trouble, its own view drags the session lower still.
+  p.chanMemMode = 6;
+  r = evaluateStart(p, call, start, good);
+  CHECK(std::holds_alternative<StartAckBody>(r));
+  CHECK_EQ(int(std::get<StartAckBody>(r).finalMode), 6);
 }
 
 SKYTEST_MAIN

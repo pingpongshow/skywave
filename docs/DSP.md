@@ -145,9 +145,16 @@ final mix — zero extra cost.
 A hard airtime cap protects the transmitter and the band against stuck
 logic: any single continuous transmission exceeding `tx_watchdog_s`
 (default 120 s, config `[modem]`) forces audio mute + PTT release + an
-`EVT:` error. The cap must exceed the longest legitimate burst (a `NARROW`
-robust handshake frame ~15 s, a long voice talkspurt) — it is a safety
-net, not a scheduler.
+`EVT:TX_WATCHDOG <seconds>` notification. The cap must exceed the longest
+legitimate burst (a `NARROW` robust handshake frame ~15 s, a deep-tier CSS
+handshake 35–55 s, a long voice talkspurt) — it is a safety net, not a
+scheduler.
+
+Implemented in the modem worker, which owns keying: the timer starts when
+PTT is asserted and is checked every audio chunk, so it fires whether the
+stall is in the engine, the converters, or the audio device. On trip it
+releases the key, discards the staged TX audio, and cancels any running
+`TXTEST`.
 
 ### TX Level Normalization
 

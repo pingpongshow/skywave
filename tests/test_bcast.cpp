@@ -93,7 +93,52 @@ TEST_CASE(broadcast_monitor_reassembly) {
   CHECK_EQ(sawFrag, 3);  // 700 B -> 256+256+188
   auto got = mon.takeBroadcasts();
   CHECK_EQ(int(got.size()), 1);
-  CHECK(got[0] == payload);
+  CHECK(got[0].second == payload);
+  // Attributed to the station whose CQ/BEACON announced it.
+  CHECK(got[0].first == "W1AW");
+}
+
+// Two stations broadcasting in the same period must NOT collapse into one
+// reassembly chain. Before the per-sender tag they shared a single global
+// chain and silently corrupted each other's payloads.
+TEST_CASE(broadcast_two_senders_do_not_corrupt_each_other) {
+  Monitor mon(Family::Wide);
+
+  auto send = [&](const char* call, uint8_t fill, size_t len) {
+    EngineConfig c;
+    c.policy.ownCall = call;
+    c.policy.family = Family::Wide;
+    LinkEngine e(c);
+    std::vector<uint8_t> payload(len, fill);
+    // Announce first so the monitor can attribute the chain.
+    e.sendCq();
+    CHECK(e.sendBroadcast(payload));
+    std::vector<std::vector<cfloat>> bursts;
+    for (int i = 0; i < 12; ++i) {
+      if (auto b = e.tick(double(i) * 5.0)) bursts.push_back(std::move(*b));
+    }
+    return std::pair{payload, bursts};
+  };
+
+  auto [payA, burstsA] = send("W1AW", 0xA5, 700);
+  auto [payB, burstsB] = send("K6XYZ", 0x5C, 700);
+
+  // INTERLEAVE the two stations' bursts - the case that used to fail.
+  const size_t n = std::max(burstsA.size(), burstsB.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (i < burstsA.size()) mon.rxBurst(burstsA[i]);
+    if (i < burstsB.size()) mon.rxBurst(burstsB[i]);
+  }
+
+  auto got = mon.takeBroadcasts();
+  CHECK_EQ(int(got.size()), 2);
+  bool sawA = false, sawB = false;
+  for (const auto& [src, data] : got) {
+    if (data == payA) sawA = true;
+    if (data == payB) sawB = true;
+  }
+  CHECK(sawA);   // W1AW's payload arrived intact
+  CHECK(sawB);   // and so did K6XYZ's
 }
 
 namespace {

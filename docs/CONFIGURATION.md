@@ -80,7 +80,7 @@ depends on it.)
 | `listen` | `true` | start listening |
 | `max_retries` | `10` | ARQ retry cap per frame |
 | `harq` | `auto` | `auto/chase/ir` |
-| `channel_memory` | `true` | reconnect seeding |
+| `channel_memory` | `true` | reconnect seeding; OFF disables both seeding and recording. Store: `~/.skywave/chanmem.bin`, overridden by `SKW_CHANMEM_PATH` (empty value = no persistence) |
 | `probe_promote` | `true` | probe-before-promote |
 | `carrier_masking` | `true` | mask exchange |
 | `resume` | `true` | session resume |
@@ -154,7 +154,7 @@ psk =
 enabled = true
 ```
 
-## Environment Variables (Advisor Layer Only)
+## Environment Variables
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -162,6 +162,8 @@ enabled = true
 | `SKW_ADVISOR_AMC_CONF` | `0.6` | AMC-domain confidence floor |
 | `SKW_ADVISOR_CFO_CONF` | `0.6` | CFO-domain confidence floor |
 | `SKW_ADVISOR_MASK_CONF` | `0.55` | mask-domain confidence floor |
+| `SKW_CHANMEM_PATH` | `~/.skywave/chanmem.bin` | channel-memory store; set empty (or `-`) to run without persistence, which is what the test suite does |
+| `SKW_CHANCLASS` | (unset) | `off` pins the channel classifier to `UNKNOWN`, i.e. always-fading floors, for A/B diagnosis |
 
 The Advisor deliberately has no INI/GUI/TCP surface
 ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).

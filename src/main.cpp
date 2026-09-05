@@ -192,7 +192,13 @@ int main(int argc, char** argv) {
     SKW_INFO("tcp: data=%u control=%u", dataSrv.boundPort(),
              ctrlSrv.boundPort());
     skw::LineBuffer ctrlLines;
-    std::vector<uint8_t> dataOut;  // held while no data client is attached
+    // Delivered payload waiting for a data client. Bounded: an unattended
+    // modem receiving a large file must not grow this without limit, and
+    // stale payload is worthless to a client that attaches later anyway,
+    // so the OLDEST bytes are dropped once the cap is passed.
+    constexpr size_t kDataHoldCap = 1u << 20;  // 1 MiB
+    std::vector<uint8_t> dataOut;
+    bool dataHoldWarned = false;
     worker.start();
 #ifdef SKW_HAVE_GUI
     // GUI runs on THIS (main) thread - SDL requires it - while the worker
@@ -218,6 +224,15 @@ int main(int argc, char** argv) {
       if (!dataOut.empty() && dataSrv.clientConnected()) {
         dataSrv.send(dataOut);
         dataOut.clear();
+        dataHoldWarned = false;
+      } else if (dataOut.size() > kDataHoldCap) {
+        const size_t drop = dataOut.size() - kDataHoldCap;
+        dataOut.erase(dataOut.begin(), dataOut.begin() + long(drop));
+        if (!dataHoldWarned) {
+          dataHoldWarned = true;
+          SKW_WARN("data port: no client attached; discarding delivered "
+                   "payload beyond %zu bytes", kDataHoldCap);
+        }
       }
       for (auto& rec : worker.takeMonitorRecords()) {
         if (dataSrv.clientConnected()) dataSrv.send(rec);

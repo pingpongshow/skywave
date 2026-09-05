@@ -1,0 +1,6 @@
+15:39:06.291 INFO  skywave 1.0.0 starting (family=wide, band=hf)
+15:39:06.503 INFO  audio: duplex stream running (in=1 out=5, 48000 Hz)
+15:39:06.510 INFO  tcp: data=9210 control=9211
+15:39:06.510 INFO  worker: started
+15:45:11.822 INFO  worker: stopped
+15:45:12.089 INFO  shutdown: rx=13056823 tx=3228488 samples

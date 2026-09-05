@@ -76,11 +76,13 @@ Details and acceptance criteria live in [BUILD_PLAN.md](BUILD_PLAN.md).
 
 ## Deliberately Deferred (Documented Non-Goals for v1)
 
-Named here so their absence reads as a decision, not an oversight:
+Named here so their absence reads as a decision, not an oversight.
+(The VHF-FM band profile was on this list; it SHIPPED in Phase 7 —
+`band = vhf-fm`. Plain FM *voice-channel* operation already worked with
+the HF profile.)
 
-- **VHF-FM band profile** (wideband FM data-port operation) — Phase 7, forward-specified in [WAVEFORM.md](WAVEFORM.md); note that plain FM *voice-channel* operation already works with the v1 HF profile
+- **Mid-session bandwidth-family renegotiation** — family is fixed per session; changing requires reconnect (resume makes this cheap). Built and then removed 2026-08-17 as unnecessary: the CCIR Poor result argues for choosing the right family up front, not switching mid-session
 - **True wideband SDR/IQ operation** (≥ 25 kHz channels, non-soundcard I/O) — out of scope for this project; a future sibling front-end reusing the link/proto layers as libraries
-- **Mid-session bandwidth-family renegotiation** — family is fixed per session; changing requires reconnect (resume makes this cheap)
 - **ALE-style multi-channel scanning** — belongs in the companion app driving `FREQINFO`/`LISTEN`
 - **zstd dictionary training** for ham-traffic priors — plain zstd first; dictionaries are a compatible later capability bit
 - **Multi-party / group sessions and group keying** — strictly point-to-point plus broadcast in v1

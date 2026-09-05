@@ -130,6 +130,8 @@ struct StubBackend : ControlBackend {
   std::string noiseFloor() override { return "-98.5"; }
   std::string audioLevel() override { return "RX=-18.2 TX=-12.0"; }
   std::string freqInfo() override { return "CENTER=1500 SHIFT=0.0 CFO=0.0"; }
+  double dialHz = -1.0;
+  bool setDialFreqHz(double hz) override { dialHz = hz; return true; }
   std::string pttGet(const std::string& key) override {
     return ptt.count(key) ? ptt[key] : "NONE";
   }
@@ -288,6 +290,30 @@ TEST_CASE(notification_formats) {
   CHECK(evtBusy(true) == "EVT:BUSY 1");
   CHECK(monLine("W1AW", "", 19, "WIDE", 4, "AB12") ==
         "MON:W1AW:*:19:WIDE:M4:AB12");
+  CHECK(evtSnr(-3.5, 2.0, true) == "EVT:SNR -3.5 2.0");
+  CHECK(evtSnr(-3.5, 0.0, false) == "EVT:SNR -3.5 -");
+  CHECK(evtCfoWarn(-42.5) == "EVT:CFO_WARN -42.5");
+  CHECK(evtTxWatchdog(120.0) == "EVT:TX_WATCHDOG 120.0");
+  CHECK(evtBroadcast("K6XYZ", {0xDE, 0xAD}) == "EVT:BROADCAST K6XYZ DEAD");
+  CHECK(evtBroadcast("", {}) == "EVT:BROADCAST ? ");
+}
+
+// An over-long line must be discarded WHOLE. Clearing the accumulator at
+// the cap alone let the TAIL of an oversize line be parsed as a command
+// in its own right - a line ending in "...DISCONNECT\n" would execute.
+TEST_CASE(line_buffer_drops_oversize_line_entirely) {
+  LineBuffer lb;
+  std::vector<uint8_t> huge(LineBuffer::kMaxLineBytes + 64, 'A');
+  lb.feed(huge);
+  CHECK(lb.takeLines().empty());
+  // The tail of the oversize line, then its terminator: still nothing.
+  lb.feed({'D', 'I', 'S', 'C', 'O', 'N', 'N', 'E', 'C', 'T', '\n'});
+  CHECK(lb.takeLines().empty());
+  // The NEXT line is a fresh, valid command.
+  lb.feed({'S', 'T', 'A', 'T', 'E', '\n'});
+  auto lines = lb.takeLines();
+  CHECK_EQ(int(lines.size()), 1);
+  CHECK(lines[0] == "STATE");
 }
 
 TEST_CASE(line_buffer_framing) {
@@ -383,6 +409,48 @@ TEST_CASE(socket_data_port_byte_stream) {
   std::string back = recvSome(fd);
   CHECK_EQ(int(back.size()), int(payload.size()));
   CHECK(memcmp(back.data(), payload.data(), payload.size()) == 0);
+  ::close(fd);
+}
+
+// A client that stops reading briefly must NOT be disconnected: the send
+// path buffers the remainder and retries it on the next poll. Dropping the
+// client on EAGAIN cost a companion app its session mid-transfer whenever
+// it paused for a frame during a bulk delivery.
+TEST_CASE(slow_client_is_buffered_not_dropped) {
+  TcpServer srv;
+  CHECK(srv.open(0));
+  int fd = connectLoopback(srv.boundPort());
+  for (int i = 0; i < 50 && !srv.clientConnected(); ++i) {
+    srv.poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(srv.clientConnected());
+
+  // Push a lot while the client reads nothing at all. Whether the kernel
+  // absorbs it or the server has to buffer it depends on the platform's
+  // socket buffers; what must NOT happen either way is a disconnect.
+  std::vector<uint8_t> chunk(64 * 1024, 0xA5);
+  const int kChunks = 32;  // 2 MiB, comfortably under kTxBufferCap
+  for (int i = 0; i < kChunks; ++i) srv.send(chunk);
+  CHECK(srv.clientConnected());
+
+  // Everything sent must arrive: a buffered remainder is retried by
+  // poll(), not dropped.
+  const size_t expect = size_t(kChunks) * chunk.size();
+  size_t drained = 0;
+  std::vector<uint8_t> sink(64 * 1024);
+  for (int i = 0; i < 4000 && drained < expect; ++i) {
+    ssize_t n = ::recv(fd, sink.data(), sink.size(), 0);
+    if (n > 0) {
+      drained += size_t(n);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    srv.poll();
+  }
+  CHECK(srv.clientConnected());
+  CHECK_EQ(int(drained), int(expect));
+  CHECK_EQ(int(srv.txBacklog()), 0);
   ::close(fd);
 }
 

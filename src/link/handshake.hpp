@@ -36,6 +36,12 @@ struct HandshakePolicy {
   // attempts onto CSS M0 so a connect can land below the OFDM robust
   // handshake floor.
   bool cssEnable = false;
+  // Channel-memory recommendation for this peer/frequency/family
+  // (LINK_ADAPTATION.md). When present it CLAMPS the quality-derived
+  // proposal - the LOWER of the two wins, on both sides of the
+  // handshake, so a channel that historically misbehaved is not
+  // re-attacked at a mode one clean measurement happened to justify.
+  std::optional<uint8_t> chanMemMode;
 };
 
 // One direction's quality measurement of a received handshake frame.
@@ -54,6 +60,13 @@ struct QualityMeasurement {
 uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
                                uint8_t worstSelectivity, uint8_t maxMode,
                                bool cssTier = false);
+
+// One step DOWN the bandwidth ladder, or the same family when there is
+// nowhere narrower to go. ULTRA -> WIDE -> MID -> NARROW: each step trades
+// rate for a smaller noise bandwidth, which is what buys margin when a
+// handshake will not close (measured MID 3% CALL FER at +3 dB through the
+// radio chain where WIDE is 50% - docs/conformance/handshake_chain.txt).
+Family narrowerFamily(Family f);
 
 // CALL transport for 0-based attempt N: OFDM robust first (fast
 // connect at workable SNR), then STRICT ALTERNATION with CSS.

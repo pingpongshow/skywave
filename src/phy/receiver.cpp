@@ -28,6 +28,10 @@ struct SymbolWalker {
   int symIdx;               // pilot-pattern symbol number
   ChannelTracker* tracker;
   const CarrierMask* mask = nullptr;  // payload phase only
+  // Optional tap for the GUI constellation view: equalized data-carrier
+  // symbols, normalized so an ideal point sits on the unit constellation.
+  // Null in the hot path - collecting costs one divide per symbol.
+  std::vector<cfloat>* constellationOut = nullptr;
   Fft fft{kFftBaseband};
 
   // Collect exactly `bits` LLRs coded at the given parameters. Returns
@@ -80,6 +84,9 @@ struct SymbolWalker {
           z += y * std::conj(eff);
           a += std::norm(eff);
         }
+        if (constellationOut && a > 1e-12f) {
+          constellationOut->push_back(z / a);
+        }
         demapLlr(cst, z, a, nvar, llr);
         got += bps;
       }
@@ -111,6 +118,18 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
                     std::vector<float>* sysOut = nullptr) {
   std::vector<float> llr;
   deinterleave<float>(llrInterleaved, llr);
+  // HARQ-IR priors are this attempt's CHANNEL LLRs. Step 3.4 recorded
+  // that as a deviation from the spec's "accumulated posteriors",
+  // upgradeable later - it was MEASURED 2026-08-17 and the upgrade is
+  // not one. At M9 floor-5, 40 trials:
+  //   channel LLRs (this)             32/40
+  //   + decoder extrinsic, clamped    32/40
+  //   decoder posteriors alone        worse (saturated the wrong way on
+  //                                   a failed decode)
+  //   extrinsic alone                  0/40 (discards the observation)
+  // The channel LLRs already carry the usable information, so the
+  // decoder keeps its simple signature and the deviation is closed
+  // rather than left open.
   if (sysOut) {
     sysOut->assign(llr.begin(), llr.begin() + code.k());
   }
@@ -535,7 +554,8 @@ int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut, HarqChase* harq,
-                                          const CarrierMask* payloadMask) {
+                                          const CarrierMask* payloadMask,
+                                          bool wantConstellation) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -676,9 +696,16 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     long totalCoded = 0;
     for (int n : cwN) totalCoded += n;
     std::vector<float> allLlr;
+    std::vector<cfloat> constPts;
+    if (wantConstellation) {
+      constPts.reserve(512);
+      walker.constellationOut = &constPts;
+    }
     const bool haveAll = walker.collect(md.constellation, md.spread,
                                         hdr->cpMode, int(totalCoded),
                                         allLlr);
+    walker.constellationOut = nullptr;
+    res.constellation = std::move(constPts);
     size_t llrOff = 0;
     // IR (rate-stepdown): an r1/2 frame may be a step-down retransmission
     // of an earlier rate>1/2 attempt - add that attempt's stored
@@ -766,12 +793,46 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     const auto& re = tracker.carrierResid();
     const double nv = std::max(tracker.noiseVar(), 1e-12);
     res.carrierSnrDb.resize(h.size());
+    double chanPow = 0.0, residSum = 0.0;
+    int residN = 0;
     for (size_t c = 0; c < h.size(); ++c) {
       const double denom =
           std::max(re.size() == h.size() && re[c] >= 0 ? re[c] : nv, 1e-12);
       res.carrierSnrDb[c] = float(
           10.0 * std::log10(std::max(double(std::norm(h[c])) / denom,
                                      1e-9)));
+      chanPow += double(std::norm(h[c]));
+      if (re.size() == h.size() && re[c] >= 0) {
+        residSum += re[c];
+        ++residN;
+      }
+    }
+    // Residual energy relative to channel power. This is the quantity
+    // the AMC's pilotStabilityMax gate was always specified against;
+    // nothing ever computed it, so that gate has been evaluating a
+    // constant 0 and never firing.
+    if (residN > 0 && chanPow > 1e-12) {
+      res.pilotStability =
+          (residSum / double(residN)) / (chanPow / double(h.size()));
+    }
+    // Selectivity: peak-to-median carrier SNR spread, scaled to the
+    // 0..255 index units the M12+ gate uses.
+    // Selectivity means DEEP NOTCHES - the thing that makes 64QAM
+    // pointless regardless of average SNR - so the statistic is the
+    // FRACTION of carriers sitting >=10 dB below the band median, not a
+    // percentile spread (which failed to separate CCIR Good from
+    // Moderate at all: 62 vs 67 on a 0-255 scale).
+    if (!res.carrierSnrDb.empty()) {
+      std::vector<float> s(res.carrierSnrDb);
+      std::sort(s.begin(), s.end());
+      const float med = s[s.size() / 2];
+      int notched = 0;
+      for (float v : res.carrierSnrDb) {
+        if (v <= med - 10.0f) ++notched;
+      }
+      res.selectivity = uint8_t(std::clamp(
+          255.0 * double(notched) / double(res.carrierSnrDb.size()), 0.0,
+          255.0));
     }
   }
   return res;

@@ -133,18 +133,131 @@ TEST_CASE(timeout_clamp) {
   CHECK_NEAR(tx.timeoutSec(), 90.0, 1e-9);
 }
 
+// The ACK timeout must track the MEASURED round trip, not just burst
+// airtime. A clean 30 dB one-way link delivered ZERO bytes because the
+// airtime-only estimate (6.7 s at M10) sat far below the real one-way
+// latency (median 12.4 s in the ST2 world, dominated by the receiver's
+// decode ladder): every frame retransmitted three times before its ACK
+// could physically arrive, and each retransmission lengthened the
+// peer's decode queue further.
+TEST_CASE(timeout_tracks_measured_round_trip) {
+  ArqTx tx(4, 8);
+  ArqRx rx(4);
+  tx.setTimeout(6.0);  // airtime-only floor, far short of the truth
+  CHECK(!tx.haveRtt());
+  CHECK_NEAR(tx.timeoutSec(), 6.0, 1e-9);
+
+  // A frame acknowledged on its first transmission after 20 s is an
+  // unambiguous sample: the timeout must grow past the round trip.
+  double t = 0.0;
+  auto seq = tx.send(pay(0), t);
+  CHECK(seq.has_value());
+  rx.onData(*seq, pay(0));
+  t = 20.0;
+  tx.onAck(rx.makeAck(0, 0, 0), t);
+  CHECK(tx.haveRtt());
+  CHECK_NEAR(tx.srttSec(), 20.0, 1e-6);
+  CHECK(tx.timeoutSec() > 20.0);
+  CHECK(tx.timeoutSec() <= 90.0);
+}
+
+// Karn's algorithm: a retransmitted frame's ACK cannot be attributed to
+// a particular transmission, so it must never become an RTT sample.
+TEST_CASE(retransmitted_frames_never_sample_rtt) {
+  ArqTx tx(4, 8);
+  ArqRx rx(4);
+  tx.setTimeout(5.0);
+  double t = 0.0;
+  auto seq = tx.send(pay(0), t);
+  t = 6.0;
+  tx.tick(t);                       // times out, requeues
+  auto r = tx.nextRetransmit(t);
+  CHECK(r.has_value());
+  rx.onData(*seq, pay(0));
+  t = 7.0;
+  tx.onAck(rx.makeAck(0, 0, 0), t);
+  CHECK(!tx.haveRtt());             // ambiguous: no sample taken
+}
+
+// Without a seed the estimator cannot bootstrap on a link whose round
+// trip already exceeds the airtime floor: the first frames all time out,
+// every one becomes a retransmission, and Karn (correctly) refuses to
+// sample any of them. The handshake supplies the missing measurement.
+TEST_CASE(seed_rtt_bootstraps_the_estimator) {
+  ArqTx tx(4, 8);
+  tx.setTimeout(6.0);
+  tx.seedRtt(18.0);
+  CHECK(tx.haveRtt());
+  CHECK_NEAR(tx.srttSec(), 18.0, 1e-9);
+  CHECK(tx.timeoutSec() > 18.0);
+  // A seed never overrides a real measurement.
+  tx.seedRtt(2.0);
+  CHECK_NEAR(tx.srttSec(), 18.0, 1e-9);
+  // Implausible seeds are ignored outright.
+  ArqTx tx2(4, 8);
+  tx2.seedRtt(-1.0);
+  CHECK(!tx2.haveRtt());
+  tx2.seedRtt(1e6);
+  CHECK(!tx2.haveRtt());
+}
+
+// Consecutive timeouts back the interval off, so a persistently
+// under-estimated timeout stops retransmitting at the same wrong
+// cadence; a clean sample clears the backoff again.
+TEST_CASE(timeout_backs_off_and_recovers) {
+  ArqTx tx(4, 8);
+  ArqRx rx(4);
+  tx.setTimeout(5.0);
+  double t = 0.0;
+  tx.send(pay(0), t);
+  const double base = tx.timeoutSec();
+  t = 6.0;
+  tx.tick(t);
+  CHECK(tx.timeoutSec() > base);
+  const double backedOff = tx.timeoutSec();
+  t = 6.0 + backedOff + 1.0;
+  tx.tick(t);
+  CHECK(tx.timeoutSec() > backedOff);
+  // Backoff is capped, not unbounded.
+  for (int i = 0; i < 20; ++i) tx.tick(t + double(i) * 200.0);
+  CHECK(tx.timeoutSec() <= 90.0);
+
+  // A fresh frame acked on its first transmission clears the backoff.
+  ArqTx tx3(4, 8);
+  ArqRx rx3(4);
+  tx3.setTimeout(5.0);
+  double u = 0.0;
+  tx3.send(pay(0), u);
+  u = 6.0;
+  tx3.tick(u);                      // backoff engaged
+  auto rr = tx3.nextRetransmit(u);
+  CHECK(rr.has_value());
+  rx3.onData(rr->seq, pay(0));
+  tx3.onAck(rx3.makeAck(0, 0, 0), u);   // ambiguous, no sample
+  auto s2 = tx3.send(pay(1), u);
+  CHECK(s2.has_value());
+  rx3.onData(*s2, pay(1));
+  u += 3.0;
+  tx3.onAck(rx3.makeAck(0, 0, 0), u);   // clean sample -> backoff clears
+  CHECK(tx3.haveRtt());
+}
+
 TEST_CASE(max_retries_teardown) {
   ArqTx tx(2, 3);
   tx.setTimeout(4.0);
   double t = 0;
   tx.send(pay(0), t);
+  // Step by the CURRENT timeout, not a fixed interval: consecutive
+  // expiries back the timeout off (see timeout_backs_off_and_recovers),
+  // so a constant cadence no longer reaches the next deadline. What is
+  // under test is the retry BUDGET, not the retry period.
   for (int i = 0; i < 3; ++i) {
-    t += 4.5;
+    t += tx.timeoutSec() + 0.5;
     tx.tick(t);
     auto r = tx.nextRetransmit(t);
     CHECK(r.has_value());
   }
-  t += 4.5;
+  t += tx.timeoutSec() + 0.5;
   tx.tick(t);  // 4th expiry exceeds maxRetries=3
   CHECK(tx.failed());
 }
@@ -209,6 +322,92 @@ TEST_CASE(loss_matrix) {
     CHECK_EQ(int(got.size()), 4);
     for (int k = 0; k < 4; ++k) CHECK(got[size_t(k)] == pay(uint8_t(k)));
   }
+}
+
+// PROTOCOL.md: every session frame piggybacks the peer's cumulative
+// receive floor in the envelope. Consuming it releases delivered frames
+// without waiting for a dedicated ACK - it was written on TX and ignored
+// on RX, so every acknowledgement cost a whole extra frame.
+TEST_CASE(piggyback_ack_releases_without_a_dedicated_ack) {
+  ArqTx tx(8, 10);
+  tx.setTimeout(10.0);
+  double t = 100.0;
+  for (int i = 0; i < 4; ++i) tx.send({uint8_t(i)}, t);
+  CHECK_EQ(int(tx.inFlight()), 4);
+
+  // Peer reports "next expected = 2": frames 0 and 1 are delivered.
+  CHECK(tx.onPiggybackAck(2, t));
+  CHECK_EQ(int(tx.inFlight()), 2);
+
+  // The same floor again is not progress and must release nothing.
+  CHECK(!tx.onPiggybackAck(2, t));
+  CHECK_EQ(int(tx.inFlight()), 2);
+
+  // It never queues a retransmission - it reports no holes.
+  CHECK(!tx.peekRetransmit().has_value());
+
+  CHECK(tx.onPiggybackAck(4, t));
+  CHECK_EQ(int(tx.inFlight()), 0);
+
+  // A floor beyond anything we ever sent is ignored: the envelope field
+  // is unauthenticated, and with wrapped sequence numbers "release
+  // everything below" would otherwise be exploitable nonsense.
+  ArqTx t2(8, 10);
+  t2.setTimeout(10.0);
+  for (int i = 0; i < 3; ++i) t2.send({uint8_t(i)}, t);
+  CHECK(!t2.onPiggybackAck(60000, t));
+  CHECK_EQ(int(t2.inFlight()), 3);
+}
+
+// Forward progress resets the retry budget, exactly like a dedicated ACK:
+// the budget exists to detect a dead peer, not a busy schedule.
+TEST_CASE(piggyback_ack_resets_retry_budget) {
+  ArqTx tx(8, 3);
+  tx.setTimeout(10.0);
+  double t = 100.0;
+  for (int i = 0; i < 3; ++i) tx.send({uint8_t(i)}, t);
+
+  // Two timeout rounds charge retries against everything in flight.
+  for (int r = 0; r < 2; ++r) {
+    t += 11.0;
+    tx.tick(t);
+    while (auto rt = tx.nextRetransmit(t)) { (void)rt; }
+  }
+  CHECK(!tx.failed());
+
+  // Progress arrives piggybacked; the budget must reset, so the next two
+  // timeout rounds cannot exhaust it.
+  CHECK(tx.onPiggybackAck(1, t));
+  for (int r = 0; r < 2; ++r) {
+    t += 11.0;
+    tx.tick(t);
+    while (auto rt = tx.nextRetransmit(t)) { (void)rt; }
+  }
+  CHECK(!tx.failed());
+}
+
+// A peer stuck at the same receive floor must not be able to defer our
+// retransmission timer forever: only forward progress re-arms it.
+TEST_CASE(duplicate_ack_does_not_defer_the_timeout) {
+  ArqTx tx(8, 10);
+  tx.setTimeout(10.0);
+  double t = 100.0;
+  tx.send({1}, t);
+  tx.send({2}, t);
+
+  // Repeated ACKs reporting the same floor (head-of-line frame lost,
+  // nothing after it received) arrive faster than the timeout.
+  AckBody stuck;
+  stuck.ackBase = 0;
+  stuck.gapBitmap = 0;
+  for (int i = 0; i < 5; ++i) {
+    t += 2.0;
+    tx.onAck(stuck, t);
+  }
+  // 10 s have passed: the timeout must have been reachable.
+  t += 1.0;
+  tx.tick(t);
+  CHECK(tx.peekRetransmit().has_value());
 }
 
 SKYTEST_MAIN
