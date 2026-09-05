@@ -161,6 +161,12 @@ class LinkEngine {
            fsm_.state() == FsmState::Connected;
   }
   bool turnIss() const { return turnRole_ == TurnRole::Iss; }
+  // On-air duration implied by the PHY header of the capture the LAST
+  // rxBurst() call decoded a header for (0 when it decoded none). The
+  // header survives payload failure, so the worker's decode ladder can
+  // tell when a failing burst is fully in hand and go straight to the
+  // final attempt instead of climbing rungs of trailing noise.
+  double lastRxBurstAirtimeSec() const { return lastRxAirtimeSec_; }
 
   // --- GUI instrument taps -----------------------------------------------
   // Equalized payload symbols from the most recent decode. Collected only
@@ -369,6 +375,7 @@ class LinkEngine {
   double turnHandoffSec() const;  // grant/reclaim cadence (RTT-paced)
   bool turnDataWaiting() const;  // anything only the data role could send
   uint8_t ackRxFlags() const;    // mode request + break request bits
+  void applySealCap();           // proto message bound (see lossyCoalesce_)
   // Responder-side pin: mode requested of the initiator, -1 = none,
   // kRxModeAuto = asking it to return to AUTO.
   int peerModeRequest_ = -1;
@@ -428,6 +435,17 @@ class LinkEngine {
   // frame - measured as the floor scenario's one-way 0-byte stall).
   double listenTurnStart_ = -1.0;
   double lastFeedbackAt_ = -1.0;
+  // Explicit NAK pending: a peer DATA burst failed its final decode
+  // attempt; the next ACK carries kRxFlagRxFail (PACTOR's CS-NAK).
+  bool rxFailPending_ = false;
+  double lastRxAirtimeSec_ = 0.0;  // see lastRxBurstAirtimeSec()
+  // Adaptive proto seal cap: unlimited coalescing while the link is
+  // clean (a flat cap measurably cost the VHF/ramp throughput gates),
+  // bounded to ~8 frames once the retry ratio says it is lossy so a
+  // stuck head-of-line fragment cannot zero delivery of a 4 KiB message
+  // (measured: floor/churn delivering 0 app bytes while fragments kept
+  // arriving). Hysteresis so it does not flap on a single retry.
+  bool lossyCoalesce_ = false;
   bool listenFeedbackArrived() const {
     // Guarded by yieldInFlight_ so it fires ONLY during a real
     // post-burst listen turn - never on the post-clear backoff or the

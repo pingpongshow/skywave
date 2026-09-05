@@ -216,6 +216,7 @@ bool Config::load(const std::string& path) {
     else if (full == "modem.channel_memory") okv = parseBool(val, channelMemory);
     else if (full == "modem.probe_promote") okv = parseBool(val, probePromote);
     else if (full == "modem.carrier_masking") okv = parseBool(val, carrierMasking);
+    else if (full == "modem.turn_taking") okv = parseBool(val, turnTaking);
     else if (full == "modem.resume") okv = parseBool(val, resume);
     else if (full == "modem.pre_tx_cca") okv = parseBool(val, preTxCca);
     else if (full == "modem.impulse_blanker") okv = parseBool(val, impulseBlanker);
@@ -295,6 +296,7 @@ bool Config::save(const std::string& path) const {
     << "channel_memory = " << (channelMemory ? "true" : "false") << "\n"
     << "probe_promote = " << (probePromote ? "true" : "false") << "\n"
     << "carrier_masking = " << (carrierMasking ? "true" : "false") << "\n"
+    << "turn_taking = " << (turnTaking ? "true" : "false") << "\n"
     << "resume = " << (resume ? "true" : "false") << "\n"
     << "pre_tx_cca = " << (preTxCca ? "true" : "false") << "\n"
     << "impulse_blanker = " << (impulseBlanker ? "true" : "false") << "\n"

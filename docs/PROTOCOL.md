@@ -211,7 +211,17 @@ Selective-repeat with cumulative base + gap bitmap:
   (s8, 0.5 Hz units — drives TX frequency alignment, below)
 - `rx_flags` bits: `0x80` + low nibble = responder mode request
   (responder-side pinning), `0x40` = turn-taking break request
-  ("Turn-Taking", below)
+  ("Turn-Taking", below), `0x20` = **explicit NAK**: a DATA-class burst
+  from the peer was heard (PHY header decoded) but its payload failed
+  every decode attempt. The receiver sends this ACK immediately; the
+  sender retransmits the ACK's `ack_base` — the receiver's next-expected
+  frame — at once instead of waiting out its retransmission timer
+  (PACTOR's CS-NAK; measured 50–90 s per lost frame under fading
+  without it). Sent at most once per failed burst
+- the receiver finalizes a failing capture as soon as the header-implied
+  burst airtime (plus pre-roll and a 0.5 s tail margin) is in hand,
+  rather than re-decoding the same samples at ever-longer windows: HARQ
+  combining, FFAIL/AMC accounting and the NAK all happen at burst end
 - `NAK` is an `ACK` with at least one gap bit set — one format, one parser
 - every data-bearing frame also piggybacks `ack_base` in the envelope, and
   receivers **consume** it: a session frame from the current session
@@ -364,6 +374,16 @@ grid:
 - sessions in `M4–M7` rely on the idle-disconnect timer alone
 
 ## Payload Pipeline (`proto` layer)
+
+**Adaptive stream message bound.** Stream bytes coalesce to a message
+that is delivered to the application only when every fragment has
+arrived. On a clean link OFDM modes coalesce to the full 4 KiB (a flat
+cap measurably costs throughput). Once the sender's retry ratio says the
+link is lossy (enter > 0.15, leave < 0.05, hysteresis) the bound drops
+to ~8 frames' worth — the deep tier's permanent rule — so one stuck
+head-of-line fragment cannot zero delivery of a whole 4 KiB message
+while later fragments keep arriving. TX-local policy; receivers
+reassemble whatever sizes arrive.
 
 TX order, applied above the link layer:
 

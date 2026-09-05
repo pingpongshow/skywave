@@ -2051,3 +2051,134 @@ the pre-existing decode-ladder latency, NOT scheduling:
   expected to fix it. Next: shrink the decode-ladder rungs (bandwidth-
   delay product currently caps a window at ~8 frames/RTT) and/or deliver
   proto fragments incrementally so partial progress registers.
+
+## Decode-latency lever (2026-09-05)
+
+The "next" above, built and measured. Four mechanisms, each the thing a
+fielded HF ARQ modem already does:
+
+1. **Explicit NAK** (ACK `rx_flags` 0x20, PROTOCOL.md "ARQ"). A DATA
+   burst whose PHY header decoded but whose payload failed its final
+   attempt is answered at once; the sender `ArqTx::nakAt`-requeues the
+   ACK's `ack_base` - the receiver's next-expected frame - instead of
+   waiting out a 50-90 s retransmission timer. PACTOR's CS-NAK.
+2. **Burst-end finalization** (worker decode ladder). The header
+   survives payload failure and states the burst's airtime
+   (`LinkEngine::lastRxBurstAirtimeSec`); once that much audio is in
+   hand the capture runs its FINAL attempt on exactly that window and
+   retires, instead of re-decoding the same samples at the 10/20/34/60/
+   90 s rungs. Measured: a 6.3 s M6 burst that failed the 2.5/5 s rungs
+   finalized at ~7 s of audio and DECODED (it used to wait for the 10 s
+   rung); HARQ combining, FFAIL/AMC accounting and the NAK now all
+   happen at burst end. Airtimes beyond the ladder's 90 s envelope are
+   ignored (a 12-bit length field admits ~1000 s at the deep tier).
+3. **Adaptive proto seal cap**. Full 4 KiB coalescing on a clean link
+   (a flat cap measurably costs the VHF/ramp gates); an 8-frame bound
+   once the retry ratio says the link is lossy (enter > 0.15, leave
+   < 0.05), so a stuck head-of-line fragment cannot zero delivery.
+4. **Time-gated retry budget**. `max_retries` used to mean
+   max_retries x timeout of wall clock; fast NAKs spent the same COUNT
+   in seconds. Teardown now requires the count AND that much time
+   (un-backed-off timeouts) without progress.
+
+### Two things the NAK broke on the way in, both fixed and retained
+
+- **A NAK must charge the AMC like a timeout.** The sender's only
+  failure evidence for its own bursts was the ACK timeout; a NAK arrives
+  before the timer and re-arms it, so the AMC never heard of a lost
+  burst. Measured on the static M3 ramp: one frame NAKed 22 times at an
+  unchanged mode until the retry budget tore the session down. Two
+  charges per NAK, mirroring one timeout event.
+- **The AMC timeout-charge reduction is re-REVERTED** (entry above
+  updated): re-tested on the isolated harness it regressed the static
+  ramp gate (0.74 vs 0.75, +1 drop) for no floor benefit.
+
+### Gates (before -> after the lever)
+
+| gate | before | after |
+|---|---|---|
+| M3 ramp (fading) amc/genie | 0.79 | **0.84**, 0 drops |
+| M3 static ramp | 0.68 | **0.70**, 0 drops |
+| one-way repro, 300 s, delivered | 36,864 B | **40,960 B** (+11%) |
+| ctest | 38/38 | **39/39** (+ `test_st2_halfduplex`) |
+
+### A latent worker bug this exposed (and the ROADMAP's wall-clock notes)
+
+The burst-end "quiet-try" was keyed on the history-END sample, which
+advances every ~30 ms chunk, so a failing capture inside a quiet gap
+re-ran a full `receiveFrame` - a chirp scan over tens of seconds of
+audio - EVERY chunk until the next rung. Latent at OFDM modes (captures
+decode fast); at the deep tier it consumed the whole 2-attempt decode
+budget every chunk: 36k attempts in a 560 s floor soak, the simulation
+at ~6 sim-s/min, the floor/blackout soaks looking HUNG at t~480 with the
+process at 100% CPU inside `receiveFrame` (RSS ~200 MB). Fixed by
+keying the quiet-try on the rung index (once per rung interval, <= 7 per
+capture) and running burst-end finalization FIRST in the per-capture
+flow. Effect: 300 sim-s in 54 s of wall clock (~330 sim-s/min) against
+25-35 for every earlier soak in this log - which were all paying this
+tax. Every "5-8 minutes per soak point" above was ~10x inflated by it.
+
+### Soaks on the final binary (all half-duplex unless noted)
+
+| scenario | schedule | turn-taking | legacy CCA |
+|---|---|---|---|
+| churn | coupled (static start) | **19,241 B balanced** 9,072/10,169; stalls t=701 at 10 dB Moderate -> FAIL | 17,362 B **lopsided** 13,183/4,179, 1 session drop -> PASS (see note) |
+| churn | decoupled (Moderate from t=0) | 4,751 B one-way, FAIL t=380 | **identical**: 4,751 B, FAIL t=380 |
+| blackout | (full-duplex, unchanged) | PASS 8,930 B, 1 recovery | - |
+| floor | - | FAIL, 0 B | - |
+
+Trajectory for turn-taking churn (coupled, HD): 8,930 B / t=541 before
+the lever -> 12,690 / t=741 with NAK+finalization -> 19,241 / t=701
+after the quiet-try fix.
+
+NOTE on the coupled pass/fail: legacy's PASS and turn-taking's FAIL on
+that row are schedule luck, not scheduler quality. The coupled schedule
+draws its staircase from the RNG that also paces delivery, so once the
+two variants deliver at different rates their channels DIVERGE: legacy's
+ended on a static 15 dB channel, turn-taking's reached 10 dB Moderate at
+t=600; and legacy's session drop reset the progress watchdog. The
+scheduler-relevant signals are the ones that survive the divergence -
+legacy's 13,183/4,179 is the bidirectional-starvation signature, turn-
+taking's 9,072/10,169 is the balance the MAC exists for - and on the
+decoupled schedule (the honest like-for-like) the two are byte-identical
+and both lose to the channel. Use the decoupled schedule for any future
+scheduler comparison; use `SKW_SOAK_COUPLED=1` only to reproduce the
+historical numbers above.
+
+### Floor: a scenario-calibration defect, not a modem defect
+
+Floor still delivers 0 B, and the lever is doing its job there: RETRY
+0.0-0.2, no wedge, finalization firing, NAKs answered. The link sits at
+the CSS deep tier (A M1, B M0) because B genuinely hears A's M4 frames at
+**-6.2 dB** (own RX; RSNR reports -6.0 to -10.5), and at that tier a
+frame is 14-30 s of air in window-1 ping-pong: ~3.5 B/s, so 4 KiB in
+900 s is beyond the tier's pace even at RETRY 0.0. The scenario claims
+to sit "just above the WIDE robust-tier floor"; it does not. Measured
+set-point -> delivered (B's own M4 reading at t=120, WIDE, CCIR
+Moderate): 21 -> 21.9 dB, 15 -> 8.6, **9 -> -6.2** - steeply nonlinear,
+not the "~6 dB below" the harness comment assumes. Landing floor where
+it claims (~M4 floor + 3 dB delivered) is a ~1.5 dB set-point change on
+a slope of 2-3 dB/dB; that is bertool's calibration to make, not a soak
+knob to turn. Deliberately NOT retuned here.
+
+### Also landed
+
+- `SKW_HALF_DUPLEX=1` is now a registered ctest entry
+  (`test_st2_halfduplex`, all 3 scripted fault sessions pass, incl.
+  `st2_simultaneous_tx_collision`). `soak_st2` was never registered -
+  the CMake comment claiming a "quick smoke" was stale and is fixed.
+- INI `modem.turn_taking` (default on); `SKW_NO_TURNSCHED=1` remains the
+  A/B override. `SKW_TURN_DEBUG=1` traces the grant lifecycle; on the
+  final binary a half-duplex churn shows drain -> grant -> peer DATA
+  confirm on every handover, one RTT-paced retry, no two-listener state
+  - the responder-reclaim question from the entry above is closed.
+
+### STILL OPEN
+
+- churn under sustained Moderate fading at <= 16 dB: both schedulers
+  stall; turn-taking degrades gracefully where legacy starves one
+  direction. The remaining lever is the deep-tier / low-SNR pace itself
+  (long chirp+sync+header per frame, window 1) - a PHY/framing question,
+  not a link-layer one.
+- floor recalibration (above), owned by bertool.
+- ST3 hardware soak with turn-taking on: not yet run; the OTA gate.

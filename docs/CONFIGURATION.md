@@ -83,6 +83,7 @@ depends on it.)
 | `channel_memory` | `true` | reconnect seeding; OFF disables both seeding and recording. Store: `~/.skywave/chanmem.bin`, overridden by `SKW_CHANMEM_PATH` (empty value = no persistence) |
 | `probe_promote` | `true` | probe-before-promote |
 | `carrier_masking` | `true` | mask exchange |
+| `turn_taking` | `true` | scheduled ISS/IRS turn-taking (`CAP_TURN_SCHED`); `false` = legacy occupancy-gate scheduler, needed only to call a pre-`CAP_TURN_SCHED` build |
 | `resume` | `true` | session resume |
 | `pre_tx_cca` | `true` | originate-time busy gate |
 | `impulse_blanker` | `false` | RX impulse blanker |

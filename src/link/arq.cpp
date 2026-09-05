@@ -36,6 +36,12 @@ double ArqTx::timeoutSec() const {
   return std::clamp(t * backoff_, 4.0, 90.0);
 }
 
+double ArqTx::baseTimeoutSec() const {
+  double t = openLoopSec_;
+  if (srtt_ > 0.0) t = std::max(t, srtt_ + 4.0 * rttvar_);
+  return std::clamp(t, 4.0, 90.0);
+}
+
 void ArqTx::sampleRtt(double rttSec) {
   // Implausible samples (clock jumps, a resumed session's stale frame)
   // must not poison the estimator.
@@ -74,11 +80,25 @@ ArqTx::Pending* ArqTx::find(uint16_t seq) {
   return nullptr;
 }
 
-void ArqTx::queueRetx(Pending& p) {
+void ArqTx::queueRetx(Pending& p, double now) {
   if (p.inRetxQueue) return;
   if (p.retries >= maxRetries_) {
-    failed_ = true;
-    return;
+    // The retry budget exists to detect a DEAD peer. It was calibrated
+    // for timer-paced retries, where `max_retries` attempts always
+    // meant max_retries x timeout of wall clock with no progress - long
+    // enough for the AMC to demote to a mode the channel can carry.
+    // Explicit NAKs (kRxFlagRxFail) retransmit within one burst time,
+    // so the same COUNT can now be spent in tens of seconds - measured
+    // as a static-channel session drop at the floor in the M3 ramp
+    // gate, the link torn down before its first demotion could land.
+    // Tear down only when the budget is also exhausted by TIME: no
+    // forward progress for the wall clock those retries used to imply.
+    const double since =
+        now - (lastProgressAt_ >= 0.0 ? lastProgressAt_ : firstSendAt_);
+    if (firstSendAt_ < 0.0 || since >= maxRetries_ * baseTimeoutSec()) {
+      failed_ = true;
+      return;
+    }
   }
   p.inRetxQueue = true;
   retxQueue_.push_back(p.seq);
@@ -91,6 +111,7 @@ std::optional<uint16_t> ArqTx::send(std::vector<uint8_t> payload,
   p.seq = nextSeq_++;
   p.sentAt = now;
   p.payload = std::move(payload);
+  if (firstSendAt_ < 0.0) firstSendAt_ = now;
   pending_.push_back(std::move(p));
   if (deadline_ == 0.0) deadline_ = now + timeoutSec() + extraSec_;
   return pending_.back().seq;
@@ -144,7 +165,7 @@ void ArqTx::onAck(const AckBody& ack, double now) {
           break;
         }
       }
-      if (d < highest) queueRetx(p);
+      if (d < highest) queueRetx(p, now);
     }
   }
 
@@ -178,6 +199,17 @@ void ArqTx::onAck(const AckBody& ack, double now) {
   } else if (progress || deadline_ == 0.0) {
     deadline_ = now + timeoutSec() + extraSec_;
   }
+}
+
+bool ArqTx::nakAt(uint16_t seq, double now) {
+  Pending* p = find(seq);
+  if (!p || p->inRetxQueue || suspended_) return false;
+  queueRetx(*p, now);
+  if (!p->inRetxQueue) return false;  // budget exhausted -> teardown path
+  // The NAK is fresh evidence that this frame is lost; the timer covers
+  // the retransmission we are about to make, not the original.
+  deadline_ = now + timeoutSec() + extraSec_;
+  return true;
 }
 
 bool ArqTx::onPiggybackAck(uint16_t ackBase, double now) {
@@ -235,7 +267,7 @@ void ArqTx::setSuspended(bool s, double now) {
     // 90 s - before the first retransmission (measured: one frame per
     // minute-plus, a 10 minute drain for an 8-frame window). Treat them
     // as timed out NOW; the retry budget still bounds a dead peer.
-    for (auto& p : pending_) queueRetx(p);
+    for (auto& p : pending_) queueRetx(p, now);
     deadline_ = now + timeoutSec() + extraSec_;
   }
 }
@@ -245,7 +277,7 @@ void ArqTx::tick(double now) {
   if (deadline_ == 0.0 || now < deadline_ || pending_.empty()) return;
   // ACK never came: requeue every in-flight frame, oldest first.
   ++timeouts_;
-  for (auto& p : pending_) queueRetx(p);
+  for (auto& p : pending_) queueRetx(p, now);
   // Exponential backoff, capped. The open-loop estimate can only be an
   // estimate; when it is short of the real round trip this is what
   // stops the sender retransmitting into the peer's decode window.
@@ -263,7 +295,7 @@ void ArqTx::resumeFrom(uint16_t peerNextSeq, double now) {
   for (auto& p : pending_) {
     p.retries = 0;
     p.inRetxQueue = false;
-    queueRetx(p);
+    queueRetx(p, now);
   }
   deadline_ = pending_.empty() ? 0.0 : now + timeoutSec() + extraSec_;
 }

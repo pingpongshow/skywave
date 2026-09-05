@@ -323,7 +323,22 @@ uint8_t LinkEngine::ackRxFlags() const {
   if (turnSchedActive() && turnRole_ == TurnRole::Irs && turnDataWaiting()) {
     f |= kRxFlagBreakReq;
   }
+  if (rxFailPending_) f |= kRxFlagRxFail;
   return f;
+}
+
+// Proto seal cap (PROTOCOL.md "Payload Pipeline"). The deep tier always
+// bounds a stream message to ~8 frames. OFDM modes coalesce to the full
+// 4 KiB while the link is clean - a flat cap measurably cost the VHF and
+// ramp throughput gates - and drop to the same 8-frame bound once the
+// link is LOSSY: a 4 KiB message is ~30 frames at M4, and one stuck
+// head-of-line fragment then delivers zero app bytes no matter how many
+// later fragments land (measured as floor/churn "stalling" with frames
+// still flowing). Called on every mode change and whenever the lossy
+// verdict flips.
+void LinkEngine::applySealCap() {
+  const size_t bounded = std::max<size_t>(8 * dataBudget_, 192);
+  protoTx_.setSealCap(mode_ <= 3 || lossyCoalesce_ ? bounded : size_t(-1));
 }
 
 void LinkEngine::setTurnRole(TurnRole r, double now) {
@@ -373,6 +388,11 @@ double LinkEngine::turnHandoffSec() const {
 void LinkEngine::grantTurn(double now) {
   ++turnEpoch_;
   queueTurnGrant();
+  if (getenv("SKW_TURN_DEBUG")) {
+    fprintf(stderr, "%s GRANT t=%.1f send epoch=%u inflight=%zu\n",
+            cfg_.policy.ownCall.c_str(), now, unsigned(turnEpoch_),
+            arqTx_.inFlight());
+  }
   grantAwaitingData_ = true;
   grantTries_ = 1;
   grantRetryAt_ = now + turnHandoffSec();
@@ -1303,12 +1323,7 @@ void LinkEngine::updateArqTimeout() {
           ? 6 * fpb
           : (mode_ <= 3 ? cssCwTarget_ : (mode_ <= 7 ? 1 : 2)) * fpb;
   dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
-  // DEEP-TIER stream messages span at most ~8 frames (delivery stays
-  // incremental when frames carry tens of bytes - see setSealCap).
-  // OFDM modes keep full-size coalescing: capping them measurably cost
-  // the VHF and ramp throughput gates.
-  protoTx_.setSealCap(mode_ <= 3 ? std::max<size_t>(8 * dataBudget_, 192)
-                                 : size_t(-1));
+  applySealCap();  // deep tier / lossy link: ~8 frames; clean OFDM: full
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
@@ -1664,6 +1679,20 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     }
 #endif
     probeGate_.tick(now);
+    // Adaptive proto seal cap: bound message size once the retry ratio
+    // says the link is lossy; restore full coalescing once it is clean
+    // again. Hysteresis (enter > 0.15, leave < 0.05) so a single retry
+    // does not flap the policy.
+    {
+      const double rr = retryRatio();
+      const bool was = lossyCoalesce_;
+      if (!lossyCoalesce_ && rr > 0.15) {
+        lossyCoalesce_ = true;
+      } else if (lossyCoalesce_ && rr < 0.05) {
+        lossyCoalesce_ = false;
+      }
+      if (was != lossyCoalesce_) applySealCap();
+    }
     // Carrier-mask exchange (per direction; either side may originate).
     if (maskDet_ && cfg_.maskingEnabled && (sessionCaps_ & kCapMasking) &&
         mode_ >= 8) {
@@ -1869,11 +1898,21 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     // handoff cadence, then reclaim the sending role - a link must never
     // be left with two listeners because one short control frame faded.
     if (grantAwaitingData_ && now >= grantRetryAt_) {
+      static const bool gdbg = getenv("SKW_TURN_DEBUG") != nullptr;
       if (grantTries_ < 3) {
         queueTurnGrant();
         ++grantTries_;
         grantRetryAt_ = now + turnHandoffSec();
+        if (gdbg) {
+          fprintf(stderr, "%s GRANT t=%.1f retry #%d epoch=%u\n",
+                  cfg_.policy.ownCall.c_str(), now, grantTries_,
+                  unsigned(turnEpoch_));
+        }
       } else {
+        if (gdbg) {
+          fprintf(stderr, "%s GRANT t=%.1f RECLAIM after %d tries\n",
+                  cfg_.policy.ownCall.c_str(), now, grantTries_);
+        }
         grantAwaitingData_ = false;
         setTurnRole(TurnRole::Iss, now);
       }
@@ -2158,6 +2197,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     // Refresh ACK feedback at transmit time - see the ackPending_ note.
     f.env.ackBase = arqRx_.ackBase();
     const uint8_t rxFlags = ackRxFlags();
+    rxFailPending_ = false;  // the NAK rides THIS ACK; never repeat it
     f.body = arqRx_.makeAck(
                  int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0,
                                    127.0)),
@@ -2249,6 +2289,23 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
     }
   }
   rxFamily_ = rxFamily;
+  // Header-implied airtime for the worker's burst-end finalization. Reset
+  // per call so a stale value from an earlier capture can never be
+  // attributed to this one.
+  lastRxAirtimeSec_ = 0.0;
+  if (res && res->header.mode < kNumModes) {
+    TxFrameParams tp;
+    tp.family = rxFamily;
+    tp.sig = res->sig;
+    tp.mode = res->header.mode;
+    tp.cpMode = res->header.cpMode;
+    tp.frameType = res->header.frameType;
+    tp.seqLow = res->header.seqLow;
+    std::vector<uint8_t> shape(res->header.length);  // geometry needs size only
+    tp.payload = shape;
+    tp.mask = fsm_.state() == FsmState::Connected ? &rxMask_ : nullptr;
+    lastRxAirtimeSec_ = frameAirtimeSec(tp);
+  }
   if (res && !res->constellation.empty()) {
     lastConstellation_ = res->constellation;
     ++constellationSeq_;
@@ -2303,6 +2360,20 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok && finalAttempt) {
       amc_->onFrameResult(false, false);
+    }
+    // EXPLICIT NAK (PACTOR's CS-NAK). A DATA-class burst whose PHY
+    // header decoded but whose payload failed its FINAL attempt is a
+    // burst the peer will otherwise only learn about from its own
+    // retransmission timer. Answer it immediately: the next ACK carries
+    // kRxFlagRxFail and our ack_base, and the sender resends that frame.
+    // Header-less failures are not attributed (could be noise, could be
+    // a third party) and probes have their own verdict below.
+    if (res && !res->payloadOk && finalAttempt &&
+        fsm_.state() == FsmState::Connected &&
+        (res->header.frameType == uint8_t(LinkType::Data) ||
+         res->header.frameType == kBurstContainerFrameType)) {
+      rxFailPending_ = true;
+      ackPending_ = true;
     }
     // A PROBE whose header decoded but payload failed still gets its
     // verdict: the probeId rides the PHY header's seqLow.
@@ -2640,6 +2711,10 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         // STILL believes it is the ISS has diverged (a lost grant
         // series). Deterministic tie-break: the responder yields, the
         // initiator holds - the link converges to one sender either way.
+        if (grantAwaitingData_ && getenv("SKW_TURN_DEBUG")) {
+          fprintf(stderr, "%s GRANT t=%.1f CONFIRMED by peer DATA\n",
+                  cfg_.policy.ownCall.c_str(), now);
+        }
         grantAwaitingData_ = false;
         if (turnRole_ == TurnRole::Iss && !isInitiator_) {
           setTurnRole(TurnRole::Irs, now);
@@ -2713,6 +2788,30 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       remoteSnrDb_ = a->snrHalfDb * 0.5;
       onCfoReport(a->cfoHalfHz * 0.5);
       lastFeedbackAt_ = now;  // ends the post-burst listen turn
+      // Explicit NAK: the peer heard a DATA burst it could not decode.
+      // Its ack_base is the frame it needs; resend it NOW rather than
+      // after the retransmission timer (50-90 s under fading - the
+      // per-frame cost that made the floor scenario deliver nothing).
+      if (a->rxFlags & kRxFlagRxFail) {
+        static const bool nakDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
+        const bool q = arqTx_.nakAt(a->ackBase, now);
+        if (nakDbg) {
+          fprintf(stderr, "%s rxNAK base=%u requeued=%d\n",
+                  cfg_.policy.ownCall.c_str(), a->ackBase, q ? 1 : 0);
+        }
+        // A NAK IS demotion evidence. The sender's only failure signal
+        // for its own bursts used to be the ACK timeout (charged to the
+        // AMC in tick); a NAK arrives before the timer and re-arms it,
+        // so without this the AMC never heard of a single lost burst -
+        // measured on the static M3 ramp as one frame NAKed 22 times at
+        // an unchanged mode until the retry budget tore the session
+        // down. Same weight as one timeout event (two charges): one
+        // lost burst is one lost burst, whichever way we learn of it.
+        if (amc_) {
+          amc_->onFrameResult(false, false);
+          amc_->onFrameResult(false, false);
+        }
+      }
       // Turn-taking: mirror the peer's break request. Tracking the
       // LATEST ACK (set or clear) means a withdrawn request cannot
       // leave a stale grant pending.
@@ -2913,6 +3012,11 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         break;  // retried grant already accepted; our DATA will confirm
       }
       peerGrantEpoch_ = tg->epoch;
+      if (getenv("SKW_TURN_DEBUG")) {
+        fprintf(stderr, "%s GRANT t=%.1f RECEIVED epoch=%u (was %s)\n",
+                cfg_.policy.ownCall.c_str(), now, unsigned(tg->epoch),
+                turnRole_ == TurnRole::Iss ? "ISS" : "IRS");
+      }
       // The granting peer clearly has nothing to send right now; a
       // stale request from before its grant must not bounce the turn
       // straight back. An outstanding grant of our own is cancelled -

@@ -223,7 +223,18 @@ class ModemWorker : public ControlBackend {
   struct PendingRx {
     uint64_t start;    // absolute baseband sample of the preamble start
     int tries = 0;
-    uint64_t quietTriedAt = 0;  // hist end of the last burst-end attempt
+    // Rung index at which the last burst-end ("quiet") attempt was made:
+    // ONE such attempt per rung interval. The previous key (history end
+    // sample) advanced every chunk, so a failing capture inside a long
+    // quiet gap re-ran a full receiveFrame - a chirp scan over tens of
+    // seconds of audio - every ~30 ms until the next rung: measured as
+    // ~36k attempts in a 560 s deep-tier soak, the whole decode budget
+    // every chunk, the simulation running ~5x slower than real time.
+    int quietTriedTries = -1;
+    // Header-implied burst airtime learned from a failed attempt (0 =
+    // no header yet). Once that much audio is in hand the burst is
+    // complete and the capture goes straight to its FINAL attempt.
+    double airtimeSec = 0.0;
   };
   std::deque<PendingRx> pendingRx_;
   std::vector<ChirpDetection> dets_;

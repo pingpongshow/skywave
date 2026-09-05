@@ -199,6 +199,11 @@ inline constexpr uint8_t kRxModeAuto = 0x0F;     // sentinel: unpin
 // Turn-taking (PROTOCOL.md "Turn-Taking"): the IRS sets this in its ACKs
 // while it has data waiting - the request to become the data sender.
 inline constexpr uint8_t kRxFlagBreakReq = 0x40;
+// Explicit NAK (PROTOCOL.md "ARQ"): a DATA burst from the peer was heard
+// (PHY header decoded) but its payload failed every decode attempt. The
+// sender fast-retransmits this ACK's `ack_base` - the receiver's
+// next-expected frame - instead of waiting out its retransmission timer.
+inline constexpr uint8_t kRxFlagRxFail = 0x20;
 
 struct AckBody {
   int8_t snrHalfDb = 0;

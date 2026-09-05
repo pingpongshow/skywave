@@ -410,4 +410,32 @@ TEST_CASE(duplicate_ack_does_not_defer_the_timeout) {
   CHECK(tx.peekRetransmit().has_value());
 }
 
+// Explicit NAK (kRxFlagRxFail): the peer heard a burst it could not
+// decode. Its next-expected frame is resent immediately - no timer wait -
+// charged as a retry, never doubled, and refused while suspended.
+TEST_CASE(nak_fast_retransmits_the_peers_next_expected_frame) {
+  ArqTx tx(8, 10);
+  tx.setTimeout(30.0);
+  double t = 100.0;
+  tx.send({1}, t);  // seq 0
+  tx.send({2}, t);  // seq 1
+  t += 3.0;
+  CHECK(!tx.peekRetransmit().has_value());
+  CHECK(tx.nakAt(0, t));
+  CHECK(!tx.nakAt(0, t));  // already queued: never doubled
+  CHECK(!tx.nakAt(9, t));  // not in flight: nothing to resend
+  auto r = tx.nextRetransmit(t);
+  CHECK(r.has_value());
+  CHECK_EQ(int(r->seq), 0);
+  CHECK_EQ(int(r->rv), 1);
+  // The NAK re-armed the timer for the retransmission: no spurious
+  // timeout right after it.
+  tx.tick(t + 1.0);
+  CHECK_EQ(tx.takeTimeouts(), 0);
+  // A suspended sender (turn-taking IRS) cannot honour a NAK.
+  tx.setSuspended(true, t);
+  CHECK(!tx.nakAt(1, t));
+  tx.setSuspended(false, t);
+}
+
 SKYTEST_MAIN

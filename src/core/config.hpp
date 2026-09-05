@@ -50,6 +50,10 @@ struct Config {
   bool channelMemory = true;
   bool probePromote = true;
   bool carrierMasking = true;
+  // Scheduled ISS/IRS turn-taking (PROTOCOL.md "Turn-Taking"), advertised
+  // as CAP_TURN_SCHED. Off = legacy occupancy-gate scheduler; needed only
+  // to call a pre-CAP_TURN_SCHED build, which rejects the bit.
+  bool turnTaking = true;
   bool resume = true;
   bool preTxCca = true;
   bool impulseBlanker = false;

@@ -32,6 +32,9 @@ constexpr size_t kChunkSamples = size_t(kFftAudio) + 192;
 constexpr double kRxWindowSec[] = {2.5, 5.0, 10.0, 20.0, 34.0, 60.0, 90.0};
 constexpr int kRxTries = 7;
 constexpr double kRxPreMarginSec = 0.15;
+// Trailing margin past the header-implied burst end before a failing
+// capture is finalized (PTT tail, shuttle/driver jitter).
+constexpr double kBurstEndMarginSec = 0.5;
 constexpr double kRxHistorySec = 94.0;
 
 // How long a busy period is presumed to be a station before the chirp
@@ -269,10 +272,10 @@ void ModemWorker::rebuildEngine() {
   ec.policy.family = cfg_.family;
   ec.policy.maxMode = uint8_t(cfg_.maxMode);
   uint16_t caps = kCapZstd | kCapBurstMac;
-  // Scheduled turn-taking (PROTOCOL.md "Turn-Taking"): default-on; the
-  // env kill-switch exists for A/B measurement against the legacy
-  // occupancy-gate scheduler, not as an operator feature.
-  if (!getenv("SKW_NO_TURNSCHED")) caps |= kCapTurnSched;
+  // Scheduled turn-taking (PROTOCOL.md "Turn-Taking"): INI
+  // `modem.turn_taking` (default on); SKW_NO_TURNSCHED is the A/B
+  // override for measuring against the legacy occupancy-gate scheduler.
+  if (cfg_.turnTaking && !getenv("SKW_NO_TURNSCHED")) caps |= kCapTurnSched;
   if (cfg_.resume) caps |= kCapResume;
   if (cfg_.carrierMasking && prof.masking) caps |= kCapMasking;
   if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
@@ -532,8 +535,50 @@ void ModemWorker::pumpRxLocked(double now) {
               double(blockDbfs_), double(floorDbfs_), it->tries,
               double(histEnd - it->start) / kFsBaseband);
     }
+    // BURST-END FINALIZATION - runs FIRST, ahead of the quiet-try and the
+    // rungs, so a capture whose burst is provably in hand retires before
+    // anything else spends the per-chunk decode budget on it. Every rung
+    // past the burst's actual end re-decodes the SAME samples plus more
+    // trailing noise: a marginal frame that failed with the whole burst
+    // in hand fails identically at 10/20/34/60/90 s, and only the LAST
+    // rung runs HARQ combining, counts FFAIL, feeds the AMC - and (now)
+    // answers the peer with a NAK. That climb cost 30-90 s per failing
+    // frame and was the measured floor of one-way throughput under
+    // fading. The PHY header survives payload failure and states the
+    // burst's exact airtime, so once that much audio (plus pre-roll and
+    // tail margin) exists, run the final attempt on exactly that window
+    // and retire the capture. Header-less captures (noise, or a burst
+    // too deep to sync) keep the ladder.
+    // SANITY: the header's 12-bit length admits 4095 bytes - ~1000 s of
+    // implied airtime at the CSS deep tier, from a genuinely long frame
+    // or a header whose CRC-16 passed falsely at -6 dB. A span beyond
+    // the ladder's own 90 s envelope never drives finalization; such a
+    // capture keeps the ordinary ladder and retires at the 90 s rung.
+    if (!done && it->airtimeSec > 0.0 &&
+        it->airtimeSec <= kRxWindowSec[kRxTries - 1] && it->tries < kRxTries &&
+        decodeBudget > 0) {
+      const uint64_t span = uint64_t(
+          (it->airtimeSec + kRxPreMarginSec + kBurstEndMarginSec) *
+          kFsBaseband);
+      if (histEnd >= it->start + span) {
+        const uint64_t w0 = std::max(it->start, histBase_);
+        const uint64_t w1 = std::min(histEnd, it->start + span);
+        std::span<const cfloat> win(hist_.data() + size_t(w0 - histBase_),
+                                    size_t(w1 - w0));
+        const bool engineEligible =
+            listen_ || engine_->state() != FsmState::Idle;
+        if (getenv("SKW_RXLADDER_DEBUG")) {
+          fprintf(stderr, "%s burst-end-final t=%.1f air=%.1f tries=%d\n",
+                  cfg_.callsign.c_str(), now, it->airtimeSec, it->tries);
+        }
+        --decodeBudget;
+        if (engineEligible) engine_->rxBurst(win, now, /*final=*/true);
+        runMonitorLocked(win);
+        done = true;
+      }
+    }
     if (!done && decodeBudget > 0 && it->tries < kRxTries && !chanBusy_ &&
-        it->quietTriedAt != histEnd && histEnd > it->start) {
+        it->quietTriedTries != it->tries && histEnd > it->start) {
       const uint64_t have = histEnd - it->start;
       const uint64_t nextNeed =
           uint64_t(kRxWindowSec[it->tries] * kFsBaseband);
@@ -542,7 +587,7 @@ void ModemWorker::pumpRxLocked(double now) {
       const double prevSec = it->tries > 0 ? kRxWindowSec[it->tries - 1]
                                            : 1.5;
       if (have < nextNeed && have > uint64_t(prevSec * kFsBaseband)) {
-        it->quietTriedAt = histEnd;
+        it->quietTriedTries = it->tries;
         if (getenv("SKW_RXLADDER_DEBUG")) {
           fprintf(stderr, "%s quiet-try t=%.1f haveSec=%.1f tries=%d\n",
                   cfg_.callsign.c_str(), now,
@@ -560,6 +605,9 @@ void ModemWorker::pumpRxLocked(double now) {
           // MONITOR clients.
           runMonitorLocked(win);
           done = true;
+        } else if (engineEligible) {
+          it->airtimeSec =
+              std::max(it->airtimeSec, engine_->lastRxBurstAirtimeSec());
         }
       }
     }
@@ -582,6 +630,10 @@ void ModemWorker::pumpRxLocked(double now) {
         runMonitorLocked(win);
         done = true;
         break;
+      }
+      if (engineEligible) {
+        it->airtimeSec =
+            std::max(it->airtimeSec, engine_->lastRxBurstAirtimeSec());
       }
     }
     it = done ? pendingRx_.erase(it) : ++it;

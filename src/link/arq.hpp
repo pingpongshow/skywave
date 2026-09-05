@@ -76,6 +76,14 @@ class ArqTx {
   // for the reported holes (original sequence number, rv + 1).
   void onAck(const AckBody& ack, double now);
 
+  // Explicit NAK (kRxFlagRxFail): the peer heard a burst it could not
+  // decode. Requeue its next-expected frame - exactly the head-of-line
+  // frame its window cannot advance without - for immediate
+  // retransmission, instead of waiting for the ACK timer (50-90 s under
+  // fading). Charged as a retry like any retransmission, so the retry
+  // budget still bounds a dead link. Returns true if a frame was queued.
+  bool nakAt(uint16_t seq, double now);
+
   // Cumulative-only feedback from the ENVELOPE's piggybacked ack_base
   // (PROTOCOL.md: "every data-bearing frame also piggybacks ack_base").
   // Releases everything below the reported floor and resets retry budgets
@@ -146,7 +154,12 @@ class ArqTx {
     std::vector<uint8_t> payload;
   };
   Pending* find(uint16_t seq);
-  void queueRetx(Pending& p);
+  void queueRetx(Pending& p, double now);
+  // timeoutSec() WITHOUT the consecutive-timeout backoff: the unit the
+  // retry budget's wall-clock equivalent is measured in (the backoff
+  // grows during an RTO-paced retry run, so measuring against the
+  // backed-off value would never let a dead peer time out).
+  double baseTimeoutSec() const;
   // Release the front pending frame, sampling its RTT when unambiguous.
   void releaseFront(double now);
   void sampleRtt(double rttSec);
@@ -162,6 +175,7 @@ class ArqTx {
   // retransmits forever at the same wrong cadence.
   double backoff_ = 1.0;
   double lastProgressAt_ = -1.0;
+  double firstSendAt_ = -1.0;  // budget clock before any progress exists
   double extraSec_ = 0.0;  // TX-queue delay ahead of newly armed timers
   int timeouts_ = 0;       // ACK-timeout requeues (takeTimeouts)
   double deadline_ = 0.0;  // 0 = no timer armed
