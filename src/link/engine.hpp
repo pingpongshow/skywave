@@ -23,6 +23,8 @@
 #include "link/arq.hpp"
 #include "link/mask.hpp"
 #include "link/probe.hpp"
+#include "link/chanclass.hpp"
+#include "link/chanmem.hpp"
 #include "link/frame.hpp"
 #include "link/fsm.hpp"
 #include "link/handshake.hpp"
@@ -53,6 +55,11 @@ struct EngineConfig {
   // refused - the link NEVER silently falls back to cleartext.
   bool encryptionRequested = false;
   std::vector<uint8_t> psk;      // 32 bytes when installed
+  // Channel memory (LINK_ADAPTATION.md 3.5). Owned by the caller (the
+  // worker persists it across restarts); null disables the feature
+  // entirely, which is what `CHANMEM OFF` does.
+  ChannelMemory* chanMem = nullptr;
+  int32_t freqBucketKhz = -1;    // dial/1 kHz, -1 = unknown
 };
 
 class LinkEngine {
@@ -112,7 +119,7 @@ class LinkEngine {
 
   // --- broadcast (4.5) ---------------------------------------------------
   // Connectionless frames: calling signature + robust header + M4.
-  // Usable while idle (and alongside a session; the arbiter interleaves).
+  // Usable while idle (and alongside a session; the TX queue interleaves).
   void sendCq();
   void sendBeacon(double snrFloorDb);
   // Fragments into <= 16 BCAST_DATA frames (4-bit index/count); false
@@ -128,6 +135,10 @@ class LinkEngine {
   // --- mode control (3.2) ---------------------------------------------
   // Manual pin/unpin (MODE Mx / MODE AUTO). Pinning coordinates a
   // MODE_CHANGE to the pinned mode; fast-demote safety stays active.
+  // Pin the runtime mode. On the INITIATOR this coordinates a
+  // MODE_CHANGE directly. On the RESPONDER it raises a request that
+  // rides the next ACK's rx_flags; the initiator remains the only mode
+  // controller on the air, so the two cannot collide.
   bool pinMode(int mode, double now);
   void unpinMode();
   bool modePinned() const;
@@ -142,6 +153,32 @@ class LinkEngine {
   const std::string& remoteCall() const { return remoteCall_; }
   uint16_t sessionCaps() const { return sessionCaps_; }
   double lastRxSnrDb() const { return lastRxQuality_.snrDb; }
+  // Turn-taking (PROTOCOL.md "Turn-Taking"): true when scheduled
+  // turn-taking governs this session, and whether this station currently
+  // holds the data-sender (ISS) role.
+  bool turnSchedActive() const {
+    return (sessionCaps_ & kCapTurnSched) != 0 &&
+           fsm_.state() == FsmState::Connected;
+  }
+  bool turnIss() const { return turnRole_ == TurnRole::Iss; }
+
+  // --- GUI instrument taps -----------------------------------------------
+  // Equalized payload symbols from the most recent decode. Collected only
+  // while enabled, which the worker ties to the GUI being up.
+  void setWantConstellation(bool on) { wantConstellation_ = on; }
+  const std::vector<cfloat>& lastConstellation() const {
+    return lastConstellation_;
+  }
+  uint32_t constellationSeq() const { return constellationSeq_; }
+  // The carriers this session has excised, for the waterfall overlay.
+  const CarrierMask& rxMask() const { return rxMask_; }
+
+  // --- channel memory (3.5) ---------------------------------------------
+  // The dial frequency keys the store's buckets; the companion app pushes
+  // it with `FREQINFO <hz>` (INTERFACES.md). Changing it mid-session is
+  // harmless: the key is only read at handshake and teardown.
+  void setFreqBucketKhz(int32_t khz) { cfg_.freqBucketKhz = khz; }
+  int32_t freqBucketKhz() const { return cfg_.freqBucketKhz; }
   double remoteSnrDb() const;   // from ACK reports; -99 when unknown
   double retryRatio() const;
   uint64_t framesOk() const { return framesOk_; }
@@ -182,8 +219,14 @@ class LinkEngine {
     ChirpSig sig;
     int mode;
   };
+  // sessionIdOverride: connectionless BCAST_DATA carries the SENDER's
+  // callsign hash here instead of a session id (which is meaningless
+  // outside a session), so a monitor can demultiplex overlapping
+  // broadcasts. -1 keeps the current session id.
   void queueControl(LinkType t, std::vector<uint8_t> body, ChirpSig sig,
-                    int mode);
+                    int mode, int32_t sessionIdOverride = -1);
+
+  uint16_t bcastSenderTag() const;
   void drainFsmActions(double now);
   void pumpData(double now);
   std::vector<cfloat> buildBurst(const OutFrame& f);
@@ -276,14 +319,76 @@ class LinkEngine {
   bool ccaGatedNow_ = false;     // per-tick cached verdict
   double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
   bool txWasDraining_ = false;   // edge detector: own burst just aired
+  bool lastBurstHadData_ = false;  // the burst that just drained carried DATA
   double ctrlWaitStart_ = -1.0;  // control busy-hold start
   double ctrlJitterUntil_ = 0.0; // post-clear anti-race jitter deadline
   int ctrlRun_ = 0;              // consecutive control bursts (fairness)
   double ackAirSec_ = 0.5;       // expected feedback airtime (listen window)
+  // Half-duplex handoff scale: 1.0 for every OFDM mode (constants below
+  // are OFDM-tuned), > 1 for the CSS deep tier whose frames are an order
+  // of magnitude longer. Recomputed in updateArqTimeout().
+  double airScale_ = 1.0;
+  double dataRecencySec_ = 15.0;  // "peer is actively sending" window
   double dataQueuedSince_ = -1.0;  // data waiting to AIR (backstop clock)
   double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
+  // Family the last capture actually decoded on. Differs from the
+  // configured family only while the receiver-side scan is in play.
+  Family rxFamily_ = Family::Wide;
+  bool wantConstellation_ = false;
+  // Deep-tier adaptive frame length, in LDPC codewords per frame.
+  int cssCwTarget_ = 2;
+  int cssCleanRun_ = 0;
+  int cssLastTimeouts_ = 0;
+  // When a standalone ACK was skipped in favour of piggybacking, so the
+  // skip can be undone if our data never airs. -1 = nothing deferred.
+  double ackDeferredAt_ = -1.0;
+  // --- Turn-taking (PROTOCOL.md "Turn-Taking") --------------------------
+  // Scheduled ISS/IRS roles replace occupancy sensing for in-session
+  // DATA arbitration when kCapTurnSched is negotiated: exactly one
+  // station (the ISS) sends data; the other (IRS) sends feedback and
+  // requests the turn via kRxFlagBreakReq; TURN_GRANT hands it over.
+  enum class TurnRole : uint8_t { Iss, Irs };
+  TurnRole turnRole_ = TurnRole::Iss;
+  double roleSince_ = 0.0;
+  uint8_t turnEpoch_ = 0;           // our grant generation
+  int peerGrantEpoch_ = -1;         // last peer grant epoch accepted
+  bool breakReqPending_ = false;    // peer's latest ACK asked for the turn
+  double breakSentAt_ = -1.0;       // IRS: last standalone break request
+  bool grantAwaitingData_ = false;  // grant sent, peer's first DATA awaited
+  double grantRetryAt_ = 0.0;
+  int grantTries_ = 0;
+  // Handover drain: once a grant is due, stop pulling NEW segments and
+  // let the in-flight window empty, so the turn changes hands with
+  // nothing outstanding (PACTOR's changeover rule). -1 = not draining.
+  double turnDrainSince_ = -1.0;
+  void setTurnRole(TurnRole r, double now);
+  void queueTurnGrant();
+  void grantTurn(double now);
+  double turnHandoffSec() const;  // grant/reclaim cadence (RTT-paced)
+  bool turnDataWaiting() const;  // anything only the data role could send
+  uint8_t ackRxFlags() const;    // mode request + break request bits
+  // Responder-side pin: mode requested of the initiator, -1 = none,
+  // kRxModeAuto = asking it to return to AUTO.
+  int peerModeRequest_ = -1;
+
+  std::vector<cfloat> lastConstellation_;
+  uint32_t constellationSeq_ = 0;
+  // Channel character, fed from every frame outcome and consumed by the
+  // AMC's floor-table choice.
+  ChannelClassifier chanClass_;
+  // Configured family, restored when a session that adopted a narrower
+  // one ends.
+  Family configuredFamily_ = Family::Wide;
+  void adoptSessionFamily(Family f, double now);
+  // Channel memory: the seed is installed into the handshake policy just
+  // before each handshake decision, and the session's observed quality is
+  // folded back in when the session ends.
+  std::optional<ChanMemKey> chanMemKey(const std::string& peer) const;
+  void applyChanMemSeed(const std::string& peer, double now);
+  void recordChanMem(double now);
+  bool wasConnected_ = false;
   CallAckBody lastCallAck_{};     // initiator: stored for makeStart
   CallBody lastCall_{};           // responder: stored for evaluateStart
   std::deque<OutFrame> outQueue_; // control first, then data
@@ -291,6 +396,46 @@ class LinkEngine {
   ProtoTx protoTx_;
   ProtoRx protoRx_;
   double lastNow_ = 0.0;    // for sendData(), which takes no timestamp
+  // Debug-trace rate limiter. Per INSTANCE: a function-static here is
+  // shared by both engines in a two-node test world, so each station
+  // suppressed the other's trace and the log showed roughly half the
+  // samples from an arbitrary station.
+  double pumpDbgLast_ = -1e9;
+  // Which ccaDataGated() branch held, for SKW_PUMP_DEBUG: 0 clear,
+  // 1 own-TX draining, 2 post-burst handoff gap, 3 channel busy,
+  // 4 post-clear backoff / listen turn, 5 turn-taking IRS (not the
+  // sending role).
+  int ccaReason_ = 0;
+  // Handshake round-trip measurement, used to SEED the ARQ RTT
+  // estimator at connect. `hsTxAt_` is when we last emitted a
+  // handshake frame that expects a reply; `hsRttSec_` is the measured
+  // round trip, applied to arqTx_ the moment the session's ARQ state
+  // is built (and re-applied on resume, which rebuilds it).
+  double hsTxAt_ = -1.0;
+  double hsRttSec_ = 0.0;
+  void noteHandshakeRtt(double now);
+  // In-flight count when the post-burst listen turn began; the turn
+  // ends early as soon as the count drops (feedback arrived). 0 = no
+  // turn in progress.
+  size_t yieldInFlight_ = 0;
+  // Post-burst listen turn: when it began, and when the peer's feedback
+  // last arrived. The turn's whole purpose is to not key over incoming
+  // feedback, so it ends the moment that feedback lands - EVEN when the
+  // feedback is a NAK that reports a hole without advancing the window
+  // (yieldInFlight_ alone missed that: a persistent head-of-line hole
+  // never drops the in-flight count, so the sender waited the full RTT
+  // plus the ARQ timeout between each retransmission of the one stuck
+  // frame - measured as the floor scenario's one-way 0-byte stall).
+  double listenTurnStart_ = -1.0;
+  double lastFeedbackAt_ = -1.0;
+  bool listenFeedbackArrived() const {
+    // Guarded by yieldInFlight_ so it fires ONLY during a real
+    // post-burst listen turn - never on the post-clear backoff or the
+    // bidirectional courtesy gap, whose ccaProceedAt_ arms carry no
+    // listen-turn semantics.
+    return yieldInFlight_ > 0 && listenTurnStart_ >= 0.0 &&
+           lastFeedbackAt_ >= listenTurnStart_;
+  }
   size_t dataBudget_ = 57;  // exact-fill segment size at mode_/profile
   // File service (4.3).
   void pumpFile();

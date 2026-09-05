@@ -664,6 +664,10 @@ others `[P]` across tracks.*
   canonical uppercase — the wire surface is now uppercase while INI files
   stay lowercase per CONFIGURATION.md. Crypto settings page deferred with
   the waterfall (the SECURITY command surface is complete and scriptable).
+  UPDATE 2026-08-17: the Security page landed in the hardening pass below
+  (masked PSK entry, encryption toggle, KEYROTATE, live SECURITY line, all
+  through `Gui::submit()`); the waterfall/constellation views still wait on
+  per-symbol DSP taps through the telemetry seqlock.
 
 ## Phase 6 — Extensions
 
@@ -1392,3 +1396,658 @@ doc was updated)*
   modem also doubled with its own peer). Fix is busy-SOURCE
   discrimination (decodable peer burst vs noise/jam), which needs the
   airtime-coherent constants of that phase anyway.
+
+- **Post-v1.0.0 hardening pass / 2026-08-17** — Closed the gaps between
+  the shipped code and its own documentation, and implemented the two
+  features that were specified, configured, and never built.
+  1. **PHYSICAL PTT KEYING (was entirely absent).** `PTTMETHOD
+     RTS|DTR|VOX|TCP` had been stored config only since 4.6 - there was no
+     serial code and no TCP client anywhere in `src/`, so the modem could
+     not key a radio at all and only VOX or external keying worked. New
+     `src/io/ptt.{hpp,cpp}`: RTS/DTR via `TIOCMBIS`/`TIOCMBIC` on a raw
+     port with `CRTSCTS` cleared (hardware flow control fights the driver
+     for RTS), `KEY\n`/`UNKEY\n` over a non-blocking socket for TCP
+     (default port 4532), no-ops for NONE/VOX. Keying is asserted just
+     before the first sample of a burst enters an EMPTY TX ring and
+     released once the ring drains, so `ptt_lead_ms`/`ptt_tail_ms` do
+     exactly what they are specified to do. An unopenable port is
+     reported and the modem runs unkeyed rather than refusing to start.
+  2. **TX WATCHDOG (was parsed and never read).** `tx_watchdog_s` had
+     exactly one reference in the codebase: its own declaration.
+     Implemented in the worker beside the keying it protects - on trip it
+     force-releases PTT, discards staged audio, cancels TXTEST and emits
+     `EVT:TX_WATCHDOG`.
+  3. **CHANNEL MEMORY WIRED (3.5's known debt, larger than recorded).**
+     `link/chanmem.{hpp,cpp}` was included by nothing but its own test:
+     the store, its persistence and the START seeding rule were dead
+     code, and `CHANMEM ON/OFF` toggled a flag nothing read. The worker
+     now owns the store (persisted to `~/.skywave/chanmem.bin`,
+     `SKW_CHANMEM_PATH` overrides, empty disables), hands the engine a
+     pointer only while `channel_memory` is on - so OFF disables seeding
+     AND recording - and the recommendation clamps the initial mode on
+     BOTH sides of the handshake via `HandshakePolicy::chanMemMode`.
+     Frequency buckets come from a now-functional `FREQINFO <hz>`.
+  4. **`link/arbiter.{hpp,cpp}` DELETED.** Also referenced by nothing but
+     its own test since the CCA rework of 2026-07-30; every function it
+     held (priority queue, CCA gate, PTT sequencing, watchdog, TXTEST
+     cap) is implemented in the engine or the worker. `test_arbiter` is
+     replaced by `test_ptt`, which exercises the real implementations.
+  5. **PIGGYBACKED `ack_base` WAS WRITE-ONLY.** PROTOCOL.md promised
+     every data-bearing frame piggybacks the cumulative receive floor;
+     the engine set it on every frame and covered it in the crypto AAD,
+     but no receive path fed it to `ArqTx`, so every acknowledgement cost
+     a dedicated frame. Now consumed via `ArqTx::onPiggybackAck` for
+     same-session frames only (pre-session and connectionless frames
+     carry `ack_base = 0`). Found while fixing it: `onAck` re-armed the
+     retransmission deadline on ACKs that released NOTHING, so a peer
+     stuck at the same floor could defer our timeout indefinitely - only
+     forward progress re-arms it now.
+  6. **`Monitor::takeBroadcasts()` WAS NEVER CALLED.** Reassembled
+     CQ/BEACON/BCAST_DATA payloads were built and thrown away. Surfaced
+     as `EVT:BROADCAST <src> <hex>`, which - unlike the data port's
+     binary records - keeps flowing while a session is connected.
+  7. **MONITOR COVERAGE HOLE + 64-BYTE TRUNCATION.** Frames taken by the
+     RX ladder's burst-end fast path never ran the monitor at all, and
+     `MON:` lines were capped at 64 bytes, which put the CRC-32 out of
+     reach and made client-side broadcast reassembly impossible. Both
+     paths now run the monitor and the whole link frame is emitted.
+     INTERFACES.md also corrected: the `0xFB` record's bytes 12.. are the
+     RAW LINK FRAME, not a decoded payload.
+  8. **`EVT:SNR` / `EVT:CFO_WARN` were documented and never emitted.**
+     Now emitted - SNR on a >=1 dB change while connected (change-driven,
+     so an idle link costs nothing), CFO_WARN edge-triggered past +-40 Hz
+     with 5 Hz of hysteresis.
+  9. **`FREQINFO <hz>` was documented and ignored.** The dispatcher
+     discarded arguments, so the companion app could never key the
+     channel-memory buckets. Implemented, and it is the input that makes
+     item 3 band-aware.
+  10. **TCP surface robustness.** `TcpServer::send()` DROPPED THE CLIENT
+     on `EAGAIN` - a companion GUI that paused for a frame during a bulk
+     delivery lost its session; output is now buffered and retried, with
+     a 4 MiB cap for a client that has genuinely stopped reading.
+     `LineBuffer` cleared its accumulator mid-line on overflow, so the
+     TAIL of an over-long line was parsed as a command in its own right;
+     oversize lines are now discarded whole. `main.cpp` held delivered
+     payload without bound while no data client was attached; capped at
+     1 MiB, oldest first.
+  11. **BUSY-SOURCE DISCRIMINATION** (the deferred jammer limitation from
+     the LBT-hardening pass). `chanBusy_` stays an honest energy meter
+     for STATUS/`EVT:BUSY`, but the LBT gate now consumes `peerBusy`: a
+     chirp preamble claims the busy period for a station and the claim is
+     sticky until the channel clears. An unclaimed busy period is
+     presumed to be a peer for 4 s - longer than the detector's decision
+     lag, so we never key over a preamble we have not yet classified -
+     and thereafter reads as noise, which no longer starves the link.
+  12. **RECEIVER-SIDE MULTI-FAMILY DETECTION** (the design gap that
+     blocked marginal-SNR reconnection). `callFamilyForAttempt()` had
+     existed since 2.3 and could not be wired because a listener only
+     ever demodulated its own family. The worker now runs a second
+     ChirpDetector on the next-narrower family while no session exists
+     (an established link pays nothing), `LinkEngine::rxBurst` retries a
+     failed decode one family down, and a responder ANSWERS on the family
+     that reached it - restored to the configured family when the session
+     or the call ladder ends. The CALL schedule consequently steps down
+     for every family, not just ULTRA.
+  Doc drift fixed in the same change: INTERFACES.md (PTT methods and
+  keying sequence, watchdog event, FREQINFO push, MON payload, 0xFB
+  record semantics, the new events), PROTOCOL.md (ack_base is consumed),
+  LINK_ADAPTATION.md (channel-memory wiring and persistence path),
+  DSP.md (watchdog implementation). The stale duplicate design docs at
+  `Modem/docs/` - a pre-implementation snapshot of this directory - were
+  deleted.
+  NOT ADDRESSED in this pass, and why: the deep-tier MAC timing phase,
+  the CCIR Poor conformance row, the ULTRA robust-tier 3 dB deficit, and
+  the static-channel floor-table classifier all need measurement
+  campaigns (bertool sweeps and soak runs of hours) rather than code
+  changes, and the MAC-timing item is explicitly one coherent
+  constant-set design phase that three piecemeal attempts already
+  regressed. The GUI waterfall/constellation views still need per-symbol
+  DSP taps through the telemetry seqlock. Also still open: the 2 h
+  endurance soak and the ST4 attended-rig checklist - both now
+  MEANINGFUL for the first time, since the modem can finally key a radio.
+  ALSO LANDED here: the GUI Security page deferred at 5.8, and
+  `PTTMETHOD` joining `FAMILY` in answering with canonical uppercase.
+
+- **Deep-tier MAC timing + channel character / 2026-08-17** — Two of the
+  four long-standing performance items, both landed with measurement.
+  1. **AIRTIME-SCALED HANDOFF CONSTANTS (the "deep-tier MAC timing"
+     phase).** Every half-duplex handoff constant was tuned against OFDM
+     bursts of a couple of seconds; a CSS frame runs 35-55 s, so at M0-M3
+     they were all effectively zero - the 30 s control busy-hold EXPIRED
+     INSIDE a single peer burst and keyed straight over it, and the
+     "peer sent data recently" window (15 s) was shorter than one frame
+     so bidirectional fairness never engaged at all. `LinkEngine`
+     now derives `airScale_` from the session mode's frame airtime
+     against the SAME FAMILY's M4 reference, computed rather than
+     hard-coded (families differ by an order of magnitude). Every OFDM
+     mode clamps to 1.0, so HF behaviour is bit-for-bit unchanged.
+     THE KEY DISTINCTION, learned by getting it wrong first: only
+     BURST-DURATION-driven constants scale (the control busy-hold cap,
+     the data-recency window). LATENCY-driven ones must NOT - the
+     post-clear backoffs, the control jitter, the fairness yield and the
+     listen-window pad all exist to outlast the busy detector's ~100-300
+     ms energy blocks, which do not grow with frame length. Scaling them
+     uniformly (and with a 24x ceiling) added dead air at the deep tier
+     and pushed test_st2 from 2:20 to over 10 minutes - the same
+     "channel consumed by waiting" failure the phase exists to fix.
+     Final: ceiling 6x, applied to two constants. Suite 38/38 at 155 s.
+  2. **CCIR POOR CONFORMANCE ROW - MEASURED** (open since 1.13). Full
+     sweeps archived at `docs/conformance/skw_poor{,_low}.csv` with
+     `poor_findings.md`. HEADLINE: Poor is a FAMILY problem, not a mode
+     problem. WIDE never reaches 10% FER at ANY mode or SNR (best 28% at
+     M4, dominated by hdrFail - the channel decorrelates WITHIN the
+     frame, so more SNR does not help); MID closes M4-M6 (M4 floor
+     -4.0 dB), NARROW closes M4-M7 (M4 floor -9.0 dB). No kFadingFloors
+     row is published for Poor deliberately: for WIDE there is no floor
+     to publish, and a table implying one would be worse than the cap
+     described below.
+  3. **CHANNEL-CHARACTER CLASSIFIER** (`link/chanclass.{hpp,cpp}`), which
+     closes BOTH the Poor gating above and the static-channel debt from
+     3.11. Classifies Static / Fading / Severe from evidence the receiver
+     already produces - no extra measurement, no wire format, no
+     negotiation. `Static` switches `Amc::operatingFloorDb()` to the AWGN
+     reference table; `Severe` caps the ladder at `severeMaxMode` (M7).
+     MEASURED EFFECT: the static-channel ramp went from the recorded
+     0.39 of an AWGN-floor oracle to **0.67**, with zero drops
+     (`test_m3_ramp/m3_static_channel_ramp_uses_awgn_floors`); the
+     CCIR Good ramp is unchanged at 0.77.
+  4. **THE AMC'S QUALITY GATES HAD NEVER BEEN FED.** `onQualityIndicators`
+     has existed since 3.1 and nothing ever called it, so the M11+
+     pilot-stability gate and the M12+ selectivity gate were evaluating
+     their default 0 and could never fire. Both quantities are now
+     computed in the receiver and wired. Calibration measured at M10
+     WIDE, 12 frames/point: pilot residual AWGN 0.003-0.025, Good
+     0.010-0.057 (worst frame 0.156), Moderate 0.38-0.55, Poor
+     1.77-1.83 - so `pilotStabilityMax` moved 0.15 -> 0.25 (the old value
+     predated any implementation and sat INSIDE Good's worst-frame
+     spread, costing the M3 ramp 3 points the moment the gate went live).
+     Selectivity was also re-specified: a peak-to-percentile spread did
+     not separate Good from Moderate at all (62 vs 67 on a 0-255 scale),
+     so it is now the FRACTION of carriers >=10 dB below the band median
+     - which is what "deep notches make 64QAM pointless" actually means.
+  Still open from the performance list: the ULTRA robust-tier ~3 dB
+  deficit (needs a TX band-FIR margin change AND a floor re-measurement -
+  changing a floor-affecting constant blind is not acceptable) and the
+  -8 dB residual tracking floor under fading (tracked physical-delay
+  taps / adaptive Q). Not started: the sustained-bidirectional-bulk MAC,
+  responder-side mode pinning, broadcast per-sender demux, HARQ-IR
+  posteriors, the GUI waterfall/constellation, and the v1 non-goals
+  (mid-session family renegotiation, zstd dictionaries, ALE scanning,
+  SDR/IQ front end, group keying).
+
+- **ULTRA / instruments / family renegotiation / demux / 2026-08-17** —
+  1. **ULTRA's recorded cause is REFUTED; the TABLE was the bug.**
+     `familyTxBandTaps()` gained `SKW_TXBAND_MARGIN_HZ` so the guard
+     between the outermost carrier and the Kaiser passband edge could be
+     swept: 40 / 120 / 200 Hz give IDENTICAL floors. Pilot extrapolation
+     is out too - `isPilotCarrier()` spaces pilots evenly across every
+     family's full carrier set. What was actually wrong: ULTRA's fading
+     row read M6=16.0, M7=12.5, M8=8.5 - DECREASING as modes get faster,
+     which is physically backwards. Re-measured on each mode's designated
+     channel (60 trials): M5 6.5->4.5, M6 16.0->10.0 (6 dB of ladder
+     handed back), M8 8.5->10.5 and M9 13.5->15.5 (the AMC had been
+     promoting into modes that do not hold up). ~0.5 dB of the residual
+     gap vs WIDE is noise bandwidth (72 vs 64 carriers); the rest is
+     STILL unexplained, but both recorded hypotheses are now eliminated.
+     Evidence: `docs/conformance/ultra_findings.md` + two CSVs.
+  2. **GUI waterfall + constellation SHIPPED** (deferred since 5.7). The
+     blocker was that the telemetry snapshot carried levels only; it now
+     carries a 128-bin Welch spectrum (Hann-windowed, rate-limited to
+     ~10 Hz in the worker), the equalized payload symbols from the last
+     decode, and the carrier-mask overlay - all fixed-size so Telemetry
+     stays trivially copyable through the seqlock. The constellation tap
+     costs a divide per symbol, so it is enabled only when a GUI exists.
+     `test_gui` drives audio -> worker -> snapshot and asserts a 1500 Hz
+     tone is actually visible (measured 144 dB of range).
+  3. **Broadcast per-sender demux.** BCAST_DATA now carries the sender's
+     16-bit callsign-hash tag in the envelope session-id field (unused
+     for connectionless frames, so old receivers are unaffected), and the
+     Monitor keeps one reassembly chain PER SENDER, bounded at 8. Two
+     stations broadcasting in the same period previously shared one
+     global chain and silently corrupted each other - now covered by
+     `test_bcast/broadcast_two_senders_do_not_corrupt_each_other`, which
+     interleaves two senders' bursts.
+  4. **Mid-session family renegotiation built - SHIPPED OPT-IN.**
+     FAMILY_CHANGE/FAMILY_ACK (types 30/31, `kCapFamilyChange` bit 8,
+     reserved mask 0xFF00->0xFE00). Ordering is load-bearing and
+     documented: the responder commits only once its ack has actually
+     LEFT the transmit queue, because the ack must ride the OLD family or
+     the initiator never hears it. Masks and the AMC are rebuilt on the
+     new family; ARQ/proto/file/crypto state is untouched, so a transfer
+     in flight survives - proven by `test_m2/m2_mid_session_family_change`.
+     **OPEN, and the reason it is opt-in:** merely ADVERTISING the
+     capability - with the automatic rescue disabled and nothing sending
+     a FAMILY_CHANGE - pushes test_st2 from 167 s to over 600 s on an
+     otherwise identical build. Verified clean (no competing processes)
+     in both directions. Something reads the capability bitmap in a way
+     that changes MAC timing; the mechanism is correct but that
+     interaction must be understood before it drives sessions
+     unattended. `modem.family_renegotiate` (default false) gates both
+     the advertisement and the automatic rescue. Defaults measured back
+     at 147 s, suite 38/38.
+  Also: `applyFamily` must NOT overwrite `configuredFamily_` - a
+  session-scoped rescue that leaked into the operator's setting would
+  silently narrow the station for every future session.
+
+- **Family-change removal + #4 pass / 2026-08-17 (operator decision)** —
+  1. **MID-SESSION FAMILY CHANGE REMOVED COMPLETELY** at the operator's
+     direction: frame types 30/31, `kCapFamilyChange` (reserved mask back
+     to 0xFF00), the FamilyChange/FamilyAck bodies and handlers,
+     `applyFamily`, `requestFamilyChange`, the AMC rescue trigger, the
+     `family_renegotiate` config key, and both m2 tests. The v1 non-goal
+     is restored in README.md with a note that it was built and removed
+     rather than never attempted. The CCIR Poor result still argues for
+     choosing the right family UP FRONT, which the CALL ladder and the
+     receiver-side family scan already do.
+  2. **THE CAPABILITY-BIT ANOMALY IS RESOLVED - and it was not a general
+     bug.** Advertising `kCapFamilyChange` had pushed test_st2 from 167 s
+     to >600 s with nothing sending a FAMILY_CHANGE. After removal ST2
+     runs 160 s. To determine whether ANY extra capability bit did this -
+     which would be a latent bug waiting for the next feature - an inert
+     bit (`kCapVoice`, read by nothing in that build) was advertised on
+     its own: **160 s, unchanged**. So the sensitivity was specific to
+     the removed code's own paths, not to the capability bitmap, and
+     nothing latent remains. Both measurements were taken with no
+     competing processes; an earlier bisect had been confounded by a
+     leftover ctest and was redone.
+  3. **RESPONDER-SIDE MODE PINNING** (the v1 limitation recorded at 3.2).
+     The ACK body's `rx_flags` byte shipped as a constant 0 in every
+     frame; it now carries a mode REQUEST from the responder
+     (`kRxFlagModeReq` + mode in the low nibble, `kRxModeAuto` = unpin).
+     The initiator remains the only mode controller on the air, so the
+     dual-controller collision that motivated the limitation cannot
+     recur - the responder asks, the initiator decides and coordinates
+     the MODE_CHANGE as usual. Raising a request also sets `ackPending_`
+     so an otherwise idle link still asks. The request clears when the
+     mode it asked for commits, or it would re-ask on every ACK forever.
+     No new frame type and no new capability bit - deliberately, given
+     item 2. Covered by `test_m2/m2_responder_side_mode_pin`, which pins
+     from the responder and then releases.
+  4. **HARQ-IR "ACCUMULATED POSTERIORS" - CLOSED BY MEASUREMENT, NOT
+     IMPLEMENTED.** Step 3.4 recorded shipping channel LLRs as a strict
+     subset of the spec, "upgradeable inside ldpc.cpp later". The upgrade
+     was built and measured at M9 floor-5, 40 trials:
+       channel LLRs (shipped)          32/40
+       + decoder extrinsic, clamped    32/40
+       decoder posteriors alone        worse - a FAILED decode's
+                                       posteriors saturate the wrong way
+       extrinsic alone                  0/40 - discards the observation
+     The channel LLRs already carry the usable information, so the
+     decoder keeps its simple signature, the experiment was reverted
+     rather than shipped as dead code, and the deviation is closed with
+     the numbers recorded at the call site.
+  5. `SKW_CHANCLASS=off` added: pins the channel classifier to Unknown
+     (pre-classifier behaviour, always fading floors) for A/B diagnosis.
+     Used immediately to establish that the churn soak's zero delivery
+     is NOT the classifier's doing.
+  STILL OPEN from the #4 list: sustained simultaneous two-way bulk, and
+  the churn soak. New measurement on the latter: churn delivers **0
+  bytes in its first 240 s at 26-28 dB**, and does so identically with
+  the classifier disabled - so it is neither a floor-table problem nor
+  a marginal-SNR problem, and the recorded "stalls in the 8-11 dB deaf
+  dwells" understates it. Both remain the designed-turn-taking MAC work
+  the earlier campaign scoped; they are not a tuning exercise.
+
+- **Deep-tier + bidirectional throughput / 2026-08-18** — The two items
+  the earlier campaign scoped as "designed turn-taking MAC" work, both
+  root-caused and fixed, plus the measurement that should have
+  accompanied the MAC-timing pass.
+  1. **THE MAC-TIMING FIX WAS NEVER MEASURED, AND ON ITS OWN IT DID
+     ALMOST NOTHING.** New gate `test_css_link/css_deep_tier_throughput`
+     pins M1 on a clean channel and measures goodput as a fraction of the
+     mode's own NET rate. It read 0.97 B/s / 7% of net - against the
+     0.83 B/s originally recorded. The airtime-scaled constants were
+     necessary but nowhere near sufficient.
+  2. **DEEP-TIER FRAME LENGTH IS THE DOMINANT TERM, AND IT IS NOW
+     ADAPTIVE.** At CSS airtimes the chirp preamble + sync + duplicated
+     header cost tens of seconds REGARDLESS of payload, so goodput is
+     decided by how many bytes ride behind one preamble; the tier shipped
+     with 2 codewords. It is not simply larger because a longer frame is
+     proportionally likelier to meet a fade it cannot survive. That trade
+     is a property of the channel, so it is measured: grow after
+     consecutive clean deliveries, halve on any loss
+     (`cssCwTarget_`, 2..16). The channel classifier cannot serve here -
+     it needs a dozen frames, which at deep-tier airtimes is minutes.
+     **0.83 -> 2.45 B/s, 7% -> 18% of net.**
+     Found while wiring it: the growth hook first sat in the ACK case and
+     never fired, because the piggybacked `ack_base` (added the previous
+     day) releases frames BEFORE any dedicated ACK is parsed. It now
+     measures release across the whole received frame.
+  3. **BIDIRECTIONAL BULK: root-caused and fixed.** The churn soak looked
+     like "0 bytes delivered"; with STATUS visible it was **totally
+     one-sided** - B->A 8500 bytes, A->B **0**, both ends healthy at M10
+     with RETRY 0.1 and FFAIL 0. Cause: standalone ACKs are control
+     frames and outrank DATA, so the side that is BEHIND owes an ACK for
+     every burst it receives and spends every transmit opportunity
+     acknowledging, while the side that is ahead has little to
+     acknowledge and keeps sending. Positive feedback, ending at zero in
+     one direction. Fix: when we have data to send and no HOLES to
+     report, skip the standalone ACK and let the outgoing DATA frame's
+     envelope carry the floor - possible only because receivers now
+     consume the piggybacked `ack_base`. Gaps still demand a real ACK;
+     only the AckBody has the bitmap. **A->B 0 -> 17,517 bytes, both
+     directions balanced, combined throughput ~3.5x.**
+     Safety added on review: if the deferred data does not AIR within the
+     flush window (CCA gate, busy channel), the standalone ACK re-arms -
+     otherwise a stuck transmitter would silently starve the peer of
+     feedback until its ARQ timeout.
+  4. **ULTRA: third hypothesis refuted, and a method trap caught.**
+     `rxStage2Taps()` puts its passband edge 50 Hz beyond ULTRA's
+     outermost carrier (200 Hz for WIDE) - a plausible family-specific
+     penalty. Sweeping it through bertool changed nothing **because
+     bertool runs entirely at 12 kHz baseband and never instantiates the
+     48k/12k converters**, so that sweep measured nothing. Retested with
+     a probe through the real Upconverter/Downconverter pair: the chain
+     costs NOTHING (WIDE 38/40 -> 38/40, ULTRA 33/40 -> 34/40) and the
+     gap is already present at baseband. Eliminated so far: TX band-FIR
+     margin, pilot extrapolation, RX front-end margin; ~0.5 dB explained
+     by 72 vs 64 carriers sharing one power budget. The leading candidate
+     is now the channel ESTIMATOR - ULTRA spans 2.7 kHz against a ~1 kHz
+     coherence bandwidth at 1 ms spread - which would make this and the
+     recorded -8 dB residual tracking floor one problem, not two.
+  Also: `SKW_RXBAND_MARGIN_HZ` joins `SKW_TXBAND_MARGIN_HZ` as a
+  measurement knob. Verification this pass: suite 38/38, and **ST3 PASSED
+  ON REAL AUDIO HARDWARE** (BlackHole 2ch forward, VB-Cable reverse, two
+  real processes with independent clocks): connected 18.0 s, 2048 B
+  byte-exact, AMC climbed to M10, 6 cycles zero drops.
+
+- **Verification pass / 2026-08-18** — Full suite 38/38 (two new gates:
+  `css_deep_tier_throughput`, `m2_bidirectional_bulk_is_fair`), fresh and
+  crypto builds clean, and **ST3 PASSED ON REAL AUDIO HARDWARE** (18.0 s
+  connect, 2048 B byte-exact, AMC to M10, 6 cycles, 0 drops).
+  **CHURN SOAK: THE 0-BYTE STALL IS PRE-EXISTING, NOT A REGRESSION.**
+  Built a git worktree at the pre-session commit and ran it: the
+  untouched baseline fails IDENTICALLY - `A->B=0 B->A=0`, "stall: usable
+  channel but no progress" at t=320 s, both ends CONNECTED at M10 with
+  RETRY 0.0. So the recorded "~13 KB delivered first" no longer holds on
+  this host; churn now fails from the start, before and after this
+  session's work. Two false trails worth recording: the first clean run
+  was blamed on CPU contention (I had rebuilt twice mid-run), and the
+  second on the new ACK piggyback - `SKW_NO_ACK_PIGGYBACK=1` reproduces
+  the failure exactly, exonerating it.
+  HONESTY NOTE ON THE PIGGYBACK CHANGE: its one positive observation
+  (A->B 0 -> 17,517 B) is NOT reproducible - the ST2 world is real-time
+  paced and varies run to run, and the new engine-level fairness gate
+  cannot distinguish the two paths (1.00 ratio either way) because that
+  harness has no half-duplex deafness or CCA. The change is kept because
+  it is what PROTOCOL.md specifies ack_base for, it mechanically removes
+  standalone-ACK airtime, and it carries a re-arm safety - but it should
+  be treated as UNPROVEN against the starvation it was aimed at, not as
+  a fix. Bidirectional starvation therefore remains OPEN, and churn with
+  it.
+
+- **SOAK ROOT CAUSE FOUND / 2026-08-18** — Every ST2 soak scenario
+  (churn, blackout, floor) now fails with ZERO app bytes delivered, and
+  the 2 h ST3 endurance run failed at cycle 11 with a 512 B cycle
+  delivering nothing at 41 dB SNR, RETRY 0.0, FFAIL 0. One cause, and it
+  is PRE-EXISTING - a git worktree at the pre-session commit reproduces
+  the churn failure identically (`A->B=0 B->A=0`, stall at t=320 s).
+  **Diagnosis (SKW_PUMP_DEBUG trace): the CCA gate is PERMANENTLY
+  ENGAGED.** Every 20 s sample reads `gated=1`, with `state=Connected`,
+  `failed=0`, `inflight=4`, and a proto backlog that drains only ~940 B
+  per 60-100 s. On a link where BOTH ends have traffic the channel is
+  busy essentially all the time - each end hears the other - so the CCA
+  gate never opens and the ONLY thing moving data is the anti-starvation
+  backstop at 3x the ARQ timeout. That is the trickle, and it explains
+  every "stall, not degradation" report going back to the original
+  campaign: the deaf-RX half-duplex world plus an occupancy-based gate
+  has no turn-taking, only a starvation escape hatch.
+  EVIDENCE THAT THE OBVIOUS LEVER IS NOT THE ANSWER: the backstop
+  multiplier is now exposed as `SKW_DATA_STARVE_X` (default unchanged at
+  3.0). Sweeping it to **0.5 - six times more aggressive - still fails
+  the churn soak** ("too little delivered over the whole run"). So the
+  gate is not merely mistuned; letting starved data barge through sooner
+  does not create the turn-taking the link actually lacks. That result
+  pre-empts the natural first reaction to this diagnosis.
+  Left DELIBERATELY UNFIXED beyond that measurement. Changing it on a rushed measurement
+  is precisely the piecemeal retuning that regressed other gates three
+  times in the earlier campaign; each soak point is 5-8 minutes and
+  noisy. The real answer is scheduled turn-taking - explicit
+  transmit/listen turns negotiated per session rather than an occupancy
+  gate with an escape hatch - which is the design phase this has always
+  been scoped as. What is new is that the mechanism is now identified
+  and instrumented rather than inferred.
+
+### The one-way stall: ARQ timeout measured the wrong quantity (fixed)
+
+Every "stall, not degradation" report in this project - the three ST2
+soaks at 0 bytes, the 2 h ST3 endurance failure at cycle 11, the
+`~940 B per 60-100 s` trickle - traces to a single arithmetic error.
+
+An earlier entry in this log blamed the CCA occupancy gate and framed
+the failure as two-way contention ("both ends hear each other so the
+gate never opens"). **That was wrong.** A minimal one-way repro
+(`tests/repro_oneway.cpp`: one sender, clean static channel, 30 dB)
+delivers ZERO bytes. There is no contention in that scenario at all.
+
+Per-frame TX/RX tracing gave the real number:
+
+    median one-way latency  12.4 s   (ST2 world, M10)
+    implied round trip      ~25 s
+    ARQ timeout              6.7 s
+
+Every data frame retransmitted three times before its ACK could
+physically arrive; each retransmission lengthened the peer's decode
+queue, which lengthened the latency, which caused more timeouts.
+
+The timeout was `burst_airtime + ack_airtime + 3 s`. Airtime is not the
+round trip: the receiver also has to DECODE, and the worker's decode
+ladder (`kRxWindowSec` rungs 2.5/5/10/20 s) dominates the turnaround.
+The estimate was measuring the wrong quantity. The same timeout drives
+`modeChangeDeadline_`, which is why MODE_CHANGE retried endlessly and
+the two ends sat at different committed modes (M10 vs M9).
+
+FIX, two parts:
+
+  1. ARQ timeout tracks the MEASURED round trip (Jacobson/Karels):
+     `RTO = max(airtime_floor, srtt + 4*rttvar)`, Karn's algorithm so an
+     ambiguous retransmission never yields a sample, capped exponential
+     backoff on consecutive timeouts. The airtime estimate becomes a
+     floor rather than the answer.
+
+  2. The estimator is SEEDED from the connect handshake. Without a seed
+     it cannot bootstrap on exactly the links that need it: the first
+     data frames all time out, every one becomes a retransmission, and
+     Karn correctly refuses to sample any of them. The four-frame
+     handshake measures the same decode-and-reply latency unambiguously.
+
+  3. Turn-taking: the sender yields when its WINDOW IS FULL rather than
+     after every container (the window exists to keep frames in flight
+     across the round trip; yielding per container threw that away), and
+     sizes the quiet turn to the measured RTT, ending it early the
+     moment feedback arrives so a healthy link pays nothing for it.
+
+MEASURED, same repro, same seed, same channel:
+
+    before   sent 4096   delivered 0      exit 1
+    after    sent 8192   delivered 4096   exit 0   (byte-exact)
+
+Frame-level behaviour change: the sender's second transmission was a
+retransmit of seq 0; it is now a new container of seq 4-7. The receiver,
+which previously transmitted NOTHING after the handshake, now gets
+MODE_ACK / ACK / MASK_UPDATE out during the sender's listen turn.
+
+`max_retries_teardown` stepped time by a fixed 4.5 s, assuming a
+constant retry cadence that the backoff deliberately breaks. Its
+stepping now follows the current timeout; the assertion (retry budget
+exhaustion -> teardown) is unchanged.
+
+Note on the ST2 world: its shuttle flushes a burst through the radio
+chain only after the sender's TX ring drains, so the receiver hears a
+burst only after it has finished airing. That adds one burst-duration of
+latency and makes ST2 roughly 2x harsher than real audio (ST3's
+handshake legs measure ~4.5 s against ST2's 8.6 s). The defect is real
+in both - ST3 endurance died the same way at cycle 11 - and a MEASURED
+timeout self-corrects in either world, which is why the fix is an
+estimator rather than a retuned constant.
+
+STILL OPEN: the 12.4 s one-way latency itself is not addressed. It is
+dominated by the decode ladder's coarse rungs, and reducing it is the
+throughput lever (bandwidth-delay product currently caps a window at
+8 frames per round trip). Fixing the stall was the correctness issue;
+latency reduction is a separate, measurable piece of work.
+
+### CORRECTION: soak comparisons were confounded by persistent channel memory
+
+Several attributions recorded above were made on INVALID evidence and are
+retracted here.
+
+Every ST2 harness run loads and writes `~/.skywave/chanmem.bin`. CMake
+sets `SKW_CHANMEM_PATH=` for registered ctest targets, but a harness run
+DIRECTLY from a shell (`./build/soak_st2`, `monkey_st2`, `repro_oneway`)
+bypassed that entirely. Consecutive manual runs therefore inherited each
+other's adapted channel state and were NOT independent.
+
+The symptom was a churn soak swinging 44 KB / 0 / 9 KB / 0 across builds
+that barely differed - including one case where a change that did
+strictly LESS than its predecessor landed further from the no-change
+baseline. That incoherence was the tell and should have been caught
+immediately.
+
+Deleting the file made churn reproduce the original run byte-for-byte
+(4751/8500, 22140/17155, 34922/36013), proving the code was never the
+variable. A determinism check HAD been run - two copies in parallel, same
+result - but both started from the same chanmem, which is precisely the
+case that cannot reveal the coupling.
+
+RETRACTED, all "measured" on coupled runs:
+  - "the RTO variance cap regressed churn 44 KB -> 0"        NOT ESTABLISHED
+  - "backoff decay on progress regressed churn"              NOT ESTABLISHED
+  - "AMC timeout-charge reduction regressed churn to zero"   NOT ESTABLISHED
+  - "mode-divergence convergence is harmful both ways"       NOT ESTABLISHED
+All four were reverted on this bad evidence; each needs re-testing.
+
+FIXED at the source rather than by remembering to delete a file:
+`st2_world.hpp` now sets `SKW_CHANMEM_PATH=-` unless explicitly
+overridden, so every harness built on the ST2 world is isolated by
+construction. This was also a real hygiene bug - those harnesses were
+writing to the OPERATOR's channel-memory store, contrary to the stated
+intent in `worker.cpp::defaultChanMemPath`.
+
+CLEAN ISOLATED BASELINE (measured RTO + handshake seed + window-full
+listen turn; every later change reverted):
+
+    churn     44036 / 44990 B by t=600, then stalls, FAIL t=801
+    blackout   4352 B by t=240, then frozen
+    floor          0 B
+
+Unaffected by any of this: the root-cause measurement (~25 s round trip
+against a 6.7 s ARQ timeout) and the measured-RTO fix, both taken on the
+DETERMINISTIC one-way repro (0 -> 4096 B byte-exact), which never
+depended on soak comparisons.
+
+### One-way wedge hypothesis: REFUTED
+
+blackout stops at exactly 4352 B and the first repro run delivered
+exactly one 4096 B lump - both one-way - which suggested the link might
+wedge after completing a single coalesced proto message.
+
+Tested directly: `repro_oneway` with REPRO_WIN=16384 so several messages
+can be in flight at once. Delivery was continuous and linear -
+
+    t= 90  4096      t=120  8192      t=150 12288
+    t=180 16384      end    20480 B          (~136 B/s sustained)
+
+There is no per-message wedge. One-way bulk on a clean static channel
+sustains delivery indefinitely.
+
+What the three failing soaks actually share is a FADING channel:
+blackout is CCIR Good at 20 dB, floor is CCIR Moderate at 9 dB, and
+churn only stalls once its staircase reaches 7-14 dB. The repro's
+channel is static. So the remaining failure is fading-specific, not
+one-way-specific, and the next investigation belongs there.
+
+Also retracted: an earlier note here guessed the floor scenario might be
+unwinnable because the link "collapses to CSS" where 4096 B in 900 s is
+impossible. STATUS shows it sitting at M4 with NET=114 bps (~14 B/s),
+which clears 4096 B in under 300 s. Floor's zero is a real defect, not
+an impossible threshold.
+
+## Scheduled turn-taking MAC (2026-09-04)
+
+The "next investigation" the entries above pointed at - explicit
+transmit/listen turn-taking rather than an occupancy gate with a
+starvation escape hatch - is now BUILT and negotiated as `CAP_TURN_SCHED`
+(PROTOCOL.md "Turn-Taking"). It is the ISS/IRS model every fielded HF ARQ
+system uses (PACTOR, VARA, ARDOP, STANAG 5066): the connect initiator is
+the default ISS (data sender), the responder is the IRS (feedback +
+break-request), an epoch-tagged `TURN_GRANT` hands the role over after a
+drain, and the initiator-as-master reclaims within ~2 round trips if a
+handover frame fades. Default ON; `SKW_NO_TURNSCHED=1` selects the legacy
+occupancy-gate scheduler for A/B.
+
+### The measurement gap this exposed (the important finding)
+
+The ST2 world was FULL-DUPLEX: `moveAudio` delivered each station's TX to
+the peer AND kept its RX running regardless of keying. A real single SSB
+transceiver is DEAF while keyed - which is the entire reason turn-taking
+exists - and the world never modelled it. Consequences, both now fixed:
+
+- On the full-duplex world an occupancy-gate scheduler that keys straight
+  over the peer is never punished, so legacy CCA runs both directions at
+  once and turn-taking's one-at-a-time discipline is pure loss. Measured
+  (coupled baseline churn schedule): legacy 88 KB, turn-taking 13 KB.
+  This is not a turn-taking defect; it is the test rewarding a collision
+  the hardware cannot actually perform.
+- `SKW_HALF_DUPLEX=1` now models the deaf-RX radio (a station's receiver
+  is fed silence while its own TX ring is draining; the peer's
+  simultaneous transmission is lost, not buffered). Under it the two
+  schedulers separate exactly as the theory predicts, same seed/schedule:
+
+  | scheduler | delivered | balance | modes @ 23 dB | RETRY | died |
+  |---|---|---|---|---|---|
+  | legacy CCA | 9072 B | one-way, reverse **starved to 0** | **collapsed to M0/CSS** | **1.0** | t=441 |
+  | turn-taking | 8930 B | **balanced** 4751/4179 | held M7-M10 | <=0.3 | t=541 |
+
+  Legacy reproduces the documented "collapse to CSS" / bidirectional
+  starvation doom loop (mode crashed to M0 at 23 dB SNR under mutual
+  deafness); turn-taking stays balanced, correctly-moded, and outlives
+  it. This is the qualitative win the MAC was built for.
+
+### What turn-taking fixed outright
+
+- **blackout** (full-duplex dead-air recovery): baseline froze at 4352 B;
+  now PASSES (8930-13275 B, recovers through the dead-air windows).
+- **bidirectional fairness** (`m2_bidirectional_bulk_is_fair`): 45.2 KB /
+  39.2 KB, ratio 0.87 - the starvation case that used to zero one
+  direction.
+- One-way deterministic repro stays byte-exact; all CI suites green
+  (`m2` +3 turn-taking cases, `test_frame` TURN_GRANT round-trip/fuzz).
+
+### Component fixes landed alongside (isolated harness)
+
+- **Drain-before-grant**: the ISS empties its in-flight window before
+  handing over, so frames are never stranded at an IRS that cannot
+  retransmit them (was: churn froze at 17.7 KB with inflight=8 against a
+  demoted window of 2).
+- **Feedback-ends-listen-turn**: the post-burst listen turn now ends when
+  the peer's ACK/NAK ARRIVES, not only when it releases a frame - a NAK
+  reporting a head-of-line hole no longer costs a full RTT + ARQ timeout
+  per retransmission of the stuck frame.
+- **RTO backoff decay on progress** (halve, not reset): re-landed from
+  the retracted-evidence list; measurably IMPROVED the M3 ramp gate
+  (ratio 0.68->0.79 static) rather than regressing it.
+- **AMC timeout-charge reduction: re-tested and re-REVERTED.** A
+  progress-gated lighter demotion charge regressed the M3 ramp gate
+  (0.74 vs 0.75, +1 drop) for no floor benefit. The ROADMAP's original
+  caution holds; entry above updated.
+
+### STILL OPEN - the throughput lever, now cornered
+
+`churn` and `floor` still FAIL the soak, and the cause is now isolated to
+the pre-existing decode-ladder latency, NOT scheduling:
+
+- Both schedulers stall at the same point under sustained fading; on the
+  half-duplex world turn-taking degrades gracefully where legacy
+  collapses, but neither reaches the byte target.
+- Frame-level traces show the wall is (1) the receiver's coarse decode
+  ladder (`kRxWindowSec` 2.5/5/10/20/34/60/90 s) making each marginal
+  frame cost 30-60 s of turnaround, and (2) the proto layer coalescing
+  ~4 KB into ONE message whose head-of-line fragment, if it keeps
+  failing, delivers zero app bytes even though later fragments arrived -
+  so the progress watchdog fires on real-but-incomplete progress.
+- This is exactly the "12.4 s one-way latency... a separate, measurable
+  piece of work" flagged above. Turn-taking neither causes nor is
+  expected to fix it. Next: shrink the decode-ladder rungs (bandwidth-
+  delay product currently caps a window at ~8 frames/RTT) and/or deliver
+  proto fragments incrementally so partial progress registers.

@@ -30,9 +30,34 @@ class ArqTx {
   // moves); shrinking only limits NEW sends, in-flight frames drain.
   void setWindow(int w) { window_ = w; }
 
-  // ACK timeout = burst_airtime + expected_ack_airtime + 3 s, [4, 45].
+  // OPEN-LOOP timeout floor = burst_airtime + expected_ack_airtime + 3 s.
+  // It budgets AIRTIME only, which is not the round trip: a receiver
+  // also has to DECODE, and the decode ladder's coarse window rungs
+  // (worker kRxWindowSec) add several seconds on top of the burst. The
+  // one-way latency was MEASURED at a median 12.4 s in the ST2 world
+  // against a 6.7 s open-loop timeout at M10 - so every data frame
+  // retransmitted three times before its ACK could physically arrive,
+  // each retransmission lengthened the peer's decode queue, and a clean
+  // 30 dB one-way link delivered ZERO bytes. The airtime estimate is
+  // therefore a FLOOR, superseded by the measured round trip below.
   void setTimeout(double sec);
-  double timeoutSec() const { return timeoutSec_; }
+  // Effective ACK timeout: max(open-loop floor, smoothed RTT estimate),
+  // scaled by the timeout backoff, clamped [4, 90].
+  double timeoutSec() const;
+  // Seed the RTT estimator from an unambiguous non-data exchange (the
+  // connect handshake). Without a seed the estimator cannot bootstrap:
+  // the first data frames time out before any ACK returns, every one of
+  // them is then a retransmission, and Karn's algorithm - correctly -
+  // refuses to sample an ambiguous round trip. The handshake measures
+  // the same decode-and-reply latency with no ambiguity at all.
+  void seedRtt(double sec);
+  double srttSec() const { return srtt_; }
+  // When the peer last demonstrably received something from us (any
+  // forward progress). -1 = never. Distinguishes "the peer is not
+  // hearing us" from "an ACK went missing", which an ACK timeout alone
+  // cannot tell apart.
+  double lastProgressAt() const { return lastProgressAt_; }
+  bool haveRtt() const { return srtt_ > 0.0; }
   // Un-aired audio queued AHEAD of any frame sent now (worker TX ring +
   // staging). A frame cannot possibly be ACKed before its own queue
   // delay has passed - arming deadlines without it made every timer
@@ -51,7 +76,15 @@ class ArqTx {
   // for the reported holes (original sequence number, rv + 1).
   void onAck(const AckBody& ack, double now);
 
-  // Retransmissions drain BEFORE new data (arbiter priority).
+  // Cumulative-only feedback from the ENVELOPE's piggybacked ack_base
+  // (PROTOCOL.md: "every data-bearing frame also piggybacks ack_base").
+  // Releases everything below the reported floor and resets retry budgets
+  // on forward progress, exactly like a dedicated ACK - but reports no
+  // holes, so it never queues a retransmission and never re-arms the
+  // timer on its own. Returns true when it released something.
+  bool onPiggybackAck(uint16_t ackBase, double now);
+
+  // Retransmissions drain BEFORE new data (TX-queue priority).
   struct Retransmit {
     uint16_t seq;
     uint8_t rv;
@@ -75,6 +108,14 @@ class ArqTx {
 
   // Fires the ACK timeout: all in-flight unacked frames requeue.
   void tick(double now);
+  // Turn-taking (PROTOCOL.md "Turn-Taking"): a station that has handed
+  // the sending role away CANNOT retransmit, so firing its ACK timers
+  // only burns retry budget on frames it is forbidden to resend.
+  // Suspension freezes the timeout clock (in-flight frames are covered
+  // by the new sender's piggybacked ack_base meanwhile); resuming
+  // re-arms a fresh deadline for whatever is still outstanding.
+  void setSuspended(bool s, double now);
+  bool suspended() const { return suspended_; }
   // Frames requeued by ACK timeout since the last call (cleared). A
   // burst that is never acknowledged is the ONLY failure evidence a
   // sender gets when the peer heard nothing at all - on a half-duplex
@@ -98,17 +139,33 @@ class ArqTx {
     uint8_t rv = 0;
     int retries = 0;
     bool inRetxQueue = false;
+    // -1 = unset. A zero sentinel would be WRONG: `now` is caller
+    // supplied and legitimately starts at 0.0, which silently
+    // disabled every RTT sample taken at the start of a session.
+    double sentAt = -1.0;
     std::vector<uint8_t> payload;
   };
   Pending* find(uint16_t seq);
   void queueRetx(Pending& p);
+  // Release the front pending frame, sampling its RTT when unambiguous.
+  void releaseFront(double now);
+  void sampleRtt(double rttSec);
 
   int window_;
   int maxRetries_;
-  double timeoutSec_ = 10.0;
+  double openLoopSec_ = 10.0;
+  // Jacobson/Karels smoothed round trip. 0 = no measurement yet.
+  double srtt_ = 0.0;
+  double rttvar_ = 0.0;
+  // Multiplicative backoff on consecutive timeouts, reset by a clean
+  // RTT sample. Without it a persistently under-estimated timeout
+  // retransmits forever at the same wrong cadence.
+  double backoff_ = 1.0;
+  double lastProgressAt_ = -1.0;
   double extraSec_ = 0.0;  // TX-queue delay ahead of newly armed timers
   int timeouts_ = 0;       // ACK-timeout requeues (takeTimeouts)
   double deadline_ = 0.0;  // 0 = no timer armed
+  bool suspended_ = false;  // turn-taking: sending role handed away
   uint16_t nextSeq_ = 0;
   bool failed_ = false;
   std::deque<Pending> pending_;      // oldest first

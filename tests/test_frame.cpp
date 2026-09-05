@@ -231,6 +231,11 @@ TEST_CASE(body_round_trips) {
   {
     CHECK(KeyUpdateBody::parse(KeyUpdateBody{9}.pack())->newEpoch == 9);
   }
+  {
+    CHECK(TurnGrantBody::parse(TurnGrantBody{7}.pack())->epoch == 7);
+    CHECK(!TurnGrantBody::parse(std::vector<uint8_t>{}).has_value());
+    CHECK(!TurnGrantBody::parse(std::vector<uint8_t>{1, 2}).has_value());
+  }
 }
 
 TEST_CASE(body_malformed_rejects) {
@@ -251,10 +256,10 @@ TEST_CASE(body_malformed_rejects) {
     CHECK(!ModeChangeBody::parse(b.pack()).has_value());
   }
   {
-    CallBody b;  // reserved caps bit
+    CallBody b;  // reserved caps bit (bit 8 is kCapTurnSched now)
     b.srcCall = "W1AW";
     b.dstCall = "K6XYZ";
-    b.caps = 0x0100;
+    b.caps = 0x0200;
     CHECK(!CallBody::parse(b.pack()).has_value());
   }
   {
@@ -319,6 +324,7 @@ TEST_CASE(fuzz_no_crash_clean_reject) {
     (void)BcastDataBody::parse(buf);
     (void)VoiceOpenBody::parse(buf);
     (void)KeyUpdateBody::parse(buf);
+    (void)TurnGrantBody::parse(buf);
   }
   // Random garbage passing the CRC-32 + type + flag gates should be
   // essentially impossible in 4000 draws.

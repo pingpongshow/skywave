@@ -56,6 +56,7 @@ enum class LinkType : uint8_t {
   VoicePttEnd = 27,
   VoiceData = 28,
   KeyUpdate = 29,
+  TurnGrant = 30,
 };
 bool isKnownLinkType(uint8_t v);
 
@@ -116,7 +117,7 @@ enum class StartNakReason : uint8_t {
   ResumeInvalid = 6,
 };
 
-// Capability bitmap (u16). Bits 8-15 reserved, must be 0.
+// Capability bitmap (u16). Bits 9-15 reserved, must be 0.
 inline constexpr uint16_t kCapZstd        = 1u << 0;
 inline constexpr uint16_t kCapEncryption  = 1u << 1;
 inline constexpr uint16_t kCapResume      = 1u << 2;
@@ -125,7 +126,8 @@ inline constexpr uint16_t kCapMasking     = 1u << 4;
 inline constexpr uint16_t kCapBurstMac    = 1u << 5;
 inline constexpr uint16_t kCapVoice       = 1u << 6;
 inline constexpr uint16_t kCapCssTier     = 1u << 7;
-inline constexpr uint16_t kCapReservedMask = 0xFF00;
+inline constexpr uint16_t kCapTurnSched   = 1u << 8;
+inline constexpr uint16_t kCapReservedMask = 0xFE00;
 
 struct CallBody {
   std::string srcCall;  // canonical
@@ -186,6 +188,18 @@ struct DataBody {
 };
 
 // Compact ARQ feedback - exactly 7 bytes. NAK == gapBitmap != 0.
+// ACK `rx_flags` bit assignment. The byte shipped as a constant 0 in
+// every ACK; it is where the RESPONDER asks the initiator for a mode,
+// which is how responder-side pinning works without a second mode
+// controller on the air (two controllers collided in the harness -
+// PROTOCOL.md "the session initiator owns mode control").
+inline constexpr uint8_t kRxFlagModeReq = 0x80;  // low nibble is the mode
+inline constexpr uint8_t kRxFlagModeMask = 0x0F;
+inline constexpr uint8_t kRxModeAuto = 0x0F;     // sentinel: unpin
+// Turn-taking (PROTOCOL.md "Turn-Taking"): the IRS sets this in its ACKs
+// while it has data waiting - the request to become the data sender.
+inline constexpr uint8_t kRxFlagBreakReq = 0x40;
+
 struct AckBody {
   int8_t snrHalfDb = 0;
   uint8_t rxFlags = 0;
@@ -326,6 +340,15 @@ struct KeyUpdateBody {
   uint8_t newEpoch = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<KeyUpdateBody> parse(std::span<const uint8_t> b);
+};
+
+// TURN_GRANT (PROTOCOL.md "Turn-Taking"): the current data sender hands
+// the sending role to the peer. The epoch increments per handover so a
+// retried grant is idempotent at the receiver.
+struct TurnGrantBody {
+  uint8_t epoch = 0;
+  std::vector<uint8_t> pack() const;
+  static std::optional<TurnGrantBody> parse(std::span<const uint8_t> b);
 };
 
 }  // namespace skw

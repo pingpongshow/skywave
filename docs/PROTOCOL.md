@@ -71,11 +71,12 @@ crypto keeps the spaces apart via a stream id in the nonce
 | `DISC` / `DISC_ACK` | orderly teardown |
 | `BEACON` | broadcast telemetry announcement |
 | `CQ` | general call |
-| `BCAST_DATA` | connectionless broadcast payload |
+| `BCAST_DATA` | connectionless broadcast payload (envelope `session_id` carries the **sender's** 16-bit callsign-hash tag, so a monitor can demultiplex overlapping broadcasts) |
 | `VOICE_OPEN` / `VOICE_OPEN_ACK` / `VOICE_CLOSE` | voice session control |
 | `VOICE_PTT_REQ` / `VOICE_PTT_GRANT` / `VOICE_PTT_END` | talkspurt control |
 | `VOICE_DATA` | Codec2 voice payload |
 | `KEY_UPDATE` | in-session crypto epoch rotation ([SECURITY.md](SECURITY.md)) |
+| `TURN_GRANT` | turn-taking: hand the data-sender (ISS) role to the peer (body: u8 grant epoch) |
 
 ## Handshake
 
@@ -141,7 +142,8 @@ attempts go unanswered automatically retries the remaining attempts at
 | 5 | burst MAC aggregation |
 | 6 | voice |
 | 7 | `CAP_CSS_TIER` (deep tier: M0–M3 modes + handshake-on-CSS) |
-| 8–15 | reserved, must be 0 |
+| 8 | `CAP_TURN_SCHED` (scheduled ISS/IRS turn-taking, below) |
+| 9–15 | reserved, must be 0 |
 
 ### Timers and Retries
 
@@ -207,8 +209,17 @@ Selective-repeat with cumulative base + gap bitmap:
 - `ACK` body (7 bytes): SNR report (s8 ×2), rx-quality flags (u8),
   `ack_base` (u16), `gap_bitmap` (u16, relative to base+1), CFO report
   (s8, 0.5 Hz units — drives TX frequency alignment, below)
+- `rx_flags` bits: `0x80` + low nibble = responder mode request
+  (responder-side pinning), `0x40` = turn-taking break request
+  ("Turn-Taking", below)
 - `NAK` is an `ACK` with at least one gap bit set — one format, one parser
-- every data-bearing frame also piggybacks `ack_base` in the envelope
+- every data-bearing frame also piggybacks `ack_base` in the envelope, and
+  receivers **consume** it: a session frame from the current session
+  releases everything below the reported floor and resets retry budgets,
+  exactly like a dedicated `ACK`. It reports no holes, so it never queues a
+  retransmission and never re-arms the retransmission timer on its own.
+  Pre-session frames (`CALL`/`START`…) and connectionless broadcasts carry
+  `ack_base = 0` and are excluded
 - retransmissions carry the original sequence number and an incremented
   HARQ `rv` in the `DATA` body header
 
@@ -265,6 +276,58 @@ interactive/small-transfer, the ARQ timeout budgets one container of
 airtime, and a lost tail-flush ACK would stall the sender for the
 batch-scaled timeout (observed as a 50 s data freeze in the real-device
 endurance soak).
+
+### Turn-Taking
+
+Negotiated via `CAP_TURN_SCHED` (both peers must advertise it; a session
+without it falls back to the legacy occupancy-gate scheduler). This is the
+arbitration model every proven HF ARQ system uses — PACTOR/VARA/ARDOP's
+ISS/IRS split — because occupancy sensing cannot arbitrate a half-duplex
+link: each end is deaf while keyed and deaf again inside a fade, so a
+busy-gate wedges in exactly the conditions that need arbitration most.
+
+**Roles.** At session establishment the connect **initiator** holds the
+**ISS** (information-sending station) role; the responder is the **IRS**.
+The same rule applies to a resumed connect, which naturally gives the
+first turn to whichever end had reason to re-establish the link.
+
+- only the ISS sends `DATA` frames (new or retransmitted)
+- the IRS sends feedback (`ACK`/`NAK`) and any control traffic; its ARQ
+  retransmission timers are **suspended** (it is forbidden to resend, so
+  a running timer would only burn retry budget); piggybacked `ack_base`
+  on the new sender's frames keeps covering its in-flight frames
+- control frames (`MODE_CHANGE`, `PROBE`, `MASK_UPDATE`, keepalive,
+  voice, teardown) are role-independent; mode-control ownership stays
+  with the session initiator regardless of the current turn role
+
+**Break request.** An IRS with data waiting sets `rx_flags` bit `0x40`
+(**break request**) in every ACK it sends, and arms a standalone ACK at a
+round-trip-scaled cadence when the ISS has gone idle and no ACK is
+otherwise due. The bit mirrors current state: a later ACK without it
+withdraws the request.
+
+**Handover.** The ISS sends `TURN_GRANT` (u8 epoch, incremented per
+handover) when the peer has requested the turn and either its own
+backlog is empty or it has held the role a full quantum
+(`max(45 s, 3 × ARQ timeout)`) — continuous two-way load alternates
+rather than starving one direction. On sending the grant it becomes the
+IRS immediately; the peer's first `DATA` frame confirms the handover. An
+unanswered grant is retried at the ARQ-timeout cadence up to 3 times,
+after which the granting station **reclaims** the ISS role — a link must
+never be left with two listeners because one short control frame faded.
+The epoch makes retried grants idempotent at the receiver.
+
+**Divergence healing.** If a lost grant series ever leaves both ends
+believing they hold the ISS role, receiving a `DATA` frame while holding
+ISS resolves it deterministically: the **responder yields**, the
+initiator holds. Crossing grants (both ends yielding at once) cancel the
+receiver's own outstanding grant when a grant is accepted.
+
+**What stays physical.** The scheduler replaces occupancy sensing for
+DATA arbitration only. Unchanged: at most one burst in the TX path at a
+time, the post-burst listen window sized to the measured round trip
+(ended early by feedback), and the short busy-hold that keeps control
+frames from keying over a burst still airing.
 
 ### TX Frequency Alignment
 
@@ -379,5 +442,9 @@ metadata only.
 - `version` (PHY header) gates parsing; mismatched majors `START_NAK`
 - unknown frame types are ignored (logged), never fatal
 - unknown capability bits must be advertised as 0 and ignored on receive
+- **known incompatibility**: builds up to v1.0.0 enforced "reserved caps
+  must be 0" by *rejecting* the frame, so they drop a `CALL` advertising
+  `CAP_TURN_SCHED` (bit 8) instead of negotiating it away. Calling such a
+  build requires suppressing the bit (`SKW_NO_TURNSCHED=1`)
 - reserved `M0–M3` mode indices in any control field are treated as invalid
   in v1 and clamp to `M4`

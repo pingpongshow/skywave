@@ -99,6 +99,19 @@ LinkEngine::LinkEngine(EngineConfig cfg)
   // don't lock into synchronized proceed times.
   ccaRng_ = 0x9e3779b97f4a7c15ull;
   for (char c : cfg_.policy.ownCall) ccaRng_ = ccaRng_ * 131 + uint64_t(c);
+  configuredFamily_ = cfg_.policy.family;
+  rxFamily_ = cfg_.policy.family;
+}
+
+// Run this session on `f`. Everything in the engine reads
+// cfg_.policy.family, so a single assignment moves TX framing, RX
+// demodulation, masks, voice-codec selection and the channel-memory key
+// together - which is why it must only happen BEFORE a session's objects
+// are built, and be undone when the session ends.
+void LinkEngine::adoptSessionFamily(Family f, double now) {
+  (void)now;
+  if (f == cfg_.policy.family) return;
+  cfg_.policy.family = f;
 }
 
 // Pre-TX CCA gate: true while DATA-class emission must hold. The busy
@@ -118,7 +131,59 @@ bool LinkEngine::ccaDataGated(double now) {
   // hid the channel from the busy detector.
   if (txQueueSec_ > 0.35) {
     txWasDraining_ = true;
+    ccaReason_ = 1;
     return true;
+  }
+  if (turnSchedActive()) {
+    // Scheduled turn-taking: the role, not the busy detector, arbitrates
+    // DATA. Occupancy sensing is deaf inside fades and while keyed - the
+    // measured failure mode of every fading soak - so it plays no part
+    // here. What remains physical: one burst in the TX path (above) and
+    // the post-burst listen window sized to the measured round trip.
+    if (txWasDraining_) {
+      txWasDraining_ = false;
+      const bool batchDue =
+          (activeBand() == Band::VhfFm && mode_ >= 13)
+              ? int(arqTx_.inFlight()) >= 12
+              : !arqTx_.canSend();
+      // Only a burst that CARRIED DATA owes a listen turn: it is the
+      // frames just put in flight that the peer must answer. A control
+      // burst (MODE_CHANGE retry, MASK_UPDATE, standalone ACK) owes
+      // nothing, yet used to re-arm a full-srtt data yield every time it
+      // aired - and with the window shrunk under a stale in-flight set
+      // (`!canSend()` permanently true) the initiator's MODE_CHANGE
+      // retries kept the data path in a listen turn almost continuously
+      // (measured: zero data retransmitted across a 100 s stall).
+      if (batchDue && arqTx_.inFlight() > 0 && lastBurstHadData_) {
+        yieldInFlight_ = arqTx_.inFlight();
+        listenTurnStart_ = now;
+        ccaProceedAt_ =
+            now + (arqTx_.haveRtt() ? arqTx_.srttSec() : ackAirSec_ + 1.0);
+      }
+    }
+    if (turnRole_ != TurnRole::Iss) {
+      ccaReason_ = 5;
+      return true;
+    }
+    if (ccaProceedAt_ >= 0.0) {
+      // Feedback ends the listen turn early (see the legacy path note).
+      if ((yieldInFlight_ > 0 && arqTx_.inFlight() < yieldInFlight_) ||
+          listenFeedbackArrived()) {
+        yieldInFlight_ = 0;
+        listenTurnStart_ = -1.0;
+        ccaProceedAt_ = -1.0;
+        ccaReason_ = 0;
+        return false;
+      }
+      if (now < ccaProceedAt_) {
+        ccaReason_ = 4;
+        return true;
+      }
+      yieldInFlight_ = 0;
+      ccaProceedAt_ = -1.0;
+    }
+    ccaReason_ = 0;
+    return false;
   }
   if (txWasDraining_) {
     txWasDraining_ = false;
@@ -131,25 +196,43 @@ bool LinkEngine::ccaDataGated(double now) {
     //     feedback cadence: per-burst on HF, per-12-frame batch on the
     //     VHF-FM deep pipe (mid-batch, no ACK is due - containers stay
     //     back-to-back and batch throughput is preserved).
-    const int ackAfter =
+    //     The trigger is a FULL WINDOW, not "one container sent". The
+    //     window exists precisely to keep frames in flight across the
+    //     round trip; yielding after every container threw that away
+    //     and capped a turn at one container's worth of data while the
+    //     round trip stayed the same.
+    const bool batchDue =
         (activeBand() == Band::VhfFm && mode_ >= 13)
-            ? 12
-            : (cfg_.burstAggregation ? framesPerBurst(mode_) : 1);
-    if (int(arqTx_.inFlight()) >= ackAfter) {
-      gap = ackAirSec_ + 1.0;
+            ? int(arqTx_.inFlight()) >= 12
+            : !arqTx_.canSend();
+    if (batchDue && arqTx_.inFlight() > 0) {
+      // Size the quiet turn to the peer's ACTUAL decode-and-reply
+      // latency. The old `ackAirSec_ + 1.0` budgeted feedback AIRTIME
+      // plus a fixed pad, but the measured one-way latency in the ST2
+      // world was a median 12.4 s - dominated by the receiver's decode
+      // ladder, not by airtime - so the sender keyed again long before
+      // the peer could answer, and the ACK it was waiting for could
+      // never be sent. The RTT estimate covers the whole turnaround;
+      // the yield ends early the moment feedback actually arrives.
+      gap = arqTx_.haveRtt() ? arqTx_.srttSec() : ackAirSec_ + 1.0;
+      yieldInFlight_ = arqTx_.inFlight();
+      listenTurnStart_ = now;
     }
     // (b) Bidirectional fairness: if the peer is actively sending data
     //     too, add a jittered yield so it can key up - without this the
     //     side with more traffic captures the channel and the reverse
     //     direction starves (observed: 0 B B->A over 900 s).
-    if (now - lastDataRxAt_ < 15.0 && lastDataRxAt_ > 0.0) {
+    if (now - lastDataRxAt_ < dataRecencySec_ && lastDataRxAt_ > 0.0) {
       ccaRng_ ^= ccaRng_ >> 12;
       ccaRng_ ^= ccaRng_ << 25;
       ccaRng_ ^= ccaRng_ >> 27;
+      // A courtesy gap only has to be long enough for the peer's busy
+      // detector to see the channel clear - fixed latency, not airtime.
       gap = std::max(gap, 0.25 + 0.5 * double(ccaRng_ % 1000) / 1000.0);
     }
     if (gap > 0.0) {
       ccaProceedAt_ = now + gap;
+      ccaReason_ = 2;
       return true;
     }
   }
@@ -167,8 +250,10 @@ bool LinkEngine::ccaDataGated(double now) {
     if (fsm_.state() != FsmState::Connected &&
         now - ccaWaitStart_ >= 5.0) {
       ccaWaitStart_ = -1.0;
+      ccaReason_ = 0;
       return false;
     }
+    ccaReason_ = 3;
     return true;
   }
   if (ccaWaitStart_ >= 0.0 && ccaProceedAt_ < 0.0) {
@@ -182,11 +267,128 @@ bool LinkEngine::ccaDataGated(double now) {
     ccaProceedAt_ = now + 0.15 + 0.55 * double(ccaRng_ % 1000) / 1000.0;
   }
   if (ccaProceedAt_ >= 0.0) {
-    if (now < ccaProceedAt_) return true;
+    // FEEDBACK ENDS THE TURN. A yield sized to the round trip would
+    // otherwise cost the full RTT even when the ACK came back promptly,
+    // halving throughput on a healthy link. A drop in the in-flight
+    // count means the peer reported and released frames; feedback that
+    // arrived WITHOUT releasing anything (a NAK reporting a head-of-line
+    // hole) equally means the channel is ours again and a retransmit is
+    // due - either way the turn is over.
+    if ((yieldInFlight_ > 0 && arqTx_.inFlight() < yieldInFlight_) ||
+        listenFeedbackArrived()) {
+      yieldInFlight_ = 0;
+      listenTurnStart_ = -1.0;
+      ccaProceedAt_ = -1.0;
+      ccaWaitStart_ = -1.0;
+      ccaReason_ = 0;
+      return false;
+    }
+    if (now < ccaProceedAt_) {
+      ccaReason_ = 4;
+      return true;
+    }
+    yieldInFlight_ = 0;
     ccaWaitStart_ = -1.0;
     ccaProceedAt_ = -1.0;
   }
+  ccaReason_ = 0;
   return false;
+}
+
+// ---------------------------------------------------------- turn-taking
+// Scheduled ISS/IRS turn-taking (PROTOCOL.md "Turn-Taking"). Occupancy
+// sensing cannot arbitrate a half-duplex link: each end is deaf while
+// keyed and deaf again inside a fade, so a busy-gate wedges in exactly
+// the conditions that need arbitration most (measured: every fading
+// soak stalled with the gate permanently engaged and only the
+// starvation backstop trickling data). Every proven HF ARQ system -
+// PACTOR, VARA, ARDOP, STANAG 5066 - schedules the channel instead:
+// one station holds the sending role, the other answers in its listen
+// windows, and an explicit handover swaps the roles.
+
+bool LinkEngine::turnDataWaiting() const {
+  if (!protoTx_.idle() || fileTx_.active()) return true;
+  if (arqTx_.inFlight() > 0) return true;  // unacked frames may need resend
+  for (const auto& q : outQueue_) {
+    if (q.env.type == LinkType::Data) return true;
+  }
+  return false;
+}
+
+uint8_t LinkEngine::ackRxFlags() const {
+  uint8_t f = 0;
+  if (peerModeRequest_ >= 0) {
+    f = uint8_t(kRxFlagModeReq | (uint8_t(peerModeRequest_) & kRxFlagModeMask));
+  }
+  if (turnSchedActive() && turnRole_ == TurnRole::Irs && turnDataWaiting()) {
+    f |= kRxFlagBreakReq;
+  }
+  return f;
+}
+
+void LinkEngine::setTurnRole(TurnRole r, double now) {
+  if (turnRole_ == r) return;
+  static const bool dbg = getenv("SKW_TURN_DEBUG") != nullptr;
+  if (dbg) {
+    fprintf(stderr, "%s TURN t=%.1f %s->%s dataWait=%d grantAwait=%d "
+            "breakReq=%d lastRx=%.1f roleSince=%.1f\n",
+            cfg_.policy.ownCall.c_str(), now,
+            turnRole_ == TurnRole::Iss ? "ISS" : "IRS",
+            r == TurnRole::Iss ? "ISS" : "IRS", turnDataWaiting() ? 1 : 0,
+            grantAwaitingData_ ? 1 : 0, breakReqPending_ ? 1 : 0,
+            lastDataRxAt_, roleSince_);
+  }
+  turnRole_ = r;
+  roleSince_ = now;
+  turnDrainSince_ = -1.0;   // a drain belongs to the turn that started it
+  dataQueuedSince_ = -1.0;  // the starvation clock re-arms fresh per role
+  // A station without the sending role cannot retransmit, so its ACK
+  // timers must not run (they would only burn retry budget and charge
+  // the AMC with synthetic failures). Piggybacked ack_base from the new
+  // sender's DATA keeps covering the in-flight frames meanwhile.
+  arqTx_.setSuspended(turnSchedActive() && r == TurnRole::Irs, now);
+}
+
+void LinkEngine::queueTurnGrant() {
+  // Grant transport mirrors ACK: at least as robust as forward traffic.
+  const bool css = kModes[size_t(mode_)].waveform == Waveform::Css;
+  const ChirpSig sig =
+      css ? ChirpSig::Css : (mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast);
+  const int m = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
+  queueControl(LinkType::TurnGrant, TurnGrantBody{turnEpoch_}.pack(), sig, m);
+}
+
+// Grant/reclaim cadence: paced to the MEASURED round trip, not the ARQ
+// retransmission timeout. The ARQ timeout carries the heavy-tail
+// variance margin (srtt + 4*rttvar, up to 90 s) that keeps the sender
+// from retransmitting into the decode tail - correct for data, but far
+// too slow for a control handshake. A grant lost at a 59 s ARQ timeout
+// left the link with two listeners for minutes (measured: churn stalled
+// at t=621 with both ends reporting TURN=ISS after a grant series
+// crossed under a mid-fade demotion).
+double LinkEngine::turnHandoffSec() const {
+  return std::max(6.0, arqTx_.haveRtt() ? 1.5 * arqTx_.srttSec() : 10.0);
+}
+
+void LinkEngine::grantTurn(double now) {
+  ++turnEpoch_;
+  queueTurnGrant();
+  grantAwaitingData_ = true;
+  grantTries_ = 1;
+  grantRetryAt_ = now + turnHandoffSec();
+  breakReqPending_ = false;
+  setTurnRole(TurnRole::Irs, now);
+}
+
+// One handshake leg completed: record the round trip if it is
+// plausible. Legs that needed an FSM retry are longer than the true
+// turnaround, so the SMALLEST observed leg is the honest estimate.
+void LinkEngine::noteHandshakeRtt(double now) {
+  if (hsTxAt_ < 0.0) return;
+  const double rtt = now - hsTxAt_;
+  hsTxAt_ = -1.0;
+  if (rtt <= 0.0 || rtt > 300.0) return;
+  hsRttSec_ = hsRttSec_ > 0.0 ? std::min(hsRttSec_, rtt) : rtt;
 }
 
 bool LinkEngine::idleClean() const {
@@ -546,9 +748,21 @@ bool LinkEngine::sendBroadcast(std::span<const uint8_t> bytes) {
     const size_t n = std::min(kBcastMaxPayload, bytes.size() - off);
     b.payload.assign(bytes.begin() + long(off),
                      bytes.begin() + long(off + n));
-    queueControl(LinkType::BcastData, b.pack(), ChirpSig::Calling, 4);
+    // Stamp the SENDER, not a session: two stations broadcasting in the
+    // same period used to collapse into one reassembly chain and corrupt
+    // each other. The field is unused for connectionless frames, so a
+    // receiver that ignores it behaves exactly as before.
+    queueControl(LinkType::BcastData, b.pack(), ChirpSig::Calling, 4,
+                 int32_t(bcastSenderTag()));
   }
   return true;
+}
+
+// 16-bit sender tag for connectionless broadcasts: the low half of the
+// callsign hash. Collisions merely merge two chains, which is the old
+// behaviour, so a short tag is safe here.
+uint16_t LinkEngine::bcastSenderTag() const {
+  return uint16_t(callsignHash24(cfg_.policy.ownCall) & 0xFFFF);
 }
 
 // Feed the proto pipeline from an active file transfer, keeping only a
@@ -594,10 +808,13 @@ void LinkEngine::drainFileRx() {
 }
 
 void LinkEngine::queueControl(LinkType t, std::vector<uint8_t> body,
-                              ChirpSig sig, int mode) {
+                              ChirpSig sig, int mode,
+                              int32_t sessionIdOverride) {
   OutFrame f;
   f.env.type = t;
-  f.env.sessionId = sessionId_;
+  f.env.sessionId = sessionIdOverride >= 0
+                        ? uint16_t(sessionIdOverride)
+                        : sessionId_;
   f.env.sequence = 0;
   f.env.ackBase = arqRx_.ackBase();
   f.body = std::move(body);
@@ -609,16 +826,28 @@ void LinkEngine::queueControl(LinkType t, std::vector<uint8_t> body,
 void LinkEngine::drainFsmActions(double now) {
   while (auto a = fsm_.nextAction()) {
     switch (*a) {
-      case FsmAction::SendCall:
+      case FsmAction::SendCall: {
         // Alternate CALL transports when the CSS tier is enabled: OFDM
         // calling first, CSS M0 on the next attempt, and so on - a deep
         // link connects on the CSS attempts, a normal one on the first.
         hsOnCss_ = callOnCssForAttempt(cfg_.policy, callTxCount_);
+        // Step DOWN the bandwidth ladder for the later attempts, from the
+        // CONFIGURED family (not whatever the previous attempt adopted).
+        // The responder scans one family below its own, so a narrower call
+        // is still heard - the two halves only work together, which is why
+        // this schedule sat unused since step 2.3.
+        HandshakePolicy ladder = cfg_.policy;
+        ladder.family = configuredFamily_;
+        adoptSessionFamily(
+            callFamilyForAttempt(ladder, callTxCount_,
+                                 fsmConfigFor(cfg_.policy).callAttempts),
+            now);
         ++callTxCount_;
         queueControl(LinkType::Call,
                      makeCall(cfg_.policy, remoteCall_).pack(), hsSig(),
                      hsMode());
         break;
+      }
       case FsmAction::SendCallAck: {
         auto ack = respondToCall(cfg_.policy, lastCall_, lastRxQuality_);
         if (ack) {
@@ -645,6 +874,7 @@ void LinkEngine::drainFsmActions(double now) {
           break;
         }
         sentResumeReq_ = false;
+        applyChanMemSeed(remoteCall_, now);
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
@@ -798,6 +1028,13 @@ void LinkEngine::drainFsmActions(double now) {
                                   : cfg_.arqMaxRetries;
           arqTx_ = ArqTx(w, retries);
           arqRx_ = ArqRx(w);
+          // Carry the handshake's measured round trip into the fresh
+          // ARQ state. Without it the estimator cannot bootstrap: the
+          // first data frames time out before any ACK can return, every
+          // one becomes a retransmission, and Karn's algorithm refuses
+          // to sample an ambiguous round trip - so the timeout stays at
+          // the airtime-only floor forever.
+          arqTx_.seedRtt(hsRttSec_);
           updateArqTimeout();
         }
         break;
@@ -853,19 +1090,25 @@ void LinkEngine::drainFsmActions(double now) {
 void LinkEngine::pumpData(double now) {
   {
     static const bool pd = getenv("SKW_PUMP_DEBUG") != nullptr;
-    static double lastLog = -1e9;
-    if (pd && now - lastLog > 20.0) {
-      lastLog = now;
+    if (pd && now - pumpDbgLast_ > 5.0) {
+      pumpDbgLast_ = now;
       fprintf(stderr,
-              "%s pumpENTRY t=%.0f state=%d gated=%d failed=%d "
-              "inflight=%zu backlog=%zu q=%zu\n",
+              "%s pumpENTRY t=%.0f state=%d gated=%d busy=%d txq=%.2f "
+              "failed=%d inflight=%zu/%d backlog=%zu q=%zu ackp=%d "
+              "toSec=%.1f why=%d rtt=%.1f\n",
               cfg_.policy.ownCall.c_str(), now, int(fsm_.state()),
-              ccaGatedNow_ ? 1 : 0, arqTx_.failed() ? 1 : 0,
-              arqTx_.inFlight(), protoTx_.backlogBytes(),
-              outQueue_.size());
+              ccaGatedNow_ ? 1 : 0, chanBusy_ ? 1 : 0, txQueueSec_,
+              arqTx_.failed() ? 1 : 0, arqTx_.inFlight(),
+              macWindow(mode_), protoTx_.backlogBytes(), outQueue_.size(),
+              ackPending_ ? 1 : 0, arqTx_.timeoutSec(), ccaReason_,
+              arqTx_.srttSec());
     }
   }
   if (fsm_.state() != FsmState::Connected) return;
+  // Turn-taking: only the ISS pulls DATA (new or retransmit). The IRS's
+  // data waits for TURN_GRANT; its escape hatch is the break request
+  // riding its ACKs, not the starvation backstop.
+  if (turnSchedActive() && turnRole_ != TurnRole::Iss) return;
   // While the CCA gate holds, leave retransmits and new segments in the
   // ARQ/proto layers: frames pulled now would burn their ACK timers
   // sitting in the TX queue behind a busy channel. The anti-starvation
@@ -875,7 +1118,7 @@ void LinkEngine::pumpData(double now) {
   // pulled its own queued message).
   const bool forcePull =
       dataQueuedSince_ >= 0.0 &&
-      now - dataQueuedSince_ > 3.0 * arqTx_.timeoutSec();
+      now - dataQueuedSince_ > dataStarveTimeouts() * arqTx_.timeoutSec();
   if (ccaGatedNow_) {
     if (!forcePull) return;
     // Forced pull fetches exactly ONE airable burst: the emission-side
@@ -889,7 +1132,7 @@ void LinkEngine::pumpData(double now) {
     }
   }
   static const bool arqDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
-  // Retransmits first (arbiter priority), then new segments.
+  // Retransmits first (TX-queue priority), then new segments.
   if (auto r = arqTx_.nextRetransmit(now)) {
     if (arqDbg) {
       fprintf(stderr, "%s pumpData retx seq=%u rv=%d\n",
@@ -938,6 +1181,10 @@ void LinkEngine::pumpData(double now) {
     return;
   }
   static const bool pumpDbg = getenv("SKW_PUMP_DEBUG") != nullptr;
+  // Handover drain (turn-taking): retransmits above still flow, but no
+  // NEW segment is pulled - the window empties so the turn changes hands
+  // with nothing outstanding.
+  if (turnSchedActive() && turnDrainSince_ >= 0.0) return;
   for (int k = 0; k < framesPerBurst(mode_); ++k) {
     if (!arqTx_.canSend()) {
       if (pumpDbg) {
@@ -1040,10 +1287,21 @@ void LinkEngine::updateArqTimeout() {
   // CSS frames carry 2 codewords (~66 B): the chirp preamble + sync +
   // duplicated header dominate a 1-codeword frame's airtime, and the
   // deep tier was delivering ~1 B/s of goodput on 25 B frames.
+  // At the deep tier the chirp preamble + sync + duplicated header cost
+  // tens of seconds REGARDLESS of payload, so goodput is decided almost
+  // entirely by how many bytes ride behind one preamble. 2 codewords
+  // measured 0.97 B/s at M1 - 7% of that mode's net rate.
+  //
+  // The reason it is not simply larger is fade exposure: a 4x longer
+  // frame is 4x more likely to meet a fade it cannot survive, and a
+  // deep-tier retransmission is enormously expensive. That trade depends
+  // on the CHANNEL, which is exactly what the classifier measures - so
+  // ask it instead of guessing a constant that must be wrong on one side
+  // or the other.
   const int cwTarget =
       (mode_ >= 13 && activeBand() == Band::VhfFm)
           ? 6 * fpb
-          : (mode_ <= 3 ? 2 : (mode_ <= 7 ? 1 : 2)) * fpb;
+          : (mode_ <= 3 ? cssCwTarget_ : (mode_ <= 7 ? 1 : 2)) * fpb;
   dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
   // DEEP-TIER stream messages span at most ~8 frames (delivery stays
   // incremental when frames carry tens of bytes - see setSealCap).
@@ -1072,12 +1330,54 @@ void LinkEngine::updateArqTimeout() {
   const double dataAir = frameAirtimeSec(tp);
   ackAirSec_ = frameAirtimeSec(ta);
   arqTx_.setTimeout(batch * dataAir + ackAirSec_ + 3.0);
+
+  // --- ONE airtime scale for every half-duplex handoff constant -------
+  //
+  // The MAC's wall-clock constants (post-TX listen window, fairness
+  // yield, post-clear backoffs, control busy-hold cap) were all tuned
+  // against OFDM bursts of a couple of seconds. A deep-tier CSS frame
+  // runs 35-55 s, so at M0-M3 every one of them is effectively zero:
+  // a 30 s control hold EXPIRES INSIDE the peer's single burst and then
+  // keys straight over it, the 0.25-0.75 s fairness yield is noise, and
+  // the "peer sent data recently" window is shorter than one frame so
+  // fairness never engages at all. Measured consequence: 0.83 B/s at M1
+  // against 32 B/s theoretical net, the channel consumed by control
+  // exchanges keying each side deaf across the other's replies.
+  //
+  // The reference is the SAME FAMILY's slowest OFDM mode (M4), computed
+  // here rather than hard-coded, because families differ by an order of
+  // magnitude in airtime. Every OFDM mode is at or faster than that
+  // reference, so it clamps to 1.0 and HF behaviour is bit-for-bit
+  // unchanged; only the CSS tier scales.
+  TxFrameParams ref = tp;
+  ref.mode = 4;
+  ref.sig = sigForMode(4);
+  const double refAir = frameAirtimeSec(ref);
+  airScale_ = refAir > 0.0
+                  ? std::clamp(dataAir / refAir, 1.0, kAirtimeScaleMax)
+                  : 1.0;
+  // Fairness must observe the peer over a window that can actually
+  // CONTAIN its traffic: at deep tier one frame outlives the old fixed
+  // 15 s window, so the peer always looked idle.
+  dataRecencySec_ = std::max(15.0, 3.0 * dataAir);
   // The flush must NOT fire between back-to-back containers of a
   // healthy stream - only when the sender actually went quiet.
   ackFlushSec_ = std::max(0.4, 1.6 * dataAir);
 }
 
 void LinkEngine::applyMode(int mode, CpMode cp, double now) {
+  // Entering the deep tier restarts frame-length adaptation at the
+  // fade-safe minimum. Without this a session that had grown to 16
+  // codewords on a good channel, climbed out to OFDM, and later demoted
+  // back would resume at 16 against a channel that is now, by
+  // definition, worse - a large frame is exactly the wrong opening bid
+  // there.
+  const bool wasCss = mode_ <= 3;
+  const bool nowCss = mode <= 3;
+  if (nowCss && !wasCss) {
+    cssCwTarget_ = kCssCwMin;
+    cssCleanRun_ = 0;
+  }
   mode_ = mode;
   cpMode_ = cp;
   // Deep-tier sessions survive routine multi-minute decode droughts
@@ -1088,6 +1388,12 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
                                                       : 120.0);
   updateArqTimeout();
   if (amc_) amc_->onModeApplied(uint8_t(mode), now);
+  // A responder's pin request is satisfied once the mode it asked for is
+  // committed; leaving it set would re-ask on every ACK forever.
+  if (!isInitiator_ && peerModeRequest_ >= 0 &&
+      peerModeRequest_ != int(kRxModeAuto) && peerModeRequest_ == mode) {
+    peerModeRequest_ = -1;
+  }
 }
 
 void LinkEngine::onCfoReport(double reportedHz) {
@@ -1119,24 +1425,117 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
 }
 
 bool LinkEngine::pinMode(int mode, double now) {
-  if (fsm_.state() != FsmState::Connected || !amc_ || !isInitiator_) {
-    return false;
-  }
+  if (fsm_.state() != FsmState::Connected || !amc_) return false;
   const int lowest = (sessionCaps_ & kCapCssTier) ? 0 : kFirstMode;
   if (mode < lowest || mode >= kNumModes) return false;
+
+  if (!isInitiator_) {
+    // Ask, do not act: a responder that drove MODE_CHANGE itself would
+    // be a second controller on the air. The request rides the next
+    // ACK; amc_->pinned() turns true when the initiator commits the
+    // MODE_CHANGE, so the operator sees the real state, not the wish.
+    peerModeRequest_ = mode;
+    // Feedback carries the request, so make sure some feedback is due -
+    // on an otherwise idle link nothing would ever ask.
+    ackPending_ = true;
+    return true;
+  }
   amc_->pin(uint8_t(mode), now);
   requestModeChange(mode, cpMode_, now);
   return true;
 }
 
 void LinkEngine::unpinMode() {
+  if (!isInitiator_ && fsm_.state() == FsmState::Connected) {
+    peerModeRequest_ = int(kRxModeAuto);   // ask the initiator to free it
+    ackPending_ = true;
+    return;
+  }
   if (amc_) amc_->unpin();
 }
 
 bool LinkEngine::modePinned() const { return amc_ && amc_->pinned(); }
 
+// --- channel memory (3.5) ----------------------------------------------------
+
+std::optional<ChanMemKey> LinkEngine::chanMemKey(
+    const std::string& peer) const {
+  if (!cfg_.chanMem || peer.empty() || cfg_.policy.ownCall.empty()) {
+    return std::nullopt;
+  }
+  ChanMemKey k;
+  k.localHash = callsignHash24(cfg_.policy.ownCall);
+  k.remoteHash = callsignHash24(peer);
+  k.freqBucketKhz = cfg_.freqBucketKhz;
+  k.family = uint8_t(cfg_.policy.family);
+  return k;
+}
+
+// Install the stored recommendation into the handshake policy. Called
+// immediately before a handshake decision so the store's verdict clamps
+// the quality-derived proposal on whichever side is deciding.
+void LinkEngine::applyChanMemSeed(const std::string& peer, double now) {
+  cfg_.policy.chanMemMode.reset();
+  auto key = chanMemKey(peer);
+  if (!key) return;
+  cfg_.policy.chanMemMode =
+      cfg_.chanMem->recommend(*key, now, cfg_.policy.maxMode);
+}
+
+// Fold what this session actually achieved back into the store. Recorded
+// on teardown rather than continuously: mid-session samples during a
+// handshake or a collapse would bias the EMA toward transients.
+void LinkEngine::recordChanMem(double now) {
+  auto key = chanMemKey(remoteCall_);
+  if (!key) return;
+  ChanMemStats s;
+  s.stableMode = uint8_t(std::clamp(mode_, 0, 255));
+  s.snrDb = lastRxQuality_.snrDb;
+  s.retryRatio = retryRatio();
+  const uint64_t seen = framesOk_ + framesFailed_;
+  s.decodeFailRatio = seen ? double(framesFailed_) / double(seen) : 0.0;
+  s.selectivity = lastRxQuality_.selectivity;
+  cfg_.chanMem->record(*key, s, now);
+}
+
 std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   lastNow_ = now;
+  // Session-end edge: the store learns from completed sessions only.
+  // A call ladder that exhausted without connecting also hands the radio
+  // back on the configured family.
+  if (fsm_.state() == FsmState::Idle &&
+      cfg_.policy.family != configuredFamily_) {
+    cfg_.policy.family = configuredFamily_;
+  }
+  const bool connectedNow = fsm_.state() == FsmState::Connected;
+  if (!wasConnected_ && connectedNow) {
+    // Turn-taking initial roles (PROTOCOL.md): the connect initiator is
+    // the first ISS - it placed the call, so it is the end presumed to
+    // have traffic. On resume the same rule applies to the resumed
+    // connect, which naturally hands the first turn to whichever end
+    // had reason to re-establish the link.
+    turnRole_ = isInitiator_ ? TurnRole::Iss : TurnRole::Irs;
+    roleSince_ = now;
+    turnEpoch_ = 0;
+    peerGrantEpoch_ = -1;
+    breakReqPending_ = false;
+    breakSentAt_ = -1.0;
+    grantAwaitingData_ = false;
+    arqTx_.setSuspended(turnSchedActive() && turnRole_ == TurnRole::Irs,
+                        now);
+  }
+  if (wasConnected_ && !connectedNow) {
+    recordChanMem(now);
+    // A session that adopted a narrower family by answering a narrower
+    // CALL hands the radio back on the operator's configured family.
+    cfg_.policy.family = configuredFamily_;
+    // Turn-taking state must not outlive the session (a paused-for-
+    // resume pipeline still needs working ARQ timers next connect).
+    arqTx_.setSuspended(false, now);
+    grantAwaitingData_ = false;
+    breakReqPending_ = false;
+  }
+  wasConnected_ = connectedNow;
   ccaGatedNow_ = ccaDataGated(now);  // one state advance per tick
   // Anti-starvation clock: measures how long DATA has been waiting to
   // AIR, resetting only when a data frame is actually emitted. The old
@@ -1164,11 +1563,51 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);
-  if (int nto = arqTx_.takeTimeouts(); nto > 0 && amc_) {
-    // Unacknowledged bursts are failure evidence for adaptation. Two
-    // per timeout keeps the 16-frame window responsive without
-    // swamping it: a mode whose bursts never arrive must demote even
-    // though the receiver, having heard nothing, reports nothing.
+  // DEEP-TIER FRAME LENGTH. The chirp preamble + sync + duplicated
+  // header cost tens of seconds regardless of payload, so goodput at the
+  // CSS tier is decided almost entirely by how many bytes ride behind
+  // one preamble - 2 codewords measured 0.97 B/s at M1, 7% of net. It is
+  // not simply larger because a longer frame is proportionally more
+  // likely to meet a fade it cannot survive, and a deep-tier
+  // retransmission is enormously expensive.
+  //
+  // That trade is a property of the channel, so it is MEASURED rather
+  // than modelled: grow after consecutive clean deliveries, halve on any
+  // loss. The channel classifier cannot serve here - it needs a dozen
+  // frames, which at deep-tier airtimes is many minutes.
+  const int nto = arqTx_.takeTimeouts();
+  if (mode_ <= 3 && nto > 0 && cssCwTarget_ > kCssCwMin) {
+    cssCleanRun_ = 0;
+    cssCwTarget_ = std::max(kCssCwMin, cssCwTarget_ / 2);
+    updateArqTimeout();
+  }
+  if (nto > 0 && amc_) {
+    // Unacknowledged bursts are failure evidence for adaptation: a mode
+    // whose bursts never arrive must demote even though the receiver,
+    // having heard nothing, reports nothing.
+    //
+    // But an ACK timeout does NOT prove the burst was lost. It equally
+    // means the ACK was lost, or that the timeout was simply shorter
+    // than the round trip. Charging up to EIGHT synthetic failures per
+    // timeout swamped the AMC's 16-frame window - two timeouts filled
+    // it outright and forced a demotion regardless of the channel.
+    // That closed a doom loop: a stalled MAC looked like a collapsing
+    // channel, AMC demoted, the deeper tier stalled harder. Measured in
+    // the floor soak: a link whose peer was decoding fine (and had ACKed
+    // 20 s earlier) demoted from the robust tier all the way into CSS,
+    // where a window of 1 and 35-55 s frames made recovery impossible.
+    //
+    // So: the original weighting (2 x min(nto,4)) stands. HISTORY: a
+    // progress-gated lighter charge was re-landed on the isolated
+    // harness to break the floor doom loop (reverse-path ACK loss
+    // charging the AMC into CSS), but it MEASURABLY regressed the M3
+    // ramp gate (amc/genie ratio 0.74 vs 0.75, +1 drop) and gave no
+    // floor benefit - floor is decode-latency-bound, not demotion-bound
+    // (STATUS showed it sitting at CSS with the channel able to carry
+    // M4, i.e. the frames were slow, not mis-moded). So the ROADMAP's
+    // original caution holds: these charges are the only demotion
+    // evidence a sender gets when the receiver, hearing nothing, reports
+    // nothing, and weakening them costs AMC tracking. Reverted.
     for (int i = 0; i < std::min(nto, 4) * 2; ++i) {
       amc_->onFrameResult(false, false);
     }
@@ -1182,7 +1621,28 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (fsm_.state() == FsmState::Connected) {
     if (pendingMode_ >= 0 && now >= modeChangeDeadline_) {
       if (++modeChangeTries_ >= 3) {
-        pendingMode_ = -1;  // give up; stay at the committed mode
+        // KNOWN BUG, deliberately left as-is for now: the responder
+        // applies a MODE_CHANGE on receipt while the initiator applies
+        // only on the MODE_ACK, so a lost MODE_ACK splits the two ends
+        // and giving up here makes that split permanent (observed in
+        // the floor soak as A on M4 against B on M1).
+        //
+        // CONVERGE rather than strand the link. The responder applies
+        // on RECEIPT, so after three announcements it has almost
+        // certainly moved; staying put here is what made the split
+        // permanent. Adopting the mode we announced restores a single
+        // agreed mode in that case. If the responder heard NONE of the
+        // three, the forward path is dead and the session is already
+        // failing on its own terms - the ARQ retry budget tears it down
+        // and RESUME re-establishes a fresh agreed mode.
+        //
+        // Verified by m2_mode_change_survives_lost_mode_ack, which
+        // reproduces the split deterministically (a=10 against b=5).
+        // Earlier attempts here were judged against churn soak
+        // throughput, whose readings turned out to be confounded by
+        // persistent channel memory - hence the dedicated test.
+        applyMode(pendingMode_, pendingCp_, now);
+        pendingMode_ = -1;
       } else {
         const int txMode =
             mode_ <= 3 ? mode_
@@ -1351,11 +1811,153 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
   }
+  // --- Turn-taking scheduler (PROTOCOL.md "Turn-Taking") ----------------
+  if (turnSchedActive()) {
+    if (turnRole_ == TurnRole::Iss) {
+      breakSentAt_ = -1.0;
+      // Hand the turn over when the peer wants it and we are out of
+      // data - or when we have held the channel a full quantum with the
+      // peer still waiting: continuous two-way load must ALTERNATE.
+      // The quantum is round-trip-scaled so a turn always spans several
+      // full window cycles, not a fixed count of seconds that a slow
+      // link would burn entirely on one exchange.
+      if (breakReqPending_ && !grantAwaitingData_) {
+        const double quantumSec =
+            std::max(45.0, 3.0 * arqTx_.timeoutSec());
+        const bool freshData =
+            !protoTx_.idle() || fileTx_.active() ||
+            std::any_of(outQueue_.begin(), outQueue_.end(),
+                        [](const OutFrame& q) {
+                          return q.env.type == LinkType::Data;
+                        });
+        // A handover is DUE (no fresh data, or the quantum expired with
+        // the peer waiting). Do not hand over yet: DRAIN first. Granting
+        // with unacknowledged frames in flight stranded them for the
+        // peer's whole turn - the IRS cannot retransmit - and once a
+        // mid-fade demotion shrank the window under them they blocked
+        // every new segment too (measured: churn froze at 17.7 KB with
+        // inflight=8 against a window of 2). PACTOR's changeover rule
+        // is the same: the ISS completes its outstanding exchange, then
+        // honours the break.
+        if ((!freshData || now - roleSince_ > quantumSec) &&
+            turnDrainSince_ < 0.0) {
+          turnDrainSince_ = now;
+        }
+        if (turnDrainSince_ >= 0.0) {
+          // Cap the drain: a peer that has gone deaf to us (asymmetric
+          // fade) must not hold the turn hostage - after two ARQ
+          // timeouts of no progress the reverse direction gets its turn
+          // regardless, and its ACKs may well release what we hold.
+          const bool drained = arqTx_.inFlight() == 0 && !freshData;
+          const bool capped =
+              now - turnDrainSince_ > 2.0 * arqTx_.timeoutSec();
+          if (drained || capped) grantTurn(now);
+        }
+      } else {
+        turnDrainSince_ = -1.0;  // request withdrawn / not pending
+      }
+    } else if (turnDataWaiting()) {
+      // IRS with data: the break request rides every ACK
+      // (kRxFlagBreakReq); this arms a standalone one when the ISS has
+      // gone idle and no ACK is otherwise due.
+      if (breakSentAt_ < 0.0 || now - breakSentAt_ > turnHandoffSec()) {
+        breakSentAt_ = now;
+        ackPending_ = true;
+      }
+    }
+    // Grant reliability: retry an unanswered TURN_GRANT at the RTT-paced
+    // handoff cadence, then reclaim the sending role - a link must never
+    // be left with two listeners because one short control frame faded.
+    if (grantAwaitingData_ && now >= grantRetryAt_) {
+      if (grantTries_ < 3) {
+        queueTurnGrant();
+        ++grantTries_;
+        grantRetryAt_ = now + turnHandoffSec();
+      } else {
+        grantAwaitingData_ = false;
+        setTurnRole(TurnRole::Iss, now);
+      }
+    }
+    // ROLE RECONCILIATION - the divergence backstop, and the hard
+    // guarantee the whole scheme rests on. A handover rides ONE control
+    // frame (TURN_GRANT / the break-request bit); under a fade both can
+    // be lost, stranding the link with two listeners (measured in churn:
+    // both ends IRS for ~100 s, past the progress watchdog). The
+    // guarantee is the PACTOR-style master rule: the connect INITIATOR
+    // is the default ISS, and it reclaims the channel FAST whenever it
+    // holds data and is hearing nothing from the peer - bounding any
+    // two-listener window to a couple of round trips. Crossing that with
+    // the responder-yields-on-DATA rule (in the DATA handler) means the
+    // only reachable divergence is brief two-sender contention, which
+    // self-heals in one exchange; long two-listener deadlock cannot
+    // persist. This reclaim fires EVEN with a grant of our own pending:
+    // a lost grant is exactly when the slow grant-retry path would
+    // otherwise strand us.
+    const double reclaimSec = std::max(12.0, 2.0 * turnHandoffSec());
+    if (turnDataWaiting()) {
+      if (turnRole_ == TurnRole::Irs && isInitiator_ &&
+          (lastDataRxAt_ <= 0.0 || now - lastDataRxAt_ > reclaimSec) &&
+          now - roleSince_ > reclaimSec) {
+        grantAwaitingData_ = false;
+        setTurnRole(TurnRole::Iss, now);
+      } else if (turnRole_ == TurnRole::Iss && !isInitiator_ &&
+                 !grantAwaitingData_ &&
+                 (arqTx_.lastProgressAt() < 0.0 ||
+                  now - arqTx_.lastProgressAt() > reclaimSec) &&
+                 now - roleSince_ > reclaimSec) {
+        // Responder holding the sending role but delivering nothing:
+        // relinquish so the initiator (master) can reclaim cleanly.
+        setTurnRole(TurnRole::Irs, now);
+      }
+    }
+  }
   if (!ackPending_ && dataSinceAck_ > 0 &&
       fsm_.state() == FsmState::Connected &&
       now - lastDataRxAt_ > ackFlushSec_) {
     ackPending_ = true;  // tail flush: batch closed by silence
     dataSinceAck_ = 0;
+  }
+  // PIGGYBACK FIRST on a bidirectional link. Standalone ACKs are control
+  // frames and outrank DATA, so on a two-way link the side that is
+  // BEHIND owes an ACK for every burst it receives and spends every
+  // transmit opportunity acknowledging - while the side that is ahead
+  // has little to acknowledge and keeps sending. That is positive
+  // feedback, and it ends with one direction at zero: measured in the
+  // churn soak as B->A 8500 bytes against A->B 0, both ends healthy at
+  // M10 with RETRY 0.1 and FFAIL 0.
+  //
+  // Every frame's envelope already carries ack_base (PROTOCOL.md), and
+  // receivers now consume it, so a DATA frame acknowledges by itself.
+  // When we have data to send and no HOLES to report, let the data carry
+  // the floor and skip the standalone ACK entirely. Gaps still demand a
+  // real ACK - only the AckBody has the bitmap.
+  static const bool kPiggyOff = getenv("SKW_NO_ACK_PIGGYBACK") != nullptr;
+  // Under turn-taking an IRS may hold data it is not allowed to SEND, so
+  // deferring its ACK onto that data would starve the peer of feedback
+  // (and of the break request the ACK carries) for the whole turn.
+  const bool piggyEligible =
+      !turnSchedActive() || turnRole_ == TurnRole::Iss;
+  if (!kPiggyOff && piggyEligible && ackPending_ &&
+      fsm_.state() == FsmState::Connected &&
+      arqRx_.gapBitmap() == 0 &&
+      (!protoTx_.idle() || arqTx_.peekRetransmit().has_value() ||
+       std::any_of(outQueue_.begin(), outQueue_.end(),
+                   [](const OutFrame& f) {
+                     return f.env.type == LinkType::Data;
+                   }))) {
+    ackPending_ = false;   // the outgoing DATA envelope carries it
+    if (ackDeferredAt_ < 0.0) ackDeferredAt_ = now;
+  }
+  // SAFETY on the above: the piggyback only actually happens if our data
+  // AIRS. If it is stuck behind the CCA gate or a busy channel, the peer
+  // would sit without feedback until its ARQ timeout - so a deferral
+  // that has not been redeemed within the flush window re-arms a real
+  // ACK. `ackDeferredAt_` clears whenever a DATA frame is emitted.
+  if (ackDeferredAt_ >= 0.0 &&
+      now - ackDeferredAt_ > ackFlushSec_ &&
+      fsm_.state() == FsmState::Connected) {
+    ackDeferredAt_ = -1.0;
+    ackPending_ = true;
   }
   if (ackPending_ && fsm_.state() == FsmState::Connected) {
     ackPending_ = false;
@@ -1373,7 +1975,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                     });
     if (!queued) {
       auto ack = arqRx_.makeAck(
-          int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0, 127.0)), 0,
+          int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0, 127.0)),
+          ackRxFlags(),
           int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0, 127.0)));
       OutFrame f;
       f.env.type = LinkType::Ack;
@@ -1435,8 +2038,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // channel plus a steady control stream can starve data indefinitely
   // while the ARQ concludes the peer is dead.
   bool forceData =
+      (!turnSchedActive() || turnRole_ == TurnRole::Iss) &&
       dataQueuedSince_ >= 0.0 &&
-      lastNow_ - dataQueuedSince_ > 3.0 * arqTx_.timeoutSec();
+      lastNow_ - dataQueuedSince_ > dataStarveTimeouts() * arqTx_.timeoutSec();
   if (forceData) {
     auto d = std::find_if(outQueue_.begin(), outQueue_.end(),
                           [](const OutFrame& q) {
@@ -1484,8 +2088,13 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     // over it is ALWAYS wasted (the peer is deaf while keyed) and
     // doubles on a shared channel. Hold for CLEAR with only a runaway
     // guard; outside a session keep the short courtesy cap.
-    const double cap =
-        fsm_.state() == FsmState::Connected ? 30.0 : 2.0;
+    // The cap is a RUNAWAY GUARD, so it must outlast a legitimate peer
+    // burst. At 30 s flat it expired INSIDE a 35-55 s deep-tier frame
+    // and keyed over it every time - the same "proceed anyway" failure
+    // that was fixed for OFDM, still live at the deep tier.
+    const double cap = fsm_.state() == FsmState::Connected
+                           ? 30.0 * airScale_
+                           : 2.0 * airScale_;
     if (now - ctrlWaitStart_ < cap) return std::nullopt;
     ctrlJitterUntil_ = 0.0;  // cap expired: fire now, no jitter on top
   } else if (pick->env.type != LinkType::Data &&
@@ -1513,13 +2122,30 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   ctrlWaitStart_ = -1.0;
   ctrlJitterUntil_ = 0.0;
   if (pick->env.type == LinkType::Data) {
+    ackDeferredAt_ = -1.0;  // this frame's envelope carries the ack floor
     ctrlRun_ = 0;
     dataQueuedSince_ = -1.0;  // the anti-starvation clock rearms fresh
   } else if (!usesVoiceSequence(pick->env.type)) {
     ++ctrlRun_;
   }
+  // A burst's data-ness is latched from its FIRST frame: while the TX
+  // path is draining, further picks are blocked by the keying bound, so
+  // this is what the post-drain listen-turn decision sees.
+  if (txQueueSec_ <= 0.35) {
+    lastBurstHadData_ = pick->env.type == LinkType::Data;
+  } else if (pick->env.type == LinkType::Data) {
+    lastBurstHadData_ = true;
+  }
   OutFrame f = std::move(*pick);
   outQueue_.erase(pick);
+  // Handshake round-trip stopwatch: the four-frame connect exchange is
+  // the only unambiguous latency measurement the link ever gets (no
+  // retransmission ambiguity), and it measures exactly what the ARQ
+  // timeout must cover - the peer's decode-and-reply turnaround.
+  if (f.env.type == LinkType::Call || f.env.type == LinkType::CallAck ||
+      f.env.type == LinkType::Start || f.env.type == LinkType::StartAck) {
+    hsTxAt_ = now;
+  }
   {
     static const bool frDbg = getenv("SKW_FRAME_DEBUG") != nullptr;
     if (frDbg) {
@@ -1531,10 +2157,11 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
     // Refresh ACK feedback at transmit time - see the ackPending_ note.
     f.env.ackBase = arqRx_.ackBase();
+    const uint8_t rxFlags = ackRxFlags();
     f.body = arqRx_.makeAck(
                  int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0,
                                    127.0)),
-                 0,
+                 rxFlags,
                  int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0,
                                    127.0)))
                  .pack();
@@ -1592,7 +2219,40 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   lastNow_ = now;
   RxStage stage;
   auto res = receiveFrame(cfg_.policy.family, samples, &stage,
-                          finalAttempt ? &harq_ : nullptr, &rxMask_);
+                          finalAttempt ? &harq_ : nullptr, &rxMask_,
+                          wantConstellation_);
+
+  // RECEIVER-SIDE FAMILY SCAN. A listener that only ever demodulates its
+  // own family is DEAF to a caller that stepped down the bandwidth ladder
+  // looking for margin - which made the handshake's family-fallback
+  // schedule unlandable for three phases. While no session exists, a
+  // failed decode is retried one family narrower.
+  //
+  // Cost is bounded deliberately: only when idle/listening/calling (a
+  // connected session's family is fixed for its lifetime by design), only
+  // when the primary family found nothing at all, and never with the HARQ
+  // store or carrier mask attached - both are keyed to the primary
+  // family's geometry.
+  Family rxFamily = cfg_.policy.family;
+  if (!res && cfg_.policy.familyFallback &&
+      fsm_.state() != FsmState::Connected &&
+      fsm_.state() != FsmState::Disconnecting) {
+    const Family alt = narrowerFamily(cfg_.policy.family);
+    if (alt != cfg_.policy.family) {
+      RxStage altStage;
+      auto altRes = receiveFrame(alt, samples, &altStage, nullptr, nullptr);
+      if (altRes) {
+        res = std::move(altRes);
+        stage = altStage;
+        rxFamily = alt;
+      }
+    }
+  }
+  rxFamily_ = rxFamily;
+  if (res && !res->constellation.empty()) {
+    lastConstellation_ = res->constellation;
+    ++constellationSeq_;
+  }
   if (res) lastRxWasCss_ = res->sig == ChirpSig::Css;
   if (res && (res->payloadOk || finalAttempt) && maskDet_ &&
       fsm_.state() == FsmState::Connected && mode_ >= 8 &&
@@ -1623,6 +2283,21 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
       ++framesOk_;
     } else if (finalAttempt) {
       ++framesFailed_;
+    }
+  }
+  // Channel-character evidence. Only FINAL attempts count as failures -
+  // a truncated ladder try is not a channel verdict (the same rule the
+  // AMC and mask detector use).
+  if (res && fsm_.state() == FsmState::Connected &&
+      (res->payloadOk || finalAttempt)) {
+    chanClass_.onFrame(res->snrDb, res->delaySpreadMs, res->pilotStability,
+                       res->payloadOk);
+    if (amc_) {
+      amc_->setChannelClass(chanClass_.verdict());
+      // The M11+ pilot-stability and M12+ selectivity gates have existed
+      // since step 3.1 but nothing ever fed them - they were evaluating
+      // their default 0 and could never fire.
+      amc_->onQualityIndicators(res->selectivity, res->pilotStability);
     }
   }
   if (!res || !res->payloadOk) {
@@ -1676,6 +2351,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             unsigned(f.env.sequence));
   }
   lastRxQuality_ = q;
+  const size_t inFlightBefore = arqTx_.inFlight();
   // Idle-disconnect liveness: refreshed by session traffic, and NOT by
   // pre-session CALL frames - a dead peer's reconnect attempts used to
   // keep the stale session alive forever (half of the reconnect
@@ -1684,6 +2360,36 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
   // outright (ACKs ride containers whose envelope id can differ
   // legitimately across resume epochs).
   if (f.env.type != LinkType::Call) fsm_.rxTraffic(now);
+
+  // Piggybacked ack_base (PROTOCOL.md link envelope, bytes 6-7). Every
+  // session frame carries the peer's cumulative receive floor; consuming
+  // it releases delivered frames without waiting for a dedicated ACK,
+  // which is the whole point of putting it in the envelope. It was
+  // written on TX (and covered by the crypto AAD) but never read - so
+  // every acknowledgement cost a separate frame.
+  //
+  // Only frames from THIS session may move our window: pre-session
+  // handshake frames and connectionless broadcasts carry ack_base 0,
+  // which would otherwise read as "everything below 0" - harmless by
+  // luck today, but a trap the moment sequence numbers wrap.
+  switch (f.env.type) {
+    case LinkType::Call:
+    case LinkType::CallAck:
+    case LinkType::Start:
+    case LinkType::StartAck:
+    case LinkType::StartNak:
+    case LinkType::Cq:
+    case LinkType::Beacon:
+    case LinkType::BcastData:
+      break;
+    default:
+      if (fsm_.state() == FsmState::Connected &&
+          f.env.sessionId == sessionId_) {
+        arqTx_.onPiggybackAck(f.env.ackBase, now);
+      }
+      break;
+  }
+
   probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
     amc_->onLocalSnr(q.snrDb);
@@ -1724,18 +2430,25 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       remoteCall_ = call->srcCall;
       isInitiator_ = false;
       hsOnCss_ = lastRxWasCss_;  // answer on the transport that reached us
+      // Answer on the FAMILY that reached us too. The caller stepped down
+      // the ladder because the wider family would not close; replying on
+      // our own configured family would put the answer right back into
+      // the channel that just failed. Restored on teardown.
+      adoptSessionFamily(rxFamily_, now);
       fsm_.rxCall(now);
       break;
     }
     case LinkType::CallAck: {
       auto ack = CallAckBody::parse(f.body);
       if (!ack) return;
+      noteHandshakeRtt(now);
       lastCallAck_ = *ack;
       onCfoReport(ack->cfoHalfHz * 0.5);
       fsm_.rxCallAck(now);
       break;
     }
     case LinkType::Start: {
+      noteHandshakeRtt(now);  // responder: its CALL_ACK -> this START
       auto start = StartBody::parse(f.body);
       if (!start) return;
       if (fsm_.state() == FsmState::Connected && !isInitiator_ &&
@@ -1748,6 +2461,9 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         return;
       }
       if (fsm_.state() != FsmState::CallAnswered) return;
+      // The responder consults its own memory of this peer/channel too:
+      // evaluateStart() takes the LOWER of the proposal and its own view.
+      applyChanMemSeed(lastCall_.srcCall, now);
       auto r = evaluateStart(cfg_.policy, lastCall_, *start, q);
       bool ok = std::holds_alternative<StartAckBody>(r);
 #ifdef SKW_HAVE_CRYPTO
@@ -1785,6 +2501,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::StartAck: {
       auto ack = StartAckBody::parse(f.body);
       if (!ack) return;
+      noteHandshakeRtt(now);
 #ifdef SKW_HAVE_CRYPTO
       if (sessionCaps_ & kCapEncryption) {
         if (ack->kexResponse.empty() ||
@@ -1822,6 +2539,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         sentResumeReq_ = false;
         resumeCtx_.valid = false;
         discardPausedPipeline();
+        applyChanMemSeed(remoteCall_, now);
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
@@ -1916,6 +2634,17 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto d = DataBody::parse(f.body);
 #endif
       if (!d || fsm_.state() != FsmState::Connected) return;
+      if (turnSchedActive()) {
+        // A DATA frame proves the peer holds (or just took) the sending
+        // role: an outstanding grant is confirmed, and a station that
+        // STILL believes it is the ISS has diverged (a lost grant
+        // series). Deterministic tie-break: the responder yields, the
+        // initiator holds - the link converges to one sender either way.
+        grantAwaitingData_ = false;
+        if (turnRole_ == TurnRole::Iss && !isInitiator_) {
+          setTurnRole(TurnRole::Irs, now);
+        }
+      }
       if (amc_) amc_->onFrameResult(d->rv > 0, true);
       // Stash the proto flags with the payload so they survive the
       // out-of-order window and reach the proto layer in order.
@@ -1965,9 +2694,31 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                 cfg_.policy.ownCall.c_str(), a->ackBase, a->gapBitmap,
                 arqTx_.inFlight());
       }
+      // Responder-side pin request (rx_flags). Only the initiator acts
+      // on it, so there is still exactly one mode controller.
+      if (isInitiator_ && amc_ && (a->rxFlags & kRxFlagModeReq)) {
+        const uint8_t want = a->rxFlags & kRxFlagModeMask;
+        if (want == kRxModeAuto) {
+          if (amc_->pinned()) amc_->unpin();
+        } else {
+          const int lowest = (sessionCaps_ & kCapCssTier) ? 0 : kFirstMode;
+          if (int(want) >= lowest && int(want) < kNumModes &&
+              (!amc_->pinned() || amc_->mode() != want)) {
+            amc_->pin(want, now);
+            requestModeChange(int(want), cpMode_, now);
+          }
+        }
+      }
       if (amc_) amc_->onRemoteSnr(a->snrHalfDb * 0.5, now);
       remoteSnrDb_ = a->snrHalfDb * 0.5;
       onCfoReport(a->cfoHalfHz * 0.5);
+      lastFeedbackAt_ = now;  // ends the post-burst listen turn
+      // Turn-taking: mirror the peer's break request. Tracking the
+      // LATEST ACK (set or clear) means a withdrawn request cannot
+      // leave a stale grant pending.
+      if (turnSchedActive()) {
+        breakReqPending_ = (a->rxFlags & kRxFlagBreakReq) != 0;
+      }
       arqTx_.onAck(*a, now);
       break;
     }
@@ -2155,8 +2906,42 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
 #endif
     case LinkType::Keepalive:
       break;  // rxTraffic already refreshed the idle timer
+    case LinkType::TurnGrant: {
+      auto tg = TurnGrantBody::parse(f.body);
+      if (!tg || !turnSchedActive()) return;
+      if (int(tg->epoch) == peerGrantEpoch_) {
+        break;  // retried grant already accepted; our DATA will confirm
+      }
+      peerGrantEpoch_ = tg->epoch;
+      // The granting peer clearly has nothing to send right now; a
+      // stale request from before its grant must not bounce the turn
+      // straight back. An outstanding grant of our own is cancelled -
+      // crossing grants (both ends yielding at once) must not keep
+      // re-announcing a handover neither side wants.
+      breakReqPending_ = false;
+      grantAwaitingData_ = false;
+      setTurnRole(TurnRole::Iss, now);
+      break;
+    }
     default:
       break;  // unknown-to-this-phase types are ignored, never fatal
+  }
+
+  // DEEP-TIER FRAME LENGTH, growth half. Measured across the WHOLE frame
+  // rather than inside the ACK case: the envelope's piggybacked ack_base
+  // releases frames before any dedicated ACK is parsed, so an ACK-only
+  // hook saw no progress and never grew (observed: the target stayed at
+  // 2 codewords and goodput stayed at 7% of net).
+  if (mode_ <= 3 && arqTx_.inFlight() < inFlightBefore) {
+    if (++cssCleanRun_ >= kCssGrowRun && cssCwTarget_ < kCssCwMax) {
+      cssCleanRun_ = 0;
+      cssCwTarget_ = std::min(kCssCwMax, cssCwTarget_ * 2);
+      updateArqTimeout();
+      if (getenv("SKW_CSS_DEBUG")) {
+        fprintf(stderr, "css grow -> cw=%d budget=%zu\n", cssCwTarget_,
+                dataBudget_);
+      }
+    }
   }
   drainFsmActions(now);
 }

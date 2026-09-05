@@ -51,7 +51,10 @@ struct Pair {
     EngineConfig c;
     c.policy.ownCall = call;
     c.policy.family = fam;
-    c.policy.caps = kCapZstd | kCapResume | kCapMasking;
+    // kCapTurnSched matches the worker's default: every M2 scenario
+    // exercises the scheduled ISS/IRS turn-taking path (the legacy
+    // occupancy-gate fallback keeps m2_turnsched_mixed_caps_fallback).
+    c.policy.caps = kCapZstd | kCapResume | kCapMasking | kCapTurnSched;
     c.burstAggregation = aggregate;
     return c;
   }
@@ -106,11 +109,246 @@ struct Pair {
 
 }  // namespace
 
+// A caller that stepped down the bandwidth ladder must still be HEARD.
+// Before the receiver-side family scan, a listener only ever demodulated
+// its own family, so `callFamilyForAttempt()` - which had existed since
+// step 2.3 - could never actually land a narrower call.
+TEST_CASE(m2_connect_across_families) {
+  struct MixedPair : Pair {
+    MixedPair() : Pair(30.0, 91) {
+      // Rebuild the two engines on DIFFERENT families: the caller on MID,
+      // the listener configured for WIDE.
+      a = LinkEngine(makeCfg("W1AW", Family::Mid));
+      b = LinkEngine(makeCfg("K6XYZ", Family::Wide));
+    }
+  };
+  MixedPair p;
+  CHECK(p.connect(400));
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(p.b.state() == FsmState::Connected);
+
+  // And the session must actually carry traffic on the adopted family.
+  const std::vector<uint8_t> msg = {'h', 'e', 'l', 'l', 'o'};
+  p.a.sendData(msg);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 400 && got.size() < msg.size(); ++i) {
+    p.step();
+    auto rx = p.b.takeReceivedData();
+    got.insert(got.end(), rx.begin(), rx.end());
+  }
+  CHECK(got == msg);
+}
+
+// The scan must not fire when it is switched off: an operator who pins a
+// family expects the modem to stay there.
+TEST_CASE(m2_family_scan_respects_fallback_off) {
+  struct PinnedPair : Pair {
+    PinnedPair() : Pair(30.0, 92) {
+      EngineConfig ca = makeCfg("W1AW", Family::Mid);
+      EngineConfig cb = makeCfg("K6XYZ", Family::Wide);
+      cb.policy.familyFallback = false;   // listener pinned to WIDE
+      ca.policy.familyFallback = false;   // caller pinned to MID
+      a = LinkEngine(std::move(ca));
+      b = LinkEngine(std::move(cb));
+    }
+  };
+  PinnedPair p;
+  CHECK(!p.connect(60));   // deaf by configuration, as asked
+}
+
+
+// Responder-side mode pinning. The responder must NOT drive MODE_CHANGE
+// itself (two controllers collided in the harness - mode oscillation and
+// pin override), so it asks via the ACK's rx_flags byte and the
+// initiator remains the only controller on the air.
+TEST_CASE(m2_responder_side_mode_pin) {
+  Pair p(30.0, 5150);
+  CHECK(p.connect(400));
+  // Keep traffic flowing: a pin request rides the ACK's rx_flags, and
+  // ACKs exist because data does.
+  const std::vector<uint8_t> chunk(64, 0x5A);
+  for (int i = 0; i < 60; ++i) {
+    if (p.a.txBacklog() < 256) p.a.sendData(chunk);
+    p.step();
+  }
+
+  // b is the responder (a called it).
+  CHECK(p.b.pinMode(6, p.now));
+
+  bool applied = false;
+  for (int i = 0; i < 400 && !applied; ++i) {
+    if (p.a.txBacklog() < 256) p.a.sendData(chunk);
+    p.step();
+    applied = p.a.sessionMode() == 6 && p.b.sessionMode() == 6;
+  }
+  CHECK(applied);              // the initiator honoured the request
+  CHECK(p.a.modePinned());     // and it is a real pin, not a demote
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(p.b.state() == FsmState::Connected);
+
+  // Releasing from the responder frees the initiator's pin too.
+  p.b.unpinMode();
+  bool freed = false;
+  for (int i = 0; i < 400 && !freed; ++i) {
+    if (p.a.txBacklog() < 256) p.a.sendData(chunk);
+    p.step();
+    freed = !p.a.modePinned();
+  }
+  CHECK(freed);
+}
+
+// BIDIRECTIONAL FAIRNESS. Standalone ACKs are control frames and outrank
+// DATA, so on a two-way link the side that is BEHIND owes an ACK for
+// every burst it receives and spends every transmit opportunity
+// acknowledging, while the side that is ahead keeps sending - positive
+// feedback that ends with one direction at zero. Observed in the churn
+// soak as B->A 8500 bytes against A->B 0, both ends healthy at M10.
+//
+// The soak is real-time paced and too noisy to gate on; this runs the
+// same traffic pattern on simulated time, so it is deterministic.
+// LOST MODE_ACK MUST NOT SPLIT THE LINK. The responder applies a
+// MODE_CHANGE the moment it receives one; the initiator applies only
+// when the MODE_ACK returns. So if every MODE_ACK is lost, the
+// initiator exhausts its three retries and gives up while the responder
+// has ALREADY moved - and the two ends sit on different modes for the
+// rest of the session, with ARQ window, timeouts and AMC all diverging.
+// Observed live in the floor soak as A on M4 against B on M1.
+//
+// This is the deterministic instrument for that bug. Soak throughput is
+// far too sensitive to attribute a change this small - two attempts at
+// fixing it were "measured" against churn and both readings turned out
+// to be confounded (see ROADMAP).
+TEST_CASE(m2_mode_change_survives_lost_mode_ack) {
+  Pair p(30.0, 31337);
+  CHECK(p.connect(400));
+  const int start = p.a.sessionMode();
+  CHECK(p.a.sessionMode() == p.b.sessionMode());
+
+  // Ask for a definite mode change, then black out the REVERSE path so
+  // every MODE_ACK is lost while the initiator burns its retry budget.
+  CHECK(p.a.pinMode(start >= 6 ? 5 : 6, p.now));
+  // Long enough for the initiator's three MODE_CHANGE retries to expire,
+  // short enough that the session itself survives: a reverse path held
+  // down past the ARQ retry budget is a DEAD link, and tearing that down
+  // is correct behaviour rather than the bug under test here.
+  for (int i = 0; i < 400; ++i) p.step(false, true);
+
+  // Reverse path restored: the link must reconverge on a single mode.
+  for (int i = 0; i < 1200; ++i) p.step();
+  std::printf("lost mode_ack: a=%d b=%d (start %d)\n", p.a.sessionMode(),
+              p.b.sessionMode(), start);
+  CHECK(p.a.sessionMode() == p.b.sessionMode());
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(p.b.state() == FsmState::Connected);
+}
+
+TEST_CASE(m2_bidirectional_bulk_is_fair) {
+  Pair p(30.0, 24680);
+  CHECK(p.connect(400));
+
+  const std::vector<uint8_t> chunk(200, 0xC3);
+  size_t aToB = 0, bToA = 0;
+  for (int i = 0; i < 3000; ++i) {
+    // BOTH ends keep a backlog: the case that starved.
+    if (p.a.txBacklog() < 800) p.a.sendData(chunk);
+    if (p.b.txBacklog() < 800) p.b.sendData(chunk);
+    p.step();
+    aToB += p.b.takeReceivedData().size();
+    bToA += p.a.takeReceivedData().size();
+  }
+  const size_t lo = std::min(aToB, bToA), hi = std::max(aToB, bToA);
+  std::printf("bidirectional: A->B=%zu B->A=%zu (ratio %.2f)\n", aToB, bToA,
+              hi > 0 ? double(lo) / double(hi) : 0.0);
+
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(aToB > 0);   // neither direction may be starved outright
+  CHECK(bToA > 0);
+  // Neither side may take more than ~4x the other. Perfect symmetry is
+  // not the goal - half-duplex turn-taking is lumpy - but an order of
+  // magnitude means one side has captured the channel.
+  CHECK(hi <= 4 * lo);
+}
+
 TEST_CASE(m2_connect_clean) {
   Pair p(30.0);
   CHECK(p.connect());
   CHECK(p.a.sessionMode() == p.b.sessionMode());
   CHECK(p.a.sessionMode() >= kFirstMode);
+}
+
+// Turn-taking: the initiator connects holding ISS; a responder with
+// data requests the turn via its ACKs, receives TURN_GRANT, and its
+// data flows - the reverse direction of the roles the connect assigned.
+TEST_CASE(m2_turnsched_grant_handover) {
+  Pair p(30.0, 5150);
+  CHECK(p.connect(400));
+  CHECK(p.a.turnSchedActive());
+  CHECK(p.a.turnIss());
+  CHECK(!p.b.turnIss());
+
+  auto blob = noiseBlob(4 * 1024, 99);
+  p.b.sendData(blob);  // only the IRS has traffic
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 4000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.a.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK_EQ(got.size(), blob.size());
+  CHECK(got == blob);
+  CHECK(p.b.turnIss());  // the grant moved the sending role to B
+}
+
+// Turn-taking: a grant series lost to the channel must not leave the
+// link with two listeners - the granting side reclaims ISS after its
+// retries and traffic continues once the channel heals.
+TEST_CASE(m2_turnsched_grant_loss_reclaims) {
+  Pair p(30.0, 6210);
+  CHECK(p.connect(400));
+  auto blob = noiseBlob(2 * 1024, 17);
+  p.b.sendData(blob);
+  // Drop everything A->B while the break/grant exchange happens: B's
+  // break request arrives at A, every TURN_GRANT A answers with is lost.
+  for (int i = 0; i < 700; ++i) p.step(/*dropAB=*/true);
+  // Channel heals. Whatever role state the loss left behind, B's data
+  // must still be deliverable end to end.
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 5000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.a.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK_EQ(got.size(), blob.size());
+  CHECK(got == blob);
+  CHECK(p.a.state() == FsmState::Connected);
+}
+
+// Capability fallback: a peer without kCapTurnSched negotiates it away
+// and the session runs the legacy occupancy-gate scheduler end to end.
+TEST_CASE(m2_turnsched_mixed_caps_fallback) {
+  struct LegacyPair : Pair {
+    LegacyPair() : Pair(30.0, 7331) {
+      // Rebuild B without the turn-taking capability.
+      auto cfg = makeCfg("K6XYZ", Family::Wide);
+      cfg.policy.caps = kCapZstd | kCapResume | kCapMasking;
+      b.~LinkEngine();
+      new (&b) LinkEngine(cfg);
+    }
+  };
+  LegacyPair p;
+  CHECK(p.connect(400));
+  CHECK(!p.a.turnSchedActive());
+  CHECK(!p.b.turnSchedActive());
+  auto blob = noiseBlob(4 * 1024, 23);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 4000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK_EQ(got.size(), blob.size());
+  CHECK(got == blob);
 }
 
 TEST_CASE(m2_connect_floor) {
@@ -442,10 +680,16 @@ TEST_CASE(m3_cp_auto_steps_under_multipath) {
   p.chanBA = p.chanAB;
   p.chanBA.seed = p.chanAB.seed + 5000;
   CHECK(p.connect(800));  // handshake fights ISI until CP steps up
-  auto blob = noiseBlob(3072, 55);  // sized for the 25-frame CP streak
+  // Sized so the transfer itself yields >= 25 DATA frames, which is what
+  // the CP streak requires. 3072 B is only ~13 frames: it used to reach
+  // the streak solely because the ARQ timeout was shorter than the round
+  // trip and tripled every frame through retransmission. With the
+  // measured-RTT timeout that storm is gone, so the payload now has to
+  // carry the streak on its own.
+  auto blob = noiseBlob(8192, 55);
   p.a.sendData(blob);
   std::vector<uint8_t> got;
-  for (int i = 0; i < 8000 && got.size() < blob.size(); ++i) {
+  for (int i = 0; i < 60000 && got.size() < blob.size(); ++i) {
     p.step();
     auto d = p.b.takeReceivedData();
     got.insert(got.end(), d.begin(), d.end());

@@ -107,6 +107,18 @@ int main() {
       (e = std::getenv("SKW_SOAK_SNR")) ? std::atof(e) : 9.0;
 
   Rng rng(seed * 40503 + 7);
+  // The channel SCHEDULE gets its own generator. It used to share `rng`
+  // with the chunk-size draws, which are made whenever delivery frees
+  // room in the 4 KiB in-flight budget - so the SNR/preset staircase
+  // depended on how fast the modem under test delivered. Two scheduler
+  // variants on the same seed ran different channels (legacy: static
+  // until t=480, first fade at t=600; turn-taking: first fade at t=300)
+  // and their byte counts were not comparable.
+  Rng sched(seed * 90001 + 13);
+  // SKW_SOAK_COUPLED=1 restores the pre-decouple behaviour (schedule
+  // shares the chunk-size RNG) so a run can reproduce the historical
+  // ROADMAP baseline schedule exactly for comparison. Default off.
+  const bool coupledSched = std::getenv("SKW_SOAK_COUPLED") != nullptr;
   double snr = scen == "churn" ? 30.0 : scen == "floor" ? floorSnr : 20.0;
   int preset = scen == "floor" ? 2 : scen == "blackout" ? 1 : 0;
 
@@ -203,11 +215,12 @@ int main() {
     if (scen == "churn") {
       dwellLeft -= kRoundSec;
       if (dwellLeft <= 0.0) {
-        dwellLeft = 45.0 + double(rng.u32(105));
-        if (rng.u32(5) == 0) {
-          snr += double(rng.u32(9)) - 4.0;  // random jump
+        Rng& sr = coupledSched ? rng : sched;
+        dwellLeft = 45.0 + double(sr.u32(105));
+        if (sr.u32(5) == 0) {
+          snr += double(sr.u32(9)) - 4.0;  // random jump
         } else {
-          snr += snrDir * (2.0 + double(rng.u32(3)));
+          snr += snrDir * (2.0 + double(sr.u32(3)));
         }
         if (snr <= -14.0) {
           snr = -14.0;
@@ -217,7 +230,7 @@ int main() {
           snr = 30.0;
           snrDir = -1;
         }
-        if (rng.u32(3) == 0) preset = int(rng.u32(3));
+        if (sr.u32(3) == 0) preset = int(sr.u32(3));
         applyPreset(w, preset, snr);
       }
     } else if (scen == "blackout") {

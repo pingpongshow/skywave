@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -28,6 +29,22 @@
 namespace st2w {
 
 using namespace skw;
+
+// HARNESS ISOLATION. The ST2 world must never read or write the
+// operator's real channel-memory store. CMake sets SKW_CHANMEM_PATH=
+// for registered ctest targets, but a harness run DIRECTLY from a shell
+// (soak_st2, monkey_st2, repro_oneway) bypassed that entirely: each run
+// both polluted ~/.skywave/chanmem.bin and INHERITED whatever the
+// previous run had left there. Consecutive runs were therefore not
+// independent, and a comparison chain built on them measured leftover
+// adaptation state rather than the change under test - a churn soak
+// swung 44 KB / 0 / 9 KB / 0 across runs of code that barely differed,
+// which cost four wrong attributions before the cause was spotted.
+// setenv(..., 0) does not overwrite, so an explicit path still wins.
+struct ChanMemIsolation {
+  ChanMemIsolation() { ::setenv("SKW_CHANMEM_PATH", "-", 0); }
+};
+inline const ChanMemIsolation kChanMemIsolation{};
 
 constexpr size_t kRoundSamples =
     size_t(kFftAudio) + 192;  // worker chunk granule (fixed)
@@ -179,6 +196,17 @@ struct World {
   double jamAmpBA = 0.0, jamToneBA = 0.0;   // into A's receiver
   double jamPhase = 0.0;
 
+  // HALF-DUPLEX (SKW_HALF_DUPLEX=1): model a single SSB transceiver -
+  // deaf to the channel while its own PTT is keyed. This is the physical
+  // reality scheduled turn-taking exists to handle; the default
+  // full-duplex world (split TX/RX / virtual cables) never punishes
+  // simultaneous transmission, so an occupancy-gate scheduler that keys
+  // over the peer looks fine there and turn-taking's one-at-a-time
+  // discipline only costs parallelism. Under half-duplex the collision
+  // is real: two stations keying at once are both deaf and both lose the
+  // exchange (the documented CCA stall), and turn-taking's value shows.
+  bool halfDuplex = std::getenv("SKW_HALF_DUPLEX") != nullptr;
+
   World(double snrDb, uint64_t seed) : a(clk, "W1AW"), b(clk, "K6XYZ") {
     for (Shuttle* s : {&ab, &ba}) {
       s->chain.channel.fading = false;
@@ -188,7 +216,7 @@ struct World {
     ba.chain.seed = seed + 5000;
   }
 
-  void moveAudio(Node& from, Node& to, Shuttle& sh) {
+  void moveAudio(Node& from, Node& to, Shuttle& sh, bool toDeaf = false) {
     // REAL-TIME TX drain: a real audio driver consumes exactly one
     // round of samples per round of wall clock. Draining the whole
     // ring here let a modem transmit ~100x faster than real time -
@@ -214,8 +242,13 @@ struct World {
     size_t want = std::min(kRoundSamples, to.rxRing.writeAvailable());
     std::vector<float> blk(want, 0.0f);
     for (size_t i = 0; i < want && !sh.outQ.empty(); ++i) {
-      blk[i] = sh.outQ.front();
+      // Half-duplex deafness: while `to` is keyed it cannot hear the
+      // channel. The samples are still CONSUMED from the queue (the
+      // transmission physically passed while the radio was deaf - it is
+      // lost, not buffered), but the receiver gets silence.
+      const float s = sh.outQ.front();
       sh.outQ.pop_front();
+      if (!toDeaf) blk[i] = s;
     }
     // NOTE full-duplex audio: this world does NOT model PTT-muted
     // receivers (a real single SSB transceiver is deaf while keyed).
@@ -243,8 +276,13 @@ struct World {
   void round() {
     a.w->runOnce();
     if (!starveB) b.w->runOnce();
-    moveAudio(a, b, ab);
-    moveAudio(b, a, ba);
+    // Snapshot keying BEFORE either moveAudio drains a TX ring: a station
+    // with audio queued to transmit is keyed this round, and a keyed
+    // half-duplex radio is deaf to the incoming channel.
+    const bool keyedA = a.txRing.readAvailable() > 0;
+    const bool keyedB = b.txRing.readAvailable() > 0;
+    moveAudio(a, b, ab, halfDuplex && keyedB);  // B deaf while B keys
+    moveAudio(b, a, ba, halfDuplex && keyedA);  // A deaf while A keys
     a.pumpTcp();
     b.pumpTcp();
     clk.advanceSec(kRoundSec);

@@ -30,7 +30,7 @@ std::optional<std::string> getCall(ByteReader& r) {
 }  // namespace
 
 bool isKnownLinkType(uint8_t v) {
-  return v >= uint8_t(LinkType::Call) && v <= uint8_t(LinkType::KeyUpdate);
+  return v >= uint8_t(LinkType::Call) && v <= uint8_t(LinkType::TurnGrant);
 }
 
 // ----------------------------------------------------------------- envelope
@@ -508,6 +508,13 @@ std::vector<uint8_t> KeyUpdateBody::pack() const { return {newEpoch}; }
 std::optional<KeyUpdateBody> KeyUpdateBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 1) return std::nullopt;
   return KeyUpdateBody{b[0]};
+}
+
+std::vector<uint8_t> TurnGrantBody::pack() const { return {epoch}; }
+
+std::optional<TurnGrantBody> TurnGrantBody::parse(std::span<const uint8_t> b) {
+  if (b.size() != 1) return std::nullopt;
+  return TurnGrantBody{b[0]};
 }
 
 }  // namespace skw

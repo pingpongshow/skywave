@@ -1,5 +1,7 @@
 #include "worker.hpp"
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -11,6 +13,7 @@
 #include "sim/chansim.hpp"
 #include "core/log.hpp"
 #include "link/frame.hpp"
+#include "dsp/fft.hpp"
 #include "phy/framer.hpp"
 
 namespace skw {
@@ -30,6 +33,19 @@ constexpr double kRxWindowSec[] = {2.5, 5.0, 10.0, 20.0, 34.0, 60.0, 90.0};
 constexpr int kRxTries = 7;
 constexpr double kRxPreMarginSec = 0.15;
 constexpr double kRxHistorySec = 94.0;
+
+// How long a busy period is presumed to be a station before the chirp
+// detector's silence reclassifies it as noise. Must exceed the detector's
+// decision lag (~2.0 s fast / ~3.3 s for a 4-rep calling signature, see
+// the ROADMAP 1.6 deviation) or we would key over real preambles.
+constexpr double kBusyClassifySec = 4.0;
+
+// Quality bar for opening a capture window from the ALTERNATE family's
+// detector. The primary detector's own threshold is tuned against its
+// family's acquisition floor; a cross-family detection is a rarer event
+// with more ways to be wrong, and each false one costs a real frame a
+// decode attempt from the per-chunk budget.
+constexpr float kAltFamilyMinQuality = 0.35f;
 
 float levelDbfs(double energy, size_t n) {
   if (n == 0) return -120.0f;
@@ -58,10 +74,190 @@ ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
     : cfg_(cfg), clock_(clock), rx_(rxRing), tx_(txRing) {
   chunk_.resize(kChunkSamples);
   listen_ = cfg_.listen;
+  // Channel memory persists to the config directory (LINK_ADAPTATION.md).
+  chanMemPath_ = defaultChanMemPath();
+  if (!chanMemPath_.empty() && chanMem_.load(chanMemPath_)) {
+    SKW_INFO("chanmem: %zu entries from %s", chanMem_.entries(),
+             chanMemPath_.c_str());
+  }
   rebuildEngine();
 }
 
-ModemWorker::~ModemWorker() { stop(); }
+ModemWorker::~ModemWorker() {
+  stop();
+  saveChanMem();
+}
+
+// Busy-source discrimination for the LBT gate (DSP.md "Pre-TX CCA").
+//
+// `chanBusy_` is an honest energy meter and stays that way for STATUS and
+// EVT:BUSY. But deferring to *energy* means a continuous in-band jammer
+// reads as permanently occupied and starves a jammed-but-workable link -
+// measured as 0 bytes delivered where the pre-LBT modem still passed
+// traffic. What listen-before-talk actually needs to know is whether a
+// STATION is on air, and a chirp preamble is exactly that evidence.
+//
+// The detector needs a couple of seconds to reach a verdict, so a fresh
+// busy period is assumed to be a peer until that lag has passed: keying
+// over a burst whose preamble we have not yet classified is the failure
+// this whole mechanism exists to prevent.
+bool ModemWorker::peerBusyLocked(double now) const {
+  if (!chanBusy_) return false;
+  if (busyIsPeer_) return true;
+  if (busySince_ < 0.0) return true;  // busy but unclassified: defer
+  return (now - busySince_) < kBusyClassifySec;
+}
+
+// RX spectrum for the GUI waterfall. Welch-style: a Hann-windowed FFT
+// over a fixed block, magnitude-averaged into the telemetry bins. Rate
+// limited to ~10 Hz - the GUI renders at frame rate and a spectrum per
+// audio chunk would be pure waste in the worker's hot path.
+void ModemWorker::updateSpectrumLocked(std::span<const cfloat> bb) {
+  constexpr int kFftN = 2 * kSpectrumBins;  // real bins = N/2
+  specAcc_.insert(specAcc_.end(), bb.begin(), bb.end());
+  if (specAcc_.size() < size_t(kFftN)) return;
+
+  const double now = nowSec();
+  if (now - specLastAt_ < 0.1) {
+    // Keep the buffer bounded while rate-limited.
+    if (specAcc_.size() > size_t(4 * kFftN)) {
+      specAcc_.erase(specAcc_.begin(),
+                     specAcc_.end() - long(2 * kFftN));
+    }
+    return;
+  }
+  specLastAt_ = now;
+
+  static const Fft fft(kFftN);
+  std::vector<cfloat> in(kFftN), out(kFftN);
+  const size_t base = specAcc_.size() - size_t(kFftN);
+  for (int i = 0; i < kFftN; ++i) {
+    // Hann window: without it a strong carrier smears across the whole
+    // display and the waterfall shows nothing useful.
+    const float w =
+        0.5f * (1.0f - std::cos(2.0f * float(M_PI) * float(i) /
+                                float(kFftN - 1)));
+    in[size_t(i)] = specAcc_[base + size_t(i)] * w;
+  }
+  fft.forward(in.data(), out.data());
+  specAcc_.clear();
+
+  if (specAvg_.size() != size_t(kSpectrumBins)) {
+    specAvg_.assign(size_t(kSpectrumBins), 0.0f);
+  }
+  // The baseband is complex and centred on the waveform centre, so bin 0
+  // is DC and the display spans the positive half.
+  for (int k = 0; k < kSpectrumBins; ++k) {
+    const float mag = std::abs(out[size_t(k)]) / float(kFftN);
+    specAvg_[size_t(k)] += 0.35f * (mag - specAvg_[size_t(k)]);
+    working_.spectrumDbfs[k] =
+        specAvg_[size_t(k)] > 1e-9f
+            ? float(20.0 * std::log10(double(specAvg_[size_t(k)])))
+            : -120.0f;
+  }
+  working_.spectrumSeq = ++specSeq_;
+}
+
+// Passive monitor pass over a capture window. Runs for BOTH decode paths
+// (the burst-end fast path and the retry ladder) so third-party traffic is
+// reported regardless of which one took the frame.
+void ModemWorker::runMonitorLocked(std::span<const cfloat> win) {
+  if (!monitorOn_ || !monitor_) return;
+  monitor_->setLocalConnected(engine_->state() == FsmState::Connected);
+  auto ev = monitor_->rxBurst(win);
+  // Broadcast chains complete inside the Monitor; drain them whether or
+  // not this particular frame produced an event line.
+  auto bcasts = monitor_->takeBroadcasts();
+  if (!ev && bcasts.empty()) return;
+
+  std::lock_guard lock(bridgeMutex_);
+  if (ev) {
+    notes_.push_back(ev->monLine);
+    if (!ev->binaryRecord.empty()) {
+      monRecords_.push_back(ev->binaryRecord);
+    }
+  }
+  // A reassembled CQ/BEACON/BCAST_DATA payload was being built by the
+  // Monitor and then thrown away - nothing surfaced it on either port.
+  // It now rides the control port as its own notification, which is the
+  // only surface available while a session holds the data port.
+  // Each entry carries the callsign its chain was attributed to, so
+  // overlapping senders are reported separately rather than merged.
+  for (const auto& [src, payload] : bcasts) {
+    notes_.push_back(evtBroadcast(src, payload));
+  }
+}
+
+// --- channel memory ----------------------------------------------------------
+
+std::string ModemWorker::defaultChanMemPath() {
+  // SKW_CHANMEM_PATH overrides the location; set it empty (or to "-") to
+  // run without persistence at all, which is what the tests do so a suite
+  // run never writes to the operator's real store.
+  if (const char* over = getenv("SKW_CHANMEM_PATH")) {
+    const std::string p(over);
+    return (p.empty() || p == "-") ? std::string{} : p;
+  }
+  const char* home = getenv("HOME");
+  if (!home || !*home) return {};
+  const std::string dir = std::string(home) + "/.skywave";
+  // Best-effort: a missing directory simply means no persistence.
+  ::mkdir(dir.c_str(), 0700);
+  return dir + "/chanmem.bin";
+}
+
+// Written on teardown and, so a crash cannot lose a day of learning, at
+// most every 60 s while sessions are ending.
+void ModemWorker::saveChanMem() {
+  if (chanMemPath_.empty() || chanMem_.entries() == 0) return;
+  chanMem_.save(chanMemPath_);
+}
+
+// --- physical keying ---------------------------------------------------------
+
+void ModemWorker::pttKeyLocked(double now) {
+  if (pttKeyed_) return;
+  pttKeyed_ = true;
+  pttKeyedAt_ = now;
+  txWatchdogTripped_ = false;
+  if (ptt_ && !ptt_->key()) {
+    SKW_WARN("ptt: %s key failed: %s", ptt_->name(),
+             ptt_->lastError().c_str());
+  }
+  working_.ptt = true;
+}
+
+void ModemWorker::pttUnkeyLocked() {
+  if (!pttKeyed_) return;
+  pttKeyed_ = false;
+  if (ptt_ && !ptt_->unkey()) {
+    SKW_WARN("ptt: %s unkey failed: %s", ptt_->name(),
+             ptt_->lastError().c_str());
+  }
+  working_.ptt = false;
+}
+
+// TX watchdog (DSP.md / INTERFACES.md): a transmission that outlives
+// modem.tx_watchdog_s force-releases the key and discards whatever audio is
+// still staged. This is a safety net against a wedged modem holding a
+// transmitter down, not a tuning knob - tripping it is always a bug, so it
+// is loud and it surfaces on the control port.
+void ModemWorker::pttWatchdogLocked(double now) {
+  if (!pttKeyed_ || cfg_.txWatchdogSec <= 0.0) return;
+  if (now - pttKeyedAt_ < cfg_.txWatchdogSec) return;
+
+  SKW_ERROR("TX WATCHDOG: keyed %.1f s (limit %.1f s) - forcing unkey",
+            now - pttKeyedAt_, cfg_.txWatchdogSec);
+  pttUnkeyLocked();
+  txWatchdogTripped_ = true;
+  txPending_.clear();
+  txPendingOff_ = 0;
+  txTestUntil_ = 0.0;
+  {
+    std::lock_guard lock(bridgeMutex_);
+    notes_.push_back(evtTxWatchdog(now - pttKeyedAt_));
+  }
+}
 
 void ModemWorker::rebuildEngine() {
   // Numerology profile FIRST: every DSP object constructed below reads
@@ -73,6 +269,10 @@ void ModemWorker::rebuildEngine() {
   ec.policy.family = cfg_.family;
   ec.policy.maxMode = uint8_t(cfg_.maxMode);
   uint16_t caps = kCapZstd | kCapBurstMac;
+  // Scheduled turn-taking (PROTOCOL.md "Turn-Taking"): default-on; the
+  // env kill-switch exists for A/B measurement against the legacy
+  // occupancy-gate scheduler, not as an operator feature.
+  if (!getenv("SKW_NO_TURNSCHED")) caps |= kCapTurnSched;
   if (cfg_.resume) caps |= kCapResume;
   if (cfg_.carrierMasking && prof.masking) caps |= kCapMasking;
   if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
@@ -81,6 +281,11 @@ void ModemWorker::rebuildEngine() {
   ec.policy.cssEnable = css;
   ec.policy.caps = caps;
   ec.arqMaxRetries = cfg_.maxRetries;
+  // `CHANMEM OFF` withholds the pointer, which disables seeding AND
+  // recording - a stored flag that only gated the seed would keep
+  // polluting the store while claiming to be off.
+  ec.chanMem = cfg_.channelMemory ? &chanMem_ : nullptr;
+  ec.freqBucketKhz = freqBucketKhz_;
   ec.maskingEnabled = cfg_.carrierMasking && prof.masking;
   ec.cpAuto = cfg_.cpMode < 0;
   ec.cwId = cfg_.cwId;
@@ -104,12 +309,29 @@ void ModemWorker::rebuildEngine() {
   }
 #endif
   engine_.emplace(std::move(ec));
+  // The constellation tap costs a divide per symbol and an allocation
+  // per frame, so it is paid for only when something renders it.
+  engine_->setWantConstellation(cfg_.guiEnabled);
   if (cfg_.cpMode >= 0) {
     static const char* kCp[] = {"SHORT", "MEDIUM", "LONG"};
     engine_->setCpPolicy(kCp[std::clamp(cfg_.cpMode, 0, 2)], nowSec());
   }
   monitor_.emplace(cfg_.family);
+  // Physical keying follows the config; releasing the old driver first
+  // guarantees a method change cannot strand a keyed transmitter.
+  if (ptt_) pttUnkeyLocked();
+  ptt_ = makePttDriver(cfg_.pttMethod, cfg_.pttTarget, cfg_.pttBaud);
+  if (cfg_.pttMethod != PttMethod::None && !ptt_->healthy()) {
+    SKW_WARN("ptt: %s unavailable (%s) - transmitting without keying",
+             ptt_->name(), ptt_->lastError().c_str());
+  }
   det_ = ChirpDetector(cfg_.family);
+  detAlt_.reset();
+  if (cfg_.familyFallback) {
+    const Family alt = narrowerFamily(cfg_.family);
+    if (alt != cfg_.family) detAlt_.emplace(alt);
+  }
+  detsAlt_.clear();
   down_.reset();
   hist_.clear();
   histBase_ = 0;
@@ -230,17 +452,54 @@ void ModemWorker::pumpRxLocked(double now) {
       if (floorBlocks_.size() > 150) floorBlocks_.pop_front();
       floorDbfs_ =
           *std::min_element(floorBlocks_.begin(), floorBlocks_.end());
+      const bool wasBusy = chanBusy_;
       chanBusy_ = blockDbfs_ > floorDbfs_ + 6.0f;
+      if (chanBusy_ && !wasBusy) {
+        busySince_ = now;      // start of a new busy period
+        busyIsPeer_ = false;   // nothing has claimed it yet
+      } else if (!chanBusy_) {
+        busySince_ = -1.0;
+        busyIsPeer_ = false;
+      }
     }
   }
+
+  updateSpectrumLocked(bb);
 
   hist_.insert(hist_.end(), bb.begin(), bb.end());
   dets_.clear();
   det_.process(bb, dets_);
+  // Second acquisition path, active only while no session exists.
+  //
+  // Alternate-family detections are ADDITIVE to the decode budget, so a
+  // false one costs a real frame its capture attempt. Two guards keep
+  // that cheap: the primary family wins outright when it detected
+  // anything in this chunk, and the alternate must clear a higher
+  // quality bar than the primary's own threshold before it opens a
+  // window.
+  if (detAlt_ && dets_.empty() &&
+      engine_->state() != FsmState::Connected &&
+      engine_->state() != FsmState::Disconnecting) {
+    detsAlt_.clear();
+    detAlt_->process(bb, detsAlt_);
+    for (const auto& d : detsAlt_) {
+      if (d.quality >= kAltFamilyMinQuality) dets_.push_back(d);
+    }
+  } else if (detAlt_) {
+    // Keep the detector's internal history coherent without acting on it,
+    // so it is warm the moment the session ends.
+    detsAlt_.clear();
+    detAlt_->process(bb, detsAlt_);
+  }
   for (const auto& d : dets_) {
     const double margin = kRxPreMarginSec * kFsBaseband;
     const double s = std::max(0.0, d.startSample - margin);
     pendingRx_.push_back({uint64_t(s), 0});
+    // A chirp preamble proves this busy period is a STATION, not noise.
+    // The claim is sticky for the whole busy period and is dropped the
+    // moment the channel clears, so one stray classification cannot mark
+    // a jammer as a peer indefinitely.
+    busyIsPeer_ = true;
   }
 
   // Grow each pending capture along the retry ladder until the engine
@@ -296,6 +555,10 @@ void ModemWorker::pumpRxLocked(double now) {
             listen_ || engine_->state() != FsmState::Idle;
         --decodeBudget;
         if (engineEligible && engine_->rxBurst(win, now, false)) {
+          // The burst-end fast path used to return without ever running
+          // the monitor, so every frame it caught was invisible to
+          // MONITOR clients.
+          runMonitorLocked(win);
           done = true;
         }
       }
@@ -316,17 +579,7 @@ void ModemWorker::pumpRxLocked(double now) {
       --decodeBudget;
       ++it->tries;
       if (decoded || it->tries >= kRxTries) {
-        if (monitorOn_ && monitor_) {
-          monitor_->setLocalConnected(engine_->state() ==
-                                      FsmState::Connected);
-          if (auto ev = monitor_->rxBurst(win)) {
-            std::lock_guard lock(bridgeMutex_);
-            notes_.push_back(ev->monLine);
-            if (!ev->binaryRecord.empty()) {
-              monRecords_.push_back(ev->binaryRecord);
-            }
-          }
-        }
+        runMonitorLocked(win);
         done = true;
         break;
       }
@@ -461,6 +714,11 @@ void ModemWorker::pumpTxLocked(double now) {
   }
   // Drain staged audio into the ring as space frees up.
   if (txPendingOff_ < txPending_.size()) {
+    // Key BEFORE the first sample enters the ring. An empty ring means the
+    // audio callback starts consuming within one callback period, so the
+    // burst's own lead-silence padding is what actually covers the rig's
+    // keying latency - which is exactly what ptt_lead_ms is specified to do.
+    if (!pttKeyed_) pttKeyLocked(now);
     const size_t n = std::min(tx_.writeAvailable(),
                               txPending_.size() - txPendingOff_);
     if (n > 0) {
@@ -474,7 +732,11 @@ void ModemWorker::pumpTxLocked(double now) {
     }
   } else {
     txLevel_ = -120.0f;
+    // Everything staged has been handed to the ring; release the key only
+    // once the ring itself has drained, or the tail would be cut off.
+    if (pttKeyed_ && tx_.readAvailable() == 0) pttUnkeyLocked();
   }
+  pttWatchdogLocked(now);
 }
 
 void ModemWorker::drainEngineOutputsLocked() {
@@ -526,6 +788,41 @@ void ModemWorker::updateStateEventsLocked() {
     std::lock_guard lock(bridgeMutex_);
     notes_.push_back(evtBusy(chanBusy_));
   }
+
+  // EVT:SNR (INTERFACES.md). Rate-limited by CHANGE, not by clock: a
+  // 1 dB step is the smallest move worth a UI update, and a quiet link
+  // then costs nothing. Without this a client can only learn link quality
+  // by polling STATUS.
+  if (st == FsmState::Connected) {
+    const double local = engine_->lastRxSnrDb();
+    const double remote = engine_->remoteSnrDb();
+    const bool remoteValid = remote > -98.0;
+    if (std::abs(local - lastSnrEvt_) >= 1.0 ||
+        (remoteValid && std::abs(remote - lastRemoteSnrEvt_) >= 1.0)) {
+      lastSnrEvt_ = local;
+      lastRemoteSnrEvt_ = remoteValid ? remote : lastRemoteSnrEvt_;
+      std::lock_guard lock(bridgeMutex_);
+      notes_.push_back(evtSnr(local, remote, remoteValid));
+    }
+  } else {
+    lastSnrEvt_ = -999.0;
+    lastRemoteSnrEvt_ = -999.0;
+  }
+
+  // EVT:CFO_WARN (INTERFACES.md): the TX alignment shift has run past the
+  // +-40 Hz envelope, which means the dial itself needs retuning - the
+  // per-side clamp cannot correct any further. Edge-triggered with 5 Hz of
+  // hysteresis so a value parked at the clamp does not spam the client.
+  {
+    const double shift = std::abs(engine_->txShiftHz());
+    if (!cfoWarned_ && shift >= 40.0) {
+      cfoWarned_ = true;
+      std::lock_guard lock(bridgeMutex_);
+      notes_.push_back(evtCfoWarn(engine_->txShiftHz()));
+    } else if (cfoWarned_ && shift < 35.0) {
+      cfoWarned_ = false;
+    }
+  }
 }
 
 size_t ModemWorker::processChunk() {
@@ -533,7 +830,7 @@ size_t ModemWorker::processChunk() {
   const double now = nowSec();
   const size_t availBefore = rx_.readAvailable();
   pumpRxLocked(now);
-  engine_->setChannelBusy(chanBusy_);  // Pre-TX CCA gate input
+  engine_->setChannelBusy(peerBusyLocked(now));  // Pre-TX CCA gate input
   engine_->setTxQueueSec(
       (double(txPending_.size() - txPendingOff_) + double(tx_.readAvailable())) /
       double(kFsAudio));
@@ -548,7 +845,28 @@ size_t ModemWorker::processChunk() {
   working_.txLevelDbfs = txLevel_;
   working_.noiseFloorDbfs = floorDbfs_;
   working_.busy = chanBusy_;
-  working_.ptt = txPendingOff_ < txPending_.size();
+  working_.ptt = pttKeyed_;
+  // GUI instrument taps.
+  if (engine_->constellationSeq() != working_.constellationSeq) {
+    working_.constellationSeq = engine_->constellationSeq();
+    const auto& pts = engine_->lastConstellation();
+    // Take the MOST RECENT points: the tail of a frame is the freshest
+    // view of the channel, and the head can still be settling.
+    const size_t n = std::min<size_t>(pts.size(), kConstellationPts);
+    working_.constellationN = uint16_t(n);
+    for (size_t i = 0; i < n; ++i) {
+      const auto& z = pts[pts.size() - n + i];
+      working_.constellationI[i] = z.real();
+      working_.constellationQ[i] = z.imag();
+    }
+  }
+  {
+    const auto& m = engine_->rxMask();
+    working_.maskCarriers = uint16_t(plan(cfg_.family).carriers());
+    for (size_t i = 0; i < sizeof(working_.maskBits); ++i) {
+      working_.maskBits[i] = m.bits[i];
+    }
+  }
   working_.fsmState = uint8_t(engine_->state());
   working_.mode = uint8_t(engine_->sessionMode());
   publishTelemetry();
@@ -878,6 +1196,11 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
       {"TXBUF", std::to_string(engine_->txBacklog()), false},
       {"FOK", std::to_string(engine_->framesOk()), false},
       {"FFAIL", std::to_string(engine_->framesFailed()), false},
+      {"TURN",
+       !engine_->turnSchedActive() ? "-"
+       : engine_->turnIss()        ? "ISS"
+                                   : "IRS",
+       true},
   };
   std::string out;
   if (json) {
@@ -921,6 +1244,17 @@ std::string ModemWorker::audioLevel() {
   return "RX=" + fmt1(rxLevel_) + " TX=" + fmt1(txLevel_);
 }
 
+// `FREQINFO <hz>`: the dial frequency the companion app is tuned to. It
+// keys channel memory into 1 kHz buckets so the store distinguishes a peer
+// worked on 40 m from the same peer on 20 m. 0 clears it.
+bool ModemWorker::setDialFreqHz(double hz) {
+  if (hz < 0.0 || hz > 3e10 || !std::isfinite(hz)) return false;
+  std::lock_guard lock(modemMutex_);
+  freqBucketKhz_ = hz > 0.0 ? int32_t(hz / 1000.0) : -1;
+  engine_->setFreqBucketKhz(freqBucketKhz_);
+  return true;
+}
+
 std::string ModemWorker::freqInfo() {
   std::lock_guard lock(modemMutex_);
   return "CENTER=" + fmt1(centerHz()) +
@@ -930,7 +1264,10 @@ std::string ModemWorker::freqInfo() {
 
 std::string ModemWorker::pttGet(const std::string& key) {
   std::lock_guard lock(modemMutex_);
-  if (key == "METHOD") return toString(cfg_.pttMethod);
+  // Canonical UPPERCASE on the wire like every other response; core
+  // toString() stays lowercase for INI files (CONFIGURATION.md). The
+  // same split was fixed for FAMILY at the M5 gate and missed here.
+  if (key == "METHOD") return upperStr(toString(cfg_.pttMethod));
   if (key == "PORT") return cfg_.pttTarget.empty() ? "-" : cfg_.pttTarget;
   if (key == "BAUD") return std::to_string(cfg_.pttBaud);
   if (key == "LEAD") return std::to_string(cfg_.pttLeadMs);
