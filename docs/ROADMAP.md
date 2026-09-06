@@ -2290,3 +2290,99 @@ M3 ramp 0.94 fading / 0.67 static, 0 drops; VHF sustained 25.5 kbps;
 CSS deep-tier MAC 19% of net; m2 bidirectional 0.87; one-way repro
 49,152 B / 300 s; `st2_simultaneous_tx_collision` + both duplex
 `test_st2` variants green.
+
+## Turn-taking overhead round (2026-09-06)
+
+Operator direction: keep scheduled turn-taking the default for the
+connected ARQ session, fix its overhead, keep listen-before-talk where
+it is actually correct. LBT was already confined to the right places
+(`turnSchedActive()` needs the negotiated cap AND `Connected`; CALL /
+handshake and CQ / BEACON / BCAST_DATA go through the control busy-hold)
+- now written down in PROTOCOL.md "Turn-Taking" -> "Scope". The
+overhead work found three defects, each hidden behind the previous one.
+
+### 1. Handover: window boundary, not quantum
+
+The fixed `max(45 s, 3 x ARQ timeout)` quantum was sized to the
+store-and-forward world's inflated RTT. Worse, the drain's "done" test
+required the proto BACKLOG to be empty, so under any continuous load the
+window-clear condition could never be met and EVERY handover waited out
+the full 2 x timeout cap (30-60 s). That, not collisions, was the whole
+of turn-taking's 2.7:1 deficit against CCA on the coupled churn. Now:
+minimum hold `kTurnMinHoldRtts = 2` x srtt (>= 6 s), then stop pulling
+segments and grant at the next window boundary (nothing in flight,
+nothing pulled still waiting to air); the 2 x timeout cap is only the
+deaf-peer backstop. Measured cadence ~17-20 s per turn.
+
+### 2. The ISS must not key over a burst still airing
+
+Frequent handovers exposed a physical-layer omission on the turn-sched
+data path: it consulted no busy detector at all ("the role arbitrates").
+The new ISS keyed the instant it decoded `TURN_GRANT` while the rest of
+the granting burst (ACK and probe frames bundled behind it) was still on
+air, so the keyed-and-deaf peer never heard the confirming DATA; every
+retransmit collided the same way (`SKW_EMIT_DEBUG` shows `busy=1` on
+each), the granter retried three times and RECLAIMED, and the link spent
+a minute with two senders. Fix: the ISS holds DATA while `chanBusy_`,
+same 30 x airScale_ runaway cap as the control hold, no post-clear
+jitter (it is the only sender). This one rule was worth more than the
+scheduler change: half-duplex one-way floor test 49,152 -> **81,920 B /
+300 s**, m2 bidirectional ratio 0.87 -> **1.00** - the ISS had been
+keying over the peer's ACK bursts all along.
+
+### 3. Root cause of the fading-soak stalls: receiver masked below M8
+
+With the collisions gone the churn seeds still froze on a usable
+channel. `SKW_ARQ_DEBUG` showed ten NAKs for the same sequence: the peer
+heard every retransmit (header decoded) and failed the payload every
+time, at M7, M6 and M5 alike, while every control frame passed. bertool
+(`--modes 7 --payload 400`) proved the PHY decodes such a frame in
+isolation. The difference: control frames fit in the header's 30-byte
+piggyback and never walk payload symbols; DATA does, and the receiver
+applied the session CARRIER MASK to that walk at every mode, while the
+transmitter (per LINK_ADAPTATION.md) masks only at M8+ - spread modes
+skip masking. So once any `MASK_UPDATE` had been exchanged, the first
+demotion below M8 made every DATA frame undecodable for the rest of the
+session: NAK loop, AMC demotes further, "usable channel but no
+progress". `m3_mask_excision` never caught it because it pins M10.
+Fix: one predicate `modeUsesCarrierMask()` (framer.hpp) shared by the
+transmitter, the receiver's payload walk, and the engine's RX airtime
+estimate; regression `m3_mask_survives_demotion_below_m8` (fails on the
+old receiver, passes now). This is very likely the mechanism behind
+most of the "fading channel" soak failures this log has chased: a
+frequency-selective fade looks like narrowband interference to the mask
+classifier, and fades also demote.
+
+### Measurements (soak_st2 churn, half-duplex streaming world)
+
+| schedule | turn-taking | legacy CCA |
+|---|---|---|
+| coupled (static start) | **78,694 B balanced, PASS** (was 35,464 FAIL) | 100,091 B, PASS (was 95,849) |
+| decoupled seed 11 | 14,970 B, FAIL t=841 (was FAIL t=380) | 9,096 B, B->A **0**, FAIL t=481 |
+| decoupled seed 12 | 26,397 B, FAIL t=721 (was t=581) | 4,407 B, B->A **0**, FAIL t=360 |
+| decoupled seed 13 | **40,957 B, PASS** (was FAIL t=481) | 4,400 B, B->A **0**, FAIL t=360 |
+
+On the symmetric coupled world legacy still leads by ~27% - CCA's
+collision cost on a two-station link with a working busy detector is
+small. On the decoupled schedule (fade from t=0) turn-taking wins 3/3:
+legacy's CCA capture starves the reverse direction to zero every time,
+which is precisely the failure the schedule exists to prevent. Blackout
+seeds are identical to churn seeds up to the stall.
+
+The remaining decoupled stalls are pace-bound, not wedged: the seed-12
+trace after t=420 shows turns alternating every ~45 s and frames
+delivered, but at a set-point of 8-13 dB (delivering ~5 dB or less per
+the calibration finding) the link sits at M6/M7 stop-and-wait, the AMC
+flaps M6->M7->M8->M7->M6 inside 60 s on a "static" channel, and a 4 KiB
+coalesced message completes slower than the 300 s watchdog. Two DATA
+frames per 58 s turn were observed. Next levers, in order: AMC
+hysteresis at the robust tier, robust-tier turn utilisation, floor
+calibration in bertool (the watchdog's "usable" test reads the
+set-point).
+
+### Gate summary (final binary, 40/40 ctest)
+
+M3 ramp 0.94 fading / 0.67 static, 0 drops; VHF sustained 25.5 kbps;
+CSS deep-tier MAC 19% of net; m2 bidirectional **1.00**; one-way
+half-duplex **81,920 B / 300 s** (full-duplex 94,208); test_m2 21/21
+with the new mask regression.

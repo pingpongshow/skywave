@@ -86,6 +86,14 @@ int framesPerBurst(int mode) {
 
 // Resume window (PROTOCOL.md "Session Resume").
 constexpr double kResumeWindowSec = 600.0;
+// Turn-taking minimum hold (PROTOCOL.md "Turn-Taking"), in measured
+// round trips: once the peer has asked for the turn, the ISS keeps it at
+// least this long so every turn moves at least a window's worth of data
+// before the handover cost is paid again, then hands over at the next
+// window boundary. Two round trips = one full send-and-acknowledge
+// cycle. The previous scheme held a fixed max(45 s, 3 x ARQ timeout)
+// "quantum" sized to the store-and-forward world's inflated RTT.
+constexpr double kTurnMinHoldRtts = 2.0;
 
 }  // namespace
 
@@ -161,6 +169,29 @@ bool LinkEngine::ccaDataGated(double now) {
         ccaProceedAt_ =
             now + (arqTx_.haveRtt() ? arqTx_.srttSec() : ackAirSec_ + 1.0);
       }
+    }
+    // HALF-DUPLEX PHYSICS, not arbitration: the ISS never keys over a
+    // burst that is still airing. The busy detector arbitrates nothing
+    // here, but "the peer is keyed, therefore deaf" is a physical fact
+    // the schedule cannot repeal. Measured without this: the new ISS
+    // keyed the instant it decoded TURN_GRANT while the REST of the
+    // granting burst (the ACK and probe frames bundled behind it) was
+    // still airing, so the peer never heard the confirming DATA; every
+    // retransmit then landed the same way, the granter reclaimed, and
+    // the link spent a minute with two senders. Frequent handovers
+    // turned a rare collision into a systematic one. Same rule and same
+    // runaway cap as the control-frame hold (30 x airScale_ outlasts
+    // any legitimate peer burst, deep tier included); no post-clear
+    // jitter - the ISS is the only sender, so it fires the instant the
+    // channel clears.
+    if (chanBusy_) {
+      if (ccaWaitStart_ < 0.0) ccaWaitStart_ = now;
+      if (now - ccaWaitStart_ < 30.0 * airScale_) {
+        ccaReason_ = 6;
+        return true;
+      }
+    } else {
+      ccaWaitStart_ = -1.0;
     }
     if (turnRole_ != TurnRole::Iss) {
       ccaReason_ = 5;
@@ -1277,8 +1308,9 @@ std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
   tp.cpMode = cpMode_;
   tp.payload = raw;
   // Spread modes (M4-M7) skip masking: spreading already averages over
-  // interference (LINK_ADAPTATION.md).
-  if (f.mode >= 8 && txMask_.maskedCount(cfg_.policy.family) > 0) {
+  // interference (LINK_ADAPTATION.md). Shared predicate with the receiver.
+  if (modeUsesCarrierMask(f.mode) &&
+      txMask_.maskedCount(cfg_.policy.family) > 0) {
     tp.mask = &txMask_;
   }
   auto burst = buildFrameBaseband(tp);
@@ -1894,43 +1926,47 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (turnSchedActive()) {
     if (turnRole_ == TurnRole::Iss) {
       breakSentAt_ = -1.0;
-      // Hand the turn over when the peer wants it and we are out of
-      // data - or when we have held the channel a full quantum with the
-      // peer still waiting: continuous two-way load must ALTERNATE.
-      // The quantum is round-trip-scaled so a turn always spans several
-      // full window cycles, not a fixed count of seconds that a slow
-      // link would burn entirely on one exchange.
+      // Hand the turn over when the peer wants it: at once if we are out
+      // of data, otherwise at the first window boundary after a short
+      // round-trip-scaled minimum hold - continuous two-way load must
+      // ALTERNATE, and every turn must pay for its handover with at
+      // least one window of data.
       if (breakReqPending_ && !grantAwaitingData_) {
-        const double quantumSec =
-            std::max(45.0, 3.0 * arqTx_.timeoutSec());
-        const bool freshData =
-            !protoTx_.idle() || fileTx_.active() ||
+        // HANDOVER AT THE NEXT WINDOW BOUNDARY, after a short minimum
+        // hold - PACTOR's changeover rule (finish the outstanding
+        // exchange, then honour the break), not a fixed quantum. The
+        // previous scheme held max(45 s, 3 x ARQ timeout) and, worse,
+        // its "drained" test required the proto BACKLOG to be empty, so
+        // under any continuous load the window-clear condition could
+        // never be met and every handover waited out the full drain cap
+        // (2 x ARQ timeout, 30-60 s). Measured on the corrected world as
+        // turn-taking losing to legacy CCA 2.7:1 on a static-start
+        // churn - handover overhead, not collisions, was the cost.
+        const double minHoldSec = std::max(
+            6.0, kTurnMinHoldRtts *
+                     (arqTx_.haveRtt() ? arqTx_.srttSec() : 10.0));
+        const bool queuedData =
             std::any_of(outQueue_.begin(), outQueue_.end(),
                         [](const OutFrame& q) {
                           return q.env.type == LinkType::Data;
                         });
-        // A handover is DUE (no fresh data, or the quantum expired with
-        // the peer waiting). Do not hand over yet: DRAIN first. Granting
-        // with unacknowledged frames in flight stranded them for the
-        // peer's whole turn - the IRS cannot retransmit - and once a
-        // mid-fade demotion shrank the window under them they blocked
-        // every new segment too (measured: churn froze at 17.7 KB with
-        // inflight=8 against a window of 2). PACTOR's changeover rule
-        // is the same: the ISS completes its outstanding exchange, then
-        // honours the break.
-        if ((!freshData || now - roleSince_ > quantumSec) &&
-            turnDrainSince_ < 0.0) {
-          turnDrainSince_ = now;
+        const bool haveBacklog =
+            !protoTx_.idle() || fileTx_.active() || queuedData;
+        if (turnDrainSince_ < 0.0 &&
+            (!haveBacklog || now - roleSince_ >= minHoldSec)) {
+          turnDrainSince_ = now;  // stop pulling new segments; let it clear
         }
         if (turnDrainSince_ >= 0.0) {
-          // Cap the drain: a peer that has gone deaf to us (asymmetric
-          // fade) must not hold the turn hostage - after two ARQ
-          // timeouts of no progress the reverse direction gets its turn
-          // regardless, and its ACKs may well release what we hold.
-          const bool drained = arqTx_.inFlight() == 0 && !freshData;
+          // The window is clear when nothing is in flight and nothing
+          // already pulled is still waiting to air. Granting with
+          // unacknowledged frames in flight strands them for the peer's
+          // whole turn (the IRS cannot retransmit). The cap is only the
+          // deaf-peer backstop: a peer that has gone deaf to us must not
+          // hold the turn hostage past two ARQ timeouts.
+          const bool windowClear = arqTx_.inFlight() == 0 && !queuedData;
           const bool capped =
               now - turnDrainSince_ > 2.0 * arqTx_.timeoutSec();
-          if (drained || capped) grantTurn(now);
+          if (windowClear || capped) grantTurn(now);
         }
       } else {
         turnDrainSince_ = -1.0;  // request withdrawn / not pending
@@ -2301,7 +2337,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       tp.seqLow = uint8_t(group[0].env.sequence & 0xFF);
       tp.cpMode = cpMode_;
       tp.payload = payload;
-      if (group[0].mode >= 8 &&
+      if (modeUsesCarrierMask(group[0].mode) &&
           txMask_.maskedCount(cfg_.policy.family) > 0) {
         tp.mask = &txMask_;
       }
@@ -2363,7 +2399,12 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
     tp.seqLow = res->header.seqLow;
     std::vector<uint8_t> shape(res->header.length);  // geometry needs size only
     tp.payload = shape;
-    tp.mask = fsm_.state() == FsmState::Connected ? &rxMask_ : nullptr;
+    // The peer masks toward us exactly when it would mask its own TX:
+    // same predicate, or the estimate is wrong for spread-mode frames.
+    tp.mask = fsm_.state() == FsmState::Connected &&
+                      modeUsesCarrierMask(int(res->header.mode))
+                  ? &rxMask_
+                  : nullptr;
     lastRxAirtimeSec_ = frameAirtimeSec(tp);
   }
   if (res && !res->constellation.empty()) {

@@ -98,6 +98,16 @@ struct FrameGeometry {
 };
 FrameGeometry computeGeometry(const TxFrameParams& p);
 
+// Which modes honour the session carrier mask (LINK_ADAPTATION.md
+// "Carrier Masking"): spread modes M4-M7 skip it - spreading already
+// averages over interference. ONE predicate for the transmitter, the
+// receiver's payload walk and the airtime estimate: the receiver once
+// applied the mask at every mode while the transmitter did not, so after
+// a mask was established every DATA frame below M8 failed to decode
+// (control frames, which fit in the header piggyback, kept passing) -
+// measured as the churn soak's "usable channel, no progress" stall.
+inline bool modeUsesCarrierMask(int mode) { return mode >= 8; }
+
 // On-air duration of a frame (PROTOCOL.md timers are airtime-derived).
 inline double frameAirtimeSec(const TxFrameParams& p) {
   return double(computeGeometry(p).totalSamples) / kFsBaseband;

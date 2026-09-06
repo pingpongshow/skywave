@@ -559,6 +559,57 @@ TEST_CASE(m3_mask_excision) {
   CHECK(p.a.state() == FsmState::Connected);
 }
 
+TEST_CASE(m3_mask_survives_demotion_below_m8) {
+  // Regression: a session that established a carrier mask at M10 then
+  // demoted into the spread tier (M4-M7, which the TRANSMITTER never
+  // masks) must keep moving data. The receiver used to apply the session
+  // mask to the payload walk at every mode, so after a mask existed
+  // every DATA frame below M8 failed while control frames (header
+  // piggyback only) still passed - the churn soak's "usable channel, no
+  // progress" stall.
+  Pair p(16.0, 89);
+  CHECK(p.connect());
+  CHECK(p.a.pinMode(10, p.now));
+  for (int i = 0; i < 40 && p.b.sessionMode() != 10; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), 10);
+  p.chanAB.toneHz = 300.0;
+  p.chanAB.toneAmp = 0.35;
+  auto blob = noiseBlob(24 * 1024, 89);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  bool masked = false;
+  for (int i = 0; i < 6000 && got.size() < blob.size(); ++i) {
+    p.step();
+    if (!masked && p.a.txMaskedCount() > 0) masked = true;
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  CHECK(masked);
+  CHECK(p.b.rxMaskedCount() > 0);
+  CHECK_EQ(int(got.size()), int(blob.size()));
+  // Now demote below the masking tier with the mask still in force on
+  // both ends and move a second blob. Both directions: B's TX toward A
+  // is masked by A's rx-side mask only at M8+, same rule.
+  CHECK(p.a.pinMode(6, p.now));
+  for (int i = 0; i < 60 && p.b.sessionMode() != 6; ++i) p.step();
+  CHECK_EQ(p.a.sessionMode(), 6);
+  CHECK_EQ(p.b.sessionMode(), 6);
+  CHECK(p.b.rxMaskedCount() > 0);  // the mask did not go away
+  auto blob2 = noiseBlob(4 * 1024, 90);
+  p.a.sendData(blob2);
+  std::vector<uint8_t> got2;
+  for (int i = 0; i < 6000 && got2.size() < blob2.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got2.insert(got2.end(), d.begin(), d.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  CHECK_EQ(int(got2.size()), int(blob2.size()));
+  CHECK(got2 == blob2);
+  CHECK(p.a.state() == FsmState::Connected);
+}
+
 namespace {
 
 // Airtime to move `bytes` at pinned M13 over a clean 30 dB channel.

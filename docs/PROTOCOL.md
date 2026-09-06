@@ -333,12 +333,21 @@ round-trip-scaled cadence when the ISS has gone idle and no ACK is
 otherwise due. The bit mirrors current state: a later ACK without it
 withdraws the request.
 
-**Handover.** The ISS sends `TURN_GRANT` (u8 epoch, incremented per
-handover) when the peer has requested the turn and either its own
-backlog is empty or it has held the role a full quantum
-(`max(45 s, 3 × ARQ timeout)`) — continuous two-way load alternates
-rather than starving one direction. On sending the grant it becomes the
-IRS immediately; the peer's first `DATA` frame confirms the handover. An
+**Handover.** When the peer has requested the turn, the ISS keeps it for
+a short **minimum hold** (2 measured round trips — one full
+send-and-acknowledge cycle, so every turn moves at least a window of
+data before the handover cost is paid again), then stops pulling new
+segments and sends `TURN_GRANT` (u8 epoch, incremented per handover) at
+the **next window boundary** — the moment nothing is in flight and
+nothing already pulled is waiting to air. An ISS with no backlog hands
+over as soon as its window clears. The only fixed timer is the deaf-peer
+backstop: a peer that has gone deaf to us cannot hold the turn hostage
+past two ARQ timeouts. (Earlier: a fixed `max(45 s, 3 × ARQ timeout)`
+quantum, whose drain test also required the proto backlog to be empty —
+so under continuous load every handover waited out the full backstop.
+Measured as the whole of turn-taking's throughput deficit against CCA on
+the two-station world.) On sending the grant the ISS becomes the IRS
+immediately; the peer's first `DATA` frame confirms the handover. An
 unanswered grant is retried at the ARQ-timeout cadence up to 3 times,
 after which the granting station **reclaims** the ISS role — a link must
 never be left with two listeners because one short control frame faded.
@@ -353,8 +362,25 @@ receiver's own outstanding grant when a grant is accepted.
 **What stays physical.** The scheduler replaces occupancy sensing for
 DATA arbitration only. Unchanged: at most one burst in the TX path at a
 time, the post-burst listen window sized to the measured round trip
-(ended early by feedback), and the short busy-hold that keeps control
-frames from keying over a burst still airing.
+(ended early by feedback), and the busy-hold that keeps **any** frame —
+the ISS's DATA included — from keying over a burst still airing. That
+last one is half-duplex physics, not arbitration: a keyed peer is deaf.
+Measured without it, the new ISS keyed the instant it decoded
+`TURN_GRANT` while the rest of the granting burst (ACK and probe frames
+bundled behind it) was still on the air, the peer never heard the
+confirming DATA, every retransmit collided the same way, and the granter
+reclaimed into a two-sender minute. Same runaway cap as the control
+hold (30 × the mode's airtime scale); no post-clear jitter, since the
+ISS is the only sender.
+
+**Scope — where listen-before-talk stays.** The schedule governs the
+**connected session** only. Everything without an ARQ partner to
+schedule with keeps listen-before-talk: pre-session traffic (`CALL` and
+the rest of the handshake, with the jittered retry backoff), and
+connectionless frames (`CQ`, `BEACON`, `BCAST_DATA`) — the busy-detector
+hold with anti-collision jitter and the courtesy cap. This is the PACTOR
+/ VARA split exactly: listen for a clear channel, call, then run the
+scheduled exchange.
 
 ### TX Frequency Alignment
 

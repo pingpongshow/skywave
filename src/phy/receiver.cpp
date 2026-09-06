@@ -676,9 +676,15 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     size_t restBits = (size_t(hdr->length) - piggy) * 8;
     // Payload phase: apply the session carrier mask (header symbols used
     // the full set). The tracker skips masked pilots; its delay-domain
-    // model interpolates the gap.
-    walker.mask = payloadMask;
-    tracker.setMask(payloadMask);
+    // model interpolates the gap. Only at the modes the TRANSMITTER masks
+    // (modeUsesCarrierMask): applying the mask to a spread-mode frame the
+    // sender built unmasked misaligned the whole payload walk - every
+    // DATA frame below M8 failed for the rest of the session once a mask
+    // existed, while piggyback-only control frames kept passing.
+    const CarrierMask* walkMask =
+        modeUsesCarrierMask(int(hdr->mode)) ? payloadMask : nullptr;
+    walker.mask = walkMask;
+    tracker.setMask(walkMask);
     // Burst containers repack on retransmission: identical-codeword
     // combining cannot be guaranteed, so HARQ is bypassed for them.
     if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
