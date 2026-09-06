@@ -2,6 +2,7 @@
 // fallback schedule, quality-seeded initial mode.
 #include <string>
 
+#include "link/amc.hpp"
 #include "link/handshake.hpp"
 #include "skytest.hpp"
 
@@ -31,12 +32,13 @@ TEST_CASE(initial_mode_seeding) {
   // At the M4 fading floor + margin: M4 (or a same-floor neighbor - the
   // measured WIDE table has M4 and M5 at equal floors, and picking the
   // faster of two equally-robust modes is correct).
+  const double margin = AmcConfig{}.promoteMarginDb;  // one operating point
   double m4 = fadingFloorDb(Family::Wide, 4);
-  int atFloor = initialModeFromQuality(Family::Wide, m4 + 2.5, 0, 13);
+  int atFloor = initialModeFromQuality(Family::Wide, m4 + margin, 0, 13);
   CHECK(atFloor >= 4 && atFloor <= 5);
   // Below the M6 requirement, M6+ is never proposed.
   double m6 = fadingFloorDb(Family::Wide, 6);
-  CHECK(initialModeFromQuality(Family::Wide, m6 + 2.4, 0, 13) < 6);
+  CHECK(initialModeFromQuality(Family::Wide, m6 + margin - 0.1, 0, 13) < 6);
   // Very low SNR still yields M4 (never below the ladder).
   CHECK_EQ(int(initialModeFromQuality(Family::Wide, -30.0, 0, 13)), 4);
   // Rich SNR caps at M10 (fragile modes need live gates), and respects

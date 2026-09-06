@@ -18,7 +18,17 @@ Mode tables and floors are defined in [WAVEFORM.md](WAVEFORM.md).
 
 Aggregated each received frame and each ACK:
 
-- local SNR estimate (post-equalizer, EMA α = 0.25)
+- local SNR estimate (post-equalizer, EMA α = 0.25) — **calibrated to the
+  3 kHz-noise convention of the floor tables** (`kOfdmSnrCalDb`, measured
+  per family with `bertool --preset awgn`: the tracker's per-carrier
+  figure sits +4 / +8 / +11 / +3.5 dB above it on WIDE / MID / NARROW /
+  ULTRA — the bandwidth term plus a ~3 dB pilot-fit bias), and fed
+  **only from frames that converged the tracker** (≥ 8 pilot-bearing
+  symbols; a fast-tier ACK reports the noise seed, not a measurement,
+  and feeding those swung the effective SNR 14 → 7 dB on a static channel)
+- the handshake measurement seeds the EMA at connect; with no sample yet
+  the controller makes no SNR-based decision (failure-driven demotions
+  still apply)
 - freshest remote-reported SNR (from ACK/keepalive bodies)
 - retry ratio (retransmitted / total, sliding 16-frame window)
 - decode-failure ratio (header-ok-payload-fail / total)
@@ -35,13 +45,35 @@ Per-family mode floors come from the WAVEFORM tables. AMC applies margins:
 
 | Rule | Threshold |
 |---|---|
-| promote to mode `k` | effective SNR ≥ floor(k) + **2.5 dB** for ≥ 2 consecutive evaluations, retry ratio ≤ 0.15, dwell ≥ 6 s |
-| demote from mode `k` | effective SNR < floor(k) + 0.5 dB, **or** retry ratio > 0.35, **or** 3 consecutive decode failures |
+| promote to mode `k` | effective SNR ≥ floor(k) **− 1.5 dB** for ≥ 2 consecutive evaluations, retry ratio ≤ 0.15, dwell ≥ 6 s, not in the penalty box |
+| demote from mode `k` | effective SNR < floor(k) − 3.5 dB, **or** retry ratio > 0.35, **or** 3 consecutive decode failures |
 | fast demote | 2-step drop when retry ratio > 0.5 in the window, min dwell waived |
 | promotion step | single step only (`k → k+1`); no promotion skipping |
 
-Hysteresis: the 2.0 dB gap between promote margin (+2.5) and demote margin
-(+0.5) prevents oscillation; dwell timers prevent thrash on flutter.
+The margins are **negative on purpose**: the floors are one-shot 10–15%
+FER points, and with chase/IR HARQ plus selective-repeat ARQ a rung is
+throughput-optimal down to ~1.5 dB below its floor (a rung is worth ~1.5×
+the one under it, so it pays until FER ≈ 33%). These are the values the
+M3 ramp gate was tuned at (0.94 of genie on CCIR Good, 0 drops); before
+the estimator was calibrated they read as +2.5 / +0.5 against a WIDE
+estimate ~4 dB optimistic — i.e. they always were −1.5 / −3.5 in table
+terms, and MID / NARROW (8 / 11 dB optimistic) were running far more
+aggressively than designed. Hysteresis: the 2.0 dB gap between promote
+and demote margins prevents oscillation; dwell timers prevent thrash on
+flutter.
+
+**Penalty box (failure memory).** A demotion driven by frame *failures*
+(retry ratio, fail streak, fast demote) — not by SNR — remembers the
+rung it left. Promotion back into that rung or above holds for 15 s,
+doubling on every repeat at the same or a higher rung (30, 60, 120,
+240 s), unless the effective SNR has risen ≥ 3 dB since the failure; the
+memory clears once the link operates at or above the failed rung cleanly
+for a full hold. SNR alone is not evidence that a rung works: the fast
+tier (M8+) fails 30–60% on CCIR Moderate at *any* SNR (its floors are
+measured on Good, see the WAVEFORM fading annex), and an SNR-only ladder
+re-tried it every promote-hold. SNR-explained (floor-break) demotions are
+deliberately not remembered: the SNR coming back is exactly the evidence
+that should let the ladder climb again.
 
 ### High-Mode Gates
 

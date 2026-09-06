@@ -26,8 +26,21 @@ struct AmcConfig {
   // Bottom rung: kFirstMode (M4) normally, 0 when the session
   // negotiated CAP_CSS_TIER (the ladder extends into the CSS deep tier).
   uint8_t minMode = kFirstMode;
-  double promoteMarginDb = 2.5;
-  double demoteMarginDb = 0.5;
+  // Margins are relative to the FLOOR tables, which are one-shot
+  // 10-15% FER points in the 3 kHz-noise convention. NEGATIVE on
+  // purpose: with chase/IR HARQ and selective-repeat ARQ the
+  // throughput-optimal operating point of a rung is ~1.5 dB BELOW its
+  // one-shot floor (a rung is worth ~1.5x the one under it, so it pays
+  // until FER ~ 33%). These values reproduce the operating point the
+  // M3 ramp gate was tuned at (0.94 of genie on CCIR Good, 0 drops)
+  // once the estimator was calibrated to the table convention
+  // (constants.hpp kOfdmSnrCalDb: the old +2.5 / +0.5 margins were read
+  // against an estimate ~4 dB optimistic on WIDE, i.e. they WERE
+  // -1.5 / -3.5 in set-point terms; MID and NARROW, whose estimates
+  // were 8 and 11 dB optimistic, ran far more aggressively than
+  // designed and are now on the same operating point as WIDE).
+  double promoteMarginDb = -1.5;
+  double demoteMarginDb = -3.5;
   double snrEmaAlpha = 0.25;
   double remoteFreshSec = 60.0;
   double staleRemotePenaltyDb = 1.5;
@@ -37,6 +50,18 @@ struct AmcConfig {
   double demoteRetryMin = 0.35;
   double fastDemoteRetryMin = 0.50;
   int demoteFailStreak = 3;
+  // FAILURE MEMORY ("penalty box"). After a demotion driven by frame
+  // FAILURES (retry ratio, fail streak, fast demote) rather than by
+  // SNR, promotion back into the failed rung or above holds for a
+  // window that DOUBLES on every repeat, unless the effective SNR has
+  // risen by failRecoverDb since the failure. SNR alone is not evidence
+  // that a rung works: the fast tier (M8+) fails 30-60% on a
+  // CCIR-Moderate channel at ANY SNR (bertool, by design - its floors
+  // are measured on Good), and an SNR-only ladder re-tried it every
+  // promote-hold, flapping M6->M7->M8->M7->M6 inside a minute with the
+  // MODE_CHANGE exchanges and the failed frames eating the turn.
+  double failRecoverDb = 3.0;
+  int failHoldMaxDoublings = 4;  // 15 s -> 240 s (x airtime cadence)
   // High-mode gates.
   double m11RetryMax = 0.10;
   // Pilot-residual energy relative to channel power (phy/receiver.hpp
@@ -105,6 +130,17 @@ class Amc {
   double retryRatio() const;
   bool degraded() const { return degraded_; }
   uint8_t mode() const { return mode_; }
+  double pilotStability() const { return pilotStability_; }
+  uint8_t selectivity() const { return selectivity_; }
+  // Smoothed local SNR (the EMA the controller steers on) - also what
+  // the ACK reports to the peer: a per-frame figure could hold a
+  // fade-edge reading for a minute once only converged frames fed it.
+  bool haveLocalSnr() const { return haveLocal_; }
+  double localSnrDb() const { return localSnr_; }
+  // Failure memory (tests / debug): the lowest rung whose last attempt
+  // failed on frames, 255 when clear; and the hold still in force.
+  uint8_t failedMode() const { return failMode_; }
+  double failHoldSec(double now) const;
   const AmcConfig& config() const { return cfg_; }
 
  private:
@@ -112,10 +148,17 @@ class Amc {
                     bool assumeProbeClean = false) const;
   double operatingFloorDb(uint8_t k) const;
   uint8_t demoteTarget(int steps) const;  // skips kFadingNA rungs
+  void noteFailure(double now, double effSnr);
+  double cadence() const { return mode_ <= 3 ? 8.0 : 1.0; }
 
   AmcConfig cfg_;
   uint8_t mode_;
   double lastDemoteAt_ = -1e9;  // promote damping after demotes
+  // Failure memory (see AmcConfig::failRecoverDb).
+  uint8_t failMode_ = 255;
+  double failSnr_ = -99.0;
+  double failAt_ = -1e9;
+  int failRepeats_ = 0;
   bool pinned_ = false;
   bool degraded_ = false;
   double lastChange_;

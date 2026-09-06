@@ -239,6 +239,34 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile
 
+// OFDM SNR CALIBRATION (HF). The floor tables above are in the 3 kHz-
+// noise-bandwidth convention (bertool's set point, HF practice, and the
+// CSS path's snr3k), but the OFDM tracker reports mean per-carrier SNR
+// inside the family's occupied band, which sits ABOVE that reference by
+// the bandwidth term 10log10(3000 / occupied Hz) plus a ~3 dB
+// pilot-fit bias (the Kalman residual absorbs part of the noise).
+// MEASURED 2026-09-06 with `bertool --preset awgn` (estimate minus set
+// point, M4-M10, 12 trials per point):
+//     WIDE   +2.8..+4.6   (2400 Hz: +1.0 bandwidth, ~+3 fit)
+//     MID    +7.0..+9.9   (1000 Hz: +4.8 bandwidth, ~+4 fit)
+//     NARROW +9.2..+12.7  ( 450 Hz: +8.2 bandwidth, ~+3 fit)
+//     ULTRA  +2.1..+5.5   (2650 Hz: +0.5 bandwidth, ~+3 fit)
+// The offset grows ~2 dB across the top of each ladder (the residual
+// floor), so the constants are set for the floor region, where the AMC
+// decides. Uncorrected, the AMC promoted ~4 dB early on WIDE relative
+// to the floors it compares against - measured on the churn soak as
+// M11 at "22-24 dB" (really ~18-20, floor+2..+4, where bertool shows
+// 10-23% FER on CCIR Good) retrying 25-38% and cascading down five
+// rungs. Under CCIR Moderate the estimate additionally UNDER-reads by
+// 4-6 dB at M8 (channel-motion innovation counted as noise); that is
+// left as is - it keeps the fast tier out of a channel its floors were
+// never measured on (WAVEFORM.md fading annex).
+inline constexpr std::array<double, kNumFamilies> kOfdmSnrCalDb = {
+    {4.0, 8.0, 11.0, 3.5}};
+// VHF-FM: its floor tables were calibrated against the uncorrected
+// estimator (bertool --band vhf-fm), so no offset there.
+inline double ofdmSnrCalDb(Family f);
+
 // VHF-FM floor tables: the data-port channel is flat and near-static
 // (Rician K -> inf approximation), so the fading table IS the AWGN
 // table. Values scale from the WIDE ladder by the wider noise
@@ -321,6 +349,9 @@ inline double floorDb(Family f, int mode) {
 }
 inline double fadingFloorDb(Family f, int mode) {
   return (*activeProfile().fadingFloors)[size_t(f)][size_t(mode)];
+}
+inline double ofdmSnrCalDb(Family f) {
+  return activeBand() == Band::Hf ? kOfdmSnrCalDb[size_t(f)] : 0.0;
 }
 inline double avgDataCarriers(Family f) {
   return plan(f).carriers() * double(kPilotSpacing - 1) / kPilotSpacing;

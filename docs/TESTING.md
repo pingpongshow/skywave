@@ -56,6 +56,17 @@ airtime and costs 20–30 percentage points of FER at the fading floors
 (kept at two); doubling OFDM frame length at `M8/M9` on Moderate raises
 FER from 29–50% to 54–58% (frame-length adaptation upward not adopted).
 
+Every sweep row also prints `est`, the receiver's mean estimated SNR over
+the frames whose header decoded, next to the set point. On `--preset
+awgn` this is the **SNR calibration** check (the AMC steers on this
+number against floor tables in the 3 kHz set-point convention): after
+`kOfdmSnrCalDb` it reads within ~1 dB of the set point at the floor
+region on every HF family. On the fading presets it also shows the
+estimator's fading bias — CCIR Moderate under-reads by 4–6 dB at M8
+(channel-motion innovation counted as noise), which is left in place
+because it keeps the fast tier out of a channel its floors were never
+measured on.
+
 ### 3. Two-Modem Integration
 
 Two in-process modem instances cross-wired through two independent chansim

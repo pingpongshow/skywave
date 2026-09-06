@@ -80,6 +80,11 @@ struct RxFrameResult {
   bool inverted = false;
   double cfoHz = 0.0;
   double snrDb = 0.0;              // tracker estimate at end of frame
+  // snrDb is a MEASUREMENT (the tracker's noise estimate converged over
+  // >= 8 pilot-bearing symbols) rather than its seed guess. OFDM frames
+  // short enough to fit in a few symbols - a fast-tier ACK - report the
+  // seed; CSS frames measure on the preamble and are always converged.
+  bool snrConverged = true;
   std::vector<float> carrierSnrDb;  // per active carrier, at frame end
   double delaySpreadMs = 0.0;       // tap-extent estimate, at frame end
   // Pilot-residual energy relative to channel power: 0 = perfectly

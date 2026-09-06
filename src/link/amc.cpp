@@ -145,6 +145,25 @@ std::optional<uint8_t> Amc::probeWanted(double now) const {
   return next;
 }
 
+// Failure memory. Called when a demotion is driven by frame failures
+// (not by SNR): the rung we are leaving goes into the penalty box, and
+// a repeat failure at that rung or above doubles the hold.
+void Amc::noteFailure(double now, double effSnr) {
+  failRepeats_ = (failMode_ != 255 && mode_ >= failMode_) ? failRepeats_ + 1
+                                                          : 1;
+  failMode_ = mode_;
+  failSnr_ = effSnr;
+  failAt_ = now;
+}
+
+double Amc::failHoldSec(double now) const {
+  if (failMode_ == 255) return 0.0;
+  const int doublings =
+      std::min(std::max(failRepeats_ - 1, 0), cfg_.failHoldMaxDoublings);
+  const double hold = 15.0 * cadence() * double(1 << doublings);
+  return std::max(0.0, hold - (now - failAt_));
+}
+
 AmcDecision Amc::evaluate(double now) {
   const int bias = advisorBias_;  // one-shot advisor influence
   advisorBias_ = 0;
@@ -156,15 +175,16 @@ AmcDecision Amc::evaluate(double now) {
   // tuned for OFDM (6 s / 15 s) re-decide every frame and the
   // MODE_CHANGE exchanges themselves consume the channel (measured:
   // deep-tier goodput 0.83 B/s with a mode change every ~20 s).
-  const double cadence = mode_ <= 3 ? 8.0 : 1.0;
-  const double dwellSec = cfg_.minDwellSec * cadence;
-  const double promoteHoldSec = 15.0 * cadence;
+  const double dwellSec = cfg_.minDwellSec * cadence();
+  const double promoteHoldSec = 15.0 * cadence();
 
   // Fast demote: applies even when pinned (safety), min dwell waived.
   if (windowFill_ >= 8 && retry > cfg_.fastDemoteRetryMin) {
     uint8_t target = demoteTarget(2);
     if (target != mode_) {
       promoteStreak_ = 0;
+      noteFailure(now, eff);
+      lastDemoteAt_ = now;
       return {AmcDecision::Kind::FastDemote, target};
     }
     degraded_ = true;
@@ -173,8 +193,13 @@ AmcDecision Amc::evaluate(double now) {
   if (pinned_) return {};
 
   // Demote: SNR under the demote margin, retry ratio, or failure streak.
+  // No measurement yet is no evidence: effectiveSnrDb() reports -99
+  // before the first converged local sample, and demoting on that used
+  // to cost every session one rung at its first dwell (the first
+  // connected frames are fast-tier ACKs, too short to converge the
+  // tracker). Failure-driven demotions below need no SNR.
   const bool floorBreak =
-      operatingFloorDb(mode_) < 90.0 &&
+      haveLocal_ && operatingFloorDb(mode_) < 90.0 &&
       eff < operatingFloorDb(mode_) + cfg_.demoteMarginDb +
                 (bias < 0 ? 0.5 : 0.0);
   const bool retryBreak = windowFill_ >= 8 && retry > cfg_.demoteRetryMin;
@@ -183,10 +208,23 @@ AmcDecision Amc::evaluate(double now) {
     promoteStreak_ = 0;
     if (uint8_t t = demoteTarget(1); t != mode_) {
       lastDemoteAt_ = now;
+      // Only a failure the SNR does NOT explain is remembered: when the
+      // floor is broken the SNR gate already holds the ladder down, and
+      // the SNR coming back is exactly the evidence that should let it
+      // climb again.
+      if (!floorBreak) noteFailure(now, eff);
       return {AmcDecision::Kind::Demote, t};
     }
     degraded_ = true;  // at the bottom usable rung and still failing
     return {};
+  }
+
+  // Forgiveness: operating AT or ABOVE the failed rung cleanly for a
+  // full promote-hold clears the memory (we got back up and it held).
+  if (failMode_ != 255 && mode_ >= failMode_ &&
+      now - lastChange_ >= promoteHoldSec && retry <= cfg_.promoteRetryMax) {
+    failMode_ = 255;
+    failRepeats_ = 0;
   }
 
   // Promote: single step, dwell, retry gate, consecutive evaluations.
@@ -214,6 +252,13 @@ AmcDecision Amc::evaluate(double now) {
     ++next;
   }
   if (!modeEligible(next, eff)) {
+    promoteStreak_ = 0;
+    return {};
+  }
+  // Penalty box: the rung failed on frames at about this SNR and its
+  // hold has not expired - SNR looking fine is not new evidence.
+  if (failMode_ != 255 && next >= failMode_ && failHoldSec(now) > 0.0 &&
+      eff < failSnr_ + cfg_.failRecoverDb) {
     promoteStreak_ = 0;
     return {};
   }

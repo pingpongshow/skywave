@@ -305,6 +305,12 @@ int main(int argc, char** argv) {
         r.mode = mode;
         r.snrDb = floor + off;
         r.trials = a.trials;
+        // Receiver-estimated SNR over the frames whose header decoded:
+        // the AMC steers on this number, so its bias against the set
+        // point IS the "floor calibration" question (ROADMAP: set 9 dB
+        // reads as -6 dB in the soak).
+        double estSum = 0.0;
+        int estN = 0;
         for (int t = 0; t < a.trials; ++t) {
           ChansimParams cp = presetParams(a.preset);
           cp.snr3kDb = r.snrDb;
@@ -317,6 +323,10 @@ int main(int argc, char** argv) {
           auto y = Chansim::run(cp, x);
           RxStage st = RxStage::NoDetect;
           auto res = receiveFrame(fam, y, &st);
+          if (res) {
+            estSum += res->snrDb;
+            ++estN;
+          }
           if (!res) {
             if (st == RxStage::NoDetect) ++r.noDetect;
             else if (st == RxStage::ZcFail) ++r.zcFail;
@@ -328,9 +338,10 @@ int main(int argc, char** argv) {
             ++r.payFail;
           }
         }
-        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f\n",
+        const double est = estN > 0 ? estSum / estN : -99.0;
+        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f | est %6.1f\n",
                plan(fam).name, mode, floor, r.snrDb, r.noDetect, r.zcFail,
-               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff);
+               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est);
         fflush(stdout);
         if (csv) {
           fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,

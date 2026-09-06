@@ -94,6 +94,11 @@ constexpr double kResumeWindowSec = 600.0;
 // cycle. The previous scheme held a fixed max(45 s, 3 x ARQ timeout)
 // "quantum" sized to the store-and-forward world's inflated RTT.
 constexpr double kTurnMinHoldRtts = 2.0;
+// Probe "clean" threshold relative to the candidate rung's floor, in the
+// calibrated (3 kHz-noise) SNR convention. Was ref + 1.0 read against an
+// estimate ~4 dB optimistic on WIDE (constants.hpp kOfdmSnrCalDb), i.e.
+// ref - 3.0 in table terms; kept at that measured operating point.
+constexpr double kProbeCleanMarginDb = -3.0;
 
 }  // namespace
 
@@ -1045,6 +1050,12 @@ void LinkEngine::drainFsmActions(double now) {
         // CAP_CSS_TIER extends the AMC ladder into M0-M3.
         ac.minMode = (sessionCaps_ & kCapCssTier) ? 0 : uint8_t(kFirstMode);
         amc_.emplace(ac, uint8_t(mode_), 0.0);
+        // Seed with the handshake measurement the initial mode was chosen
+        // from (a robust-header frame, so it converged the tracker): the
+        // first connected frames are fast-tier ACKs, too short to
+        // measure, and an AMC with no sample would otherwise sit at
+        // "effective -99 dB" until the first long DATA frame.
+        if (lastRxQuality_.snrTrusted) amc_->onLocalSnr(lastRxQuality_.snrDb);
         pendingMode_ = -1;
         lastCwAt_ = now;  // CW ID cadence restarts with the session
 #ifdef SKW_HAVE_CRYPTO
@@ -1827,7 +1838,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
     if (amc_ && isInitiator_ && pendingMode_ < 0 && cfg_.cpAuto &&
-        haveSpread_ && cpWant_ != cpMode_ && cpWantStreak_ >= 25 &&
+        haveSpread_ && cpWant_ != cpMode_ && cpVerdictStable(now) &&
         now - lastCpChange_ > 30.0) {
       // CP correction outranks ladder moves: a CP too short for the
       // channel is a safety problem, and AMC churn (probe retries)
@@ -1871,9 +1882,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       static const bool amcDbg = getenv("SKW_AMC_DEBUG") != nullptr;
       if (amcDbg) {
         fprintf(stderr,
-                "amc t=%.0f mode=%d eff=%.1f retry=%.2f decision=%d->%d\n",
-                now, mode_, amc_->effectiveSnrDb(now), amc_->retryRatio(),
-                int(d.kind), int(d.targetMode));
+                "%s amc t=%.0f mode=%d eff=%.1f retry=%.2f pilot=%.3f "
+                "sel=%d class=%d decision=%d->%d\n",
+                cfg_.policy.ownCall.c_str(), now, mode_,
+                amc_->effectiveSnrDb(now), amc_->retryRatio(),
+                amc_->pilotStability(), int(amc_->selectivity()),
+                int(amc_->channelClass()), int(d.kind), int(d.targetMode));
       }
       // Probe requirement: fragile high modes (gate config) and every
       // kFadingNA row (near-static-only - including CSS M2/M3 on the
@@ -1909,8 +1923,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           probeGate_.consumeClearance();
         }
         requestModeChange(d.targetMode,
-                          cfg_.cpAuto && cpWantStreak_ >= 25 ? cpWant_
-                                                             : cpMode_,
+                          cfg_.cpAuto && cpVerdictStable(now) ? cpWant_
+                                                              : cpMode_,
                           now);
       } else if (auto pw = amc_->probeWanted(now)) {
         // AMC is blocked ONLY on the clean-probe requirement (kFadingNA
@@ -2100,7 +2114,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                     });
     if (!queued) {
       auto ack = arqRx_.makeAck(
-          int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0, 127.0)),
+          int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)),
           ackRxFlags(),
           int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0, 127.0)));
       OutFrame f;
@@ -2295,8 +2309,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     const uint8_t rxFlags = ackRxFlags();
     rxFailPending_ = false;  // the NAK rides THIS ACK; never repeat it
     f.body = arqRx_.makeAck(
-                 int8_t(std::clamp(lastRxQuality_.snrDb * 2.0, -127.0,
-                                   127.0)),
+                 int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)),
                  rxFlags,
                  int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0,
                                    127.0)))
@@ -2433,8 +2446,18 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
     // sustained run of frames (spread estimates are noisy; churn starves
     // the link with MODE_CHANGE traffic).
     const CpMode want = cpForSpread(spreadEmaMs_);
+    if (want != cpWant_ || cpWantSince_ < 0.0) cpWantSince_ = now;
     cpWantStreak_ = want == cpWant_ ? cpWantStreak_ + 1 : 1;
     cpWant_ = want;
+    static const bool cpDbg = getenv("SKW_CP_DEBUG") != nullptr;
+    if (cpDbg) {
+      fprintf(stderr,
+              "%s cp t=%.1f spread=%.2f ema=%.2f want=%d cur=%d streak=%d "
+              "ok=%d mode=%d\n",
+              cfg_.policy.ownCall.c_str(), now, res->delaySpreadMs,
+              spreadEmaMs_, int(want), int(cpMode_), cpWantStreak_,
+              res->payloadOk ? 1 : 0, int(res->header.mode));
+    }
   }
   if (res) {
     if (res->payloadOk) {
@@ -2511,6 +2534,11 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   q.snrDb = res->snrDb;
   q.selectivity = 0;
   q.cfoHz = res->cfoHz;
+  // A frame too short to converge the tracker reports its seed, not a
+  // measurement (RxFrameResult::snrConverged). Keyed on symbols walked,
+  // not payload bytes: at M4 (spread 16) even a 20-byte frame spans
+  // dozens of symbols, while a fast-tier ACK spans ~5.
+  q.snrTrusted = res->snrConverged;
   onFrame(*parsed, q, now);
   return true;
 }
@@ -2523,7 +2551,12 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             cfg_.policy.ownCall.c_str(), now, int(f.env.type),
             unsigned(f.env.sequence));
   }
-  lastRxQuality_ = q;
+  // The peer's SNR report (ACK snrHalfDb) and the AMC read this: keep
+  // the last MEASURED figure, not a short frame's seed guess.
+  if (q.snrTrusted || !haveTrustedRxQuality_) {
+    lastRxQuality_ = q;
+    haveTrustedRxQuality_ = haveTrustedRxQuality_ || q.snrTrusted;
+  }
   const size_t inFlightBefore = arqTx_.inFlight();
   // Idle-disconnect liveness: refreshed by session traffic, and NOT by
   // pre-session CALL frames - a dead peer's reconnect attempts used to
@@ -2565,7 +2598,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
 
   probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
-    amc_->onLocalSnr(q.snrDb);
+    if (q.snrTrusted) amc_->onLocalSnr(q.snrDb);
     advisor_.onCfo(q.cfoHz, now);
   }
   switch (f.env.type) {
@@ -2977,8 +3010,12 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       const double ref = floor < 90.0
                              ? floor
                              : floorDb(cfg_.policy.family, p->probeMode);
-      const uint8_t quality =
-          q.snrDb >= ref + 1.0 ? kProbeClean : kProbeMarginal;
+      // Same operating point as the AMC's promote margin (amc.hpp): the
+      // probe is the AMC's admission test for a rung, so "clean" means
+      // the rung is promotable, in the calibrated table convention.
+      const uint8_t quality = q.snrDb >= ref + kProbeCleanMarginDb
+                                  ? kProbeClean
+                                  : kProbeMarginal;
       queueControl(LinkType::ProbeAck,
                    ProbeAckBody{p->probeId,
                                 int8_t(std::clamp(q.snrDb * 2.0, -127.0,

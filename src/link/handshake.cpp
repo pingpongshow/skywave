@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "link/amc.hpp"
+
 namespace skw {
 
 uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
@@ -15,7 +17,9 @@ uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
   for (uint8_t m = lowest; m <= cap; ++m) {
     const double floor = fadingFloorDb(f, m);
     if (floor >= 90.0) continue;  // kFadingNA: never an initial proposal
-    if (effectiveSnrDb < floor + 2.5) continue;  // AMC promote margin
+    // AMC promote margin (amc.hpp): one operating point for the initial
+    // proposal and the ladder, in the calibrated table convention.
+    if (effectiveSnrDb < floor + AmcConfig{}.promoteMarginDb) continue;
     if (m >= 12 && worstSelectivity > kSelectivityGateM12) continue;
     best = m;
   }

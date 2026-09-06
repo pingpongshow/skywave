@@ -291,6 +291,19 @@ class LinkEngine {
   bool haveSpread_ = false;
   int cpWantStreak_ = 0;          // consecutive frames agreeing on a CP
   CpMode cpWant_ = kCpDefault;
+  double cpWantSince_ = -1.0;     // when the current CP verdict began
+  // A CP verdict is STABLE after 25 agreeing frames, or after a shorter
+  // run (8) held for a full minute. The frame count alone was slowest
+  // exactly when it mattered: ISI forces the robust tier, where an
+  // exchange takes ~20 s, so 25 frames meant ~8 minutes at a CP too
+  // short for the channel (measured: streak 21 after 670 s, transfer
+  // stalled at 0 bytes). The peak-hold spread estimate is already
+  // stable; the streak only filters estimator noise.
+  bool cpVerdictStable(double now) const {
+    return cpWantStreak_ >= 25 ||
+           (cpWantStreak_ >= 8 && cpWantSince_ >= 0.0 &&
+            now - cpWantSince_ >= 60.0);
+  }
   double lastCpChange_ = 0.0;
   uint16_t sessionCaps_ = 0;      // committed capability intersection
   bool harqIr() const { return (sessionCaps_ & kCapHarqIr) != 0; }
@@ -342,6 +355,17 @@ class LinkEngine {
   double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
+  bool haveTrustedRxQuality_ = false;  // a converged (long-frame) SNR seen
+  // SNR figure reported to the peer in ACKs: the AMC's smoothed local
+  // EMA once it has one (the number this end actually steers on), else
+  // the last measurement. A per-frame figure held a fade-edge reading
+  // for up to the remote-freshness window once only converged frames
+  // refreshed it (measured: a -5 dB report on a 14 dB channel drove a
+  // three-rung cascade in 27 s).
+  double reportSnrDb() const {
+    return amc_ && amc_->haveLocalSnr() ? amc_->localSnrDb()
+                                        : lastRxQuality_.snrDb;
+  }
   // Family the last capture actually decoded on. Differs from the
   // configured family only while the receiver-side scan is in play.
   Family rxFamily_ = Family::Wide;

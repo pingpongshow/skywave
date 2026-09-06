@@ -2386,3 +2386,105 @@ M3 ramp 0.94 fading / 0.67 static, 0 drops; VHF sustained 25.5 kbps;
 CSS deep-tier MAC 19% of net; m2 bidirectional **1.00**; one-way
 half-duplex **81,920 B / 300 s** (full-duplex 94,208); test_m2 21/21
 with the new mask regression.
+
+## AMC honesty round (2026-09-06, later)
+
+Follow-on to the turn-taking overhead round, working the three levers it
+named: AMC hysteresis at the robust tier, robust-tier turn utilisation,
+floor calibration. The calibration lever turned out to be the root of the
+other two, and it was in the SNR *estimate*, not the channel model.
+
+### What bertool's new `est` column showed
+
+Every sweep row now prints the receiver's mean estimated SNR next to the
+set point. On `--preset awgn` the OFDM tracker's per-carrier figure sat
+**above** the 3 kHz-noise set point (the convention of every floor table
+and of the CSS path) by a family-dependent offset: WIDE +4, MID +8,
+NARROW +11, ULTRA +3.5 dB — the bandwidth term `10log10(3000/occupied)`
+plus a ~3 dB pilot-fit bias. Consequences, all measured: the AMC promoted
+~4 dB early on WIDE relative to the floors it compared against (M11 at
+"22–24 dB" was really floor+2..+4, where bertool shows 10–23% FER on
+CCIR Good — the seed-12 trace's 25–38% retry cascade down five rungs);
+MID and NARROW ran 8 and 11 dB more aggressively than designed; and the
+"set 9 dB delivers −6 dB" floor-calibration note in the earlier log was
+this bias plus the fading under-read below, not the channel simulator.
+On CCIR Moderate the estimate additionally UNDER-reads by 4–6 dB at M8
+(channel-motion innovation counted as noise); left in place — it keeps
+the fast tier out of a channel its floors were never measured on
+(WAVEFORM fading annex: M8+ fail 30–65% on Moderate at *any* SNR, by
+design).
+
+### Changes
+
+- **`kOfdmSnrCalDb`** (constants.hpp): reported OFDM SNR calibrated to
+  the table convention per family; `est` now reads within ~1 dB of the
+  set point at the floor region on all four HF families. VHF untouched
+  (its floors were calibrated against the raw estimator).
+- **AMC margins made explicit**: promote at floor **−1.5**, demote at
+  floor **−3.5** — the operating point the M3 ramp gate was tuned at,
+  which the old +2.5/+0.5 always were in table terms on WIDE. Negative
+  on purpose: with chase/IR HARQ a rung is throughput-optimal to ~1.5 dB
+  below its one-shot floor. Probe "clean" threshold and the handshake's
+  initial-mode rule moved to the same point.
+- **Trusted SNR only**: the AMC's EMA and the ACK's SNR report are fed
+  only by frames that converged the tracker (≥ 8 pilot-bearing symbols,
+  `RxFrameResult::snrConverged`). A fast-tier ACK spans ~5 symbols and
+  reports the noise seed; feeding those swung the effective SNR
+  14 → 8.5 → 7 dB within seconds on a *static* channel and flapped
+  M6→M7→M8→M7→M6 (seed-12 trace, t=418–479). Keyed on symbols, not
+  bytes: an M4 frame of 20 bytes spans dozens of symbols (a byte-keyed
+  first cut left the AMC blind at M4 and collapsed the static ramp to
+  0.03). The handshake measurement seeds the EMA at connect, and an AMC
+  with no sample makes no SNR decision — every session used to demote
+  one rung at its first dwell on "effective −99 dB".
+- **ACK reports the EMA**, not the last decoded frame: once only long
+  frames refreshed it, a fade-edge reading could hold for the 60 s
+  remote-freshness window (a −5 dB report on a 14 dB channel drove a
+  three-rung cascade in 27 s).
+- **Penalty box** (failure memory): a failure-driven demotion (retry
+  ratio, fail streak, fast demote — not floor break) blocks promotion
+  back to that rung or above for 15 s, doubling per repeat to 240 s,
+  unless SNR rose ≥ 3 dB; forgiven after a clean hold at or above the
+  rung. Unit-tested. In the churn seeds it never changed an outcome —
+  the flaps there were all SNR-explained — but it is the right guard for
+  a Moderate channel at high SNR, where SNR is not evidence.
+- **CP verdict is time-aware**: 25 agreeing frames, or 8 held for a
+  minute. The frame count alone was slowest exactly when ISI had forced
+  the robust tier (~20 s per exchange): the multipath CP test reached a
+  streak of 21 in 670 s with 0 bytes delivered once the AMC stopped
+  running 4 dB hot.
+
+### Measurements (same binary, final)
+
+| gate | before this round | after |
+|---|---|---|
+| M3 ramp fading / static | 0.94 / 0.67 | **0.94 / 0.70** |
+| VHF ramp to M14 | t=57 s | **t=35 s** |
+| ST2 one-way, half-duplex (B / 300 s) | 81,920 | **94,208** |
+| m2 bidirectional ratio | 1.00 | 1.00 |
+| ctest | 40/40 | 40/40 |
+
+| churn (turn-taking) | before | after |
+|---|---|---|
+| decoupled seed 11 | 14,970 B, FAIL t=841 | **22,194 B, PASS** |
+| decoupled seed 12 | 26,397 B, FAIL t=721 | 31,183 B, FAIL t=781 |
+| decoupled seed 13 | 40,957 B, PASS | 42,157 B, FAIL t=721 |
+| coupled | 78,694 B, PASS | 89,171 B by t=720, FAIL t=781 |
+| coupled, legacy CCA (reference) | 100,091 B | 90,253 B |
+
+Bytes moved are up everywhere the channel is usable (coupled turn-taking
+now matches legacy's rate: 89 KB in 720 s vs 90 KB in 900 s). The
+pass/fail flips are all the same tail: at a set point of 8–12 dB on
+CCIR Moderate the honest estimate (Moderate under-read included) walks
+the ladder to M5/M6, where a 4 KiB coalesced message plus turn-taking
+cannot complete inside the soak's 300 s "usable channel" watchdog. That
+is the robust-tier pace wall the earlier log called the floor problem;
+it is now the *only* thing the churn soak measures once SNR drops below
+~12 dB on Moderate. Next levers: (1) the fading under-read itself — a
+motion-free noise estimate; a within-symbol LS residual is not available
+(25 taps vs ~16 pilots on WIDE), so it needs either a pilot-pair
+differential estimate or a data-aided post-decode EVM; (2) message
+granularity at the robust tier (the 4 KiB coalesce lump is already
+capped to 8 frames for the deep tier; the same cap should follow the
+mode, not the tier); (3) the soak watchdog should read delivered SNR,
+not the set point.

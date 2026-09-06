@@ -17,6 +17,11 @@
 namespace skw {
 namespace {
 
+// Symbols the tracker must have folded into its noise estimate before
+// snrDb() is reported as a measurement (ChannelTracker::noiseUpdates:
+// the EMA runs fast for the first 8 symbols, then settles).
+constexpr int kSnrConvergedSymbols = 8;
+
 // Walks OFDM symbols of one codeword (mirror of appendOfdmSymbols): FFTs
 // each group symbol at integer positions, runs the tracker, despreads with
 // MRC over the group's carrier pool, and emits LLRs.
@@ -801,7 +806,11 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     wh.apply(white);
     res.payload = std::move(white);
   }
-  res.snrDb = tracker.snrDb();
+  // Report SNR in the 3 kHz-noise convention of the floor tables (and
+  // of the CSS path's snr3k): the tracker's per-carrier estimate sits a
+  // measured, family-dependent offset above it (ofdmSnrCalDb).
+  res.snrDb = tracker.snrDb() - ofdmSnrCalDb(family);
+  res.snrConverged = tracker.noiseUpdates() >= kSnrConvergedSymbols;
   res.delaySpreadMs = tracker.delaySpreadMs();
   {
     const auto& h = tracker.h();

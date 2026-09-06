@@ -54,7 +54,8 @@ TEST_CASE(promote_requires_margin_dwell_consecutive) {
   // SNR just below the next promote margin: no promotion.
   Amc b(cfg(), 8, 0.0);
   cleanFrames(b);
-  b.onLocalSnr(floorOf(9) + 2.4 + 1.5);  // eff lands at floor+2.4
+  // eff lands 0.1 dB under the promote margin
+  b.onLocalSnr(floorOf(9) + cfg().promoteMarginDb - 0.1 + 1.5);
   b.evaluate(7.0);
   CHECK(b.evaluate(8.0).kind == AmcDecision::Kind::None);
 }
@@ -64,7 +65,8 @@ TEST_CASE(demote_rules) {
   {
     Amc a(cfg(), 9, 0.0);
     cleanFrames(a);
-    a.onLocalSnr(floorOf(9) + 0.4 + 1.5);  // eff = floor + 0.4
+    // eff lands 0.1 dB under the demote margin
+    a.onLocalSnr(floorOf(9) + cfg().demoteMarginDb - 0.1 + 1.5);
     auto d = a.evaluate(1.0);
     CHECK(d.kind == AmcDecision::Kind::Demote);
     CHECK_EQ(int(d.targetMode), 8);
@@ -190,6 +192,67 @@ TEST_CASE(pinning_with_fast_demote_safety) {
   // Unpin restores normal control.
   a.unpin();
   CHECK(!a.pinned());
+}
+
+TEST_CASE(failure_memory_holds_promotion_and_doubles) {
+  // A retry-ratio demotion at abundant SNR remembers the failed rung:
+  // SNR looking fine is not evidence that the rung works (the fast tier
+  // fails 30-60% on CCIR Moderate at ANY SNR).
+  Amc a(cfg(), 9, 0.0);
+  a.onLocalSnr(30.0);  // eff 28.5, far above every floor here
+  for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);  // 0.4
+  auto d = a.evaluate(1.0);
+  CHECK(d.kind == AmcDecision::Kind::Demote);
+  CHECK_EQ(int(d.targetMode), 8);
+  a.onModeApplied(8, 1.0);
+  CHECK_EQ(int(a.failedMode()), 9);
+  cleanFrames(a);
+  // First failure: the hold equals the ordinary post-demote damping
+  // (15 s), so promotion returns at t=17/18 as before.
+  CHECK(a.evaluate(17.0).kind == AmcDecision::Kind::None);  // streak 1
+  auto p = a.evaluate(18.0);
+  CHECK(p.kind == AmcDecision::Kind::Promote);
+  CHECK_EQ(int(p.targetMode), 9);
+  a.onModeApplied(9, 18.0);
+  // Fail AGAIN at the same rung, same SNR: the hold doubles to 30 s.
+  for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);
+  auto d2 = a.evaluate(19.0);
+  CHECK(d2.kind == AmcDecision::Kind::Demote);
+  a.onModeApplied(8, 19.0);
+  CHECK_EQ(int(a.failedMode()), 9);
+  CHECK_NEAR(a.failHoldSec(19.0), 30.0, 1e-9);
+  cleanFrames(a);
+  // Ordinary damping expired (t=34) but the penalty box has not (t=49).
+  CHECK(a.evaluate(35.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(36.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(48.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(50.0).kind == AmcDecision::Kind::None);  // streak 1
+  CHECK(a.evaluate(51.0).kind == AmcDecision::Kind::Promote);
+  // SNR recovery overrides the box: +3 dB over the SNR at failure is
+  // new evidence, so a third failure's 60 s hold does not apply.
+  a.onModeApplied(9, 51.0);
+  for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);
+  CHECK(a.evaluate(52.0).kind == AmcDecision::Kind::Demote);
+  a.onModeApplied(8, 52.0);
+  CHECK_NEAR(a.failHoldSec(52.0), 60.0, 1e-9);
+  cleanFrames(a);
+  a.onLocalSnr(40.0);
+  a.onLocalSnr(40.0);  // EMA: 30 -> 32.5 -> 34.4, eff 32.9 > 28.5 + 3
+  CHECK(a.evaluate(68.0).kind == AmcDecision::Kind::None);  // streak 1
+  CHECK(a.evaluate(69.0).kind == AmcDecision::Kind::Promote);
+}
+
+TEST_CASE(failure_memory_ignores_snr_explained_demotions) {
+  // A floor-break demotion is explained by the SNR; the SNR coming back
+  // is exactly what should let the ladder climb again - no box.
+  Amc a(cfg(), 9, 0.0);
+  cleanFrames(a);
+  a.onLocalSnr(floorOf(9) + cfg().demoteMarginDb - 0.1 + 1.5);
+  auto d = a.evaluate(1.0);
+  CHECK(d.kind == AmcDecision::Kind::Demote);
+  a.onModeApplied(8, 1.0);
+  CHECK_EQ(int(a.failedMode()), 255);
+  CHECK_NEAR(a.failHoldSec(1.0), 0.0, 1e-9);
 }
 
 TEST_CASE(max_mode_cap) {

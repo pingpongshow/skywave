@@ -101,7 +101,12 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   yields the power-delay profile; its 90%-energy span is the delay-spread
   estimate that drives `CPMODE AUTO` — CP steps up when the spread exceeds
   80% of the current CP and steps down (via `MODE_CHANGE`) when it stays
-  under 40% for 30 s
+  under 40% for 30 s. The link layer peak-holds the estimate (1%/frame
+  decay) and acts on a verdict once 25 received frames agree, **or** 8
+  agree and the verdict has held for a minute — the frame count alone was
+  slowest exactly when it mattered (ISI forces the robust tier, where an
+  exchange takes ~20 s; measured: streak 21 after 670 s with the transfer
+  stalled at 0 bytes)
 
 ### Despreading
 

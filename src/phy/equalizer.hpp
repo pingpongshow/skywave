@@ -44,6 +44,10 @@ class ChannelTracker {
   // confidently wrong LLRs from a mis-rotated H.
   double noiseVar() const { return noiseVar_ + hVar_; }
   double snrDb() const;             // mean per-carrier SNR estimate
+  // Symbols folded into the noise estimate. Below ~8 the figure is still
+  // mostly the seed guess (the EMA runs at 0.4 for the first 8, 0.1
+  // after): callers steering on snrDb() should not trust shorter frames.
+  int noiseUpdates() const { return nvarUpdates_; }
   // Per-carrier pilot-residual EMA: interference-aware quality (a tone
   // INFLATES |H| but explodes the residual; carrier quality must come
   // from residuals, not |H|^2 - LINK_ADAPTATION.md mask detection).

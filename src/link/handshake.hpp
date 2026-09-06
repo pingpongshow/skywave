@@ -49,10 +49,18 @@ struct QualityMeasurement {
   double snrDb = 0.0;
   uint8_t selectivity = 0;
   double cfoHz = 0.0;
+  // False when the frame was too short to converge the tracker's noise
+  // estimate (OFDM header-piggyback-only frames: ACKs, MODE_ACK, grants).
+  // Their SNR figure is the seed guess, not a measurement; feeding it to
+  // the AMC's EMA alongside converged DATA measurements swung the
+  // effective SNR 14 -> 8.5 -> 7 dB within seconds on a STATIC channel
+  // and flapped the ladder (churn seed 12, t=418-479).
+  bool snrTrusted = true;
 };
 
 // Highest mode justified by a quality measurement: fading floor + the AMC
-// promote margin (+2.5 dB), M12+ selectivity gate, kInitialModeCap, then
+// promote margin (AmcConfig::promoteMarginDb), M12+ selectivity gate,
+// kInitialModeCap, then
 // clamped to [M4, maxMode] - or [M0, maxMode] when the session committed
 // CAP_CSS_TIER (the deep tier both extends the ladder downward and is
 // the only floor that exists below the OFDM handshake threshold).
