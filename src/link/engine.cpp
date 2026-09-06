@@ -2430,7 +2430,13 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
       !res->carrierSnrDb.empty()) {
     maskDet_->onSnapshot(res->carrierSnrDb, now);
   }
-  if (res && fsm_.state() == FsmState::Connected) {
+  // Only a DECODED frame's spread estimate feeds the CP verdict: on a
+  // frame that failed, the tracker's tap state is whatever the noise
+  // left it with, and it read 4.4-4.6 ms on a 1 ms CCIR-Moderate
+  // channel (churn trace, M10/M12 frames marked ok=0). The peak-hold
+  // then kept that reading and forced a LONG CP - a capacity loss on a
+  // channel that needed none.
+  if (res && res->payloadOk && fsm_.state() == FsmState::Connected) {
     // Peak-hold with slow decay: the CP must cover the WORST spread the
     // channel presents, and under Rayleigh fading the instantaneous tap
     // extent collapses whenever the far tap fades - a plain EMA (or any

@@ -206,40 +206,69 @@ TEST_CASE(failure_memory_holds_promotion_and_doubles) {
   CHECK_EQ(int(d.targetMode), 8);
   a.onModeApplied(8, 1.0);
   CHECK_EQ(int(a.failedMode()), 9);
+  CHECK_NEAR(a.failHoldSec(1.0), 30.0, 1e-9);  // first failure: 30 s
   cleanFrames(a);
-  // First failure: the hold equals the ordinary post-demote damping
-  // (15 s), so promotion returns at t=17/18 as before.
-  CHECK(a.evaluate(17.0).kind == AmcDecision::Kind::None);  // streak 1
-  auto p = a.evaluate(18.0);
+  // Ordinary post-demote damping (15 s) has expired at t=17, but the
+  // box holds until t=31.
+  CHECK(a.evaluate(17.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(18.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(30.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(32.0).kind == AmcDecision::Kind::None);  // streak 1
+  auto p = a.evaluate(33.0);
   CHECK(p.kind == AmcDecision::Kind::Promote);
   CHECK_EQ(int(p.targetMode), 9);
-  a.onModeApplied(9, 18.0);
-  // Fail AGAIN at the same rung, same SNR: the hold doubles to 30 s.
+  a.onModeApplied(9, 33.0);
+  // Fail AGAIN at the same rung, same SNR: the hold doubles to 60 s.
   for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);
-  auto d2 = a.evaluate(19.0);
+  auto d2 = a.evaluate(34.0);
   CHECK(d2.kind == AmcDecision::Kind::Demote);
-  a.onModeApplied(8, 19.0);
+  a.onModeApplied(8, 34.0);
   CHECK_EQ(int(a.failedMode()), 9);
-  CHECK_NEAR(a.failHoldSec(19.0), 30.0, 1e-9);
+  CHECK_NEAR(a.failHoldSec(34.0), 60.0, 1e-9);
   cleanFrames(a);
-  // Ordinary damping expired (t=34) but the penalty box has not (t=49).
-  CHECK(a.evaluate(35.0).kind == AmcDecision::Kind::None);
-  CHECK(a.evaluate(36.0).kind == AmcDecision::Kind::None);
-  CHECK(a.evaluate(48.0).kind == AmcDecision::Kind::None);
-  CHECK(a.evaluate(50.0).kind == AmcDecision::Kind::None);  // streak 1
-  CHECK(a.evaluate(51.0).kind == AmcDecision::Kind::Promote);
-  // SNR recovery overrides the box: +3 dB over the SNR at failure is
-  // new evidence, so a third failure's 60 s hold does not apply.
-  a.onModeApplied(9, 51.0);
+  CHECK(a.evaluate(50.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(93.0).kind == AmcDecision::Kind::None);
+  CHECK(a.evaluate(95.0).kind == AmcDecision::Kind::None);  // streak 1
+  CHECK(a.evaluate(96.0).kind == AmcDecision::Kind::Promote);
+  // SNR recovery overrides the box: +6 dB over the SNR at failure is
+  // new evidence, so a third failure's 120 s hold does not apply.
+  a.onModeApplied(9, 96.0);
   for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);
-  CHECK(a.evaluate(52.0).kind == AmcDecision::Kind::Demote);
-  a.onModeApplied(8, 52.0);
-  CHECK_NEAR(a.failHoldSec(52.0), 60.0, 1e-9);
+  CHECK(a.evaluate(97.0).kind == AmcDecision::Kind::Demote);
+  a.onModeApplied(8, 97.0);
+  CHECK_NEAR(a.failHoldSec(97.0), 120.0, 1e-9);
   cleanFrames(a);
-  a.onLocalSnr(40.0);
-  a.onLocalSnr(40.0);  // EMA: 30 -> 32.5 -> 34.4, eff 32.9 > 28.5 + 3
-  CHECK(a.evaluate(68.0).kind == AmcDecision::Kind::None);  // streak 1
-  CHECK(a.evaluate(69.0).kind == AmcDecision::Kind::Promote);
+  a.onLocalSnr(45.0);
+  a.onLocalSnr(45.0);
+  a.onLocalSnr(45.0);  // EMA: 30 -> 33.75 -> 36.6 -> 38.7, eff 37.2 > 34.5
+  CHECK(a.evaluate(113.0).kind == AmcDecision::Kind::None);  // streak 1
+  CHECK(a.evaluate(114.0).kind == AmcDecision::Kind::Promote);
+}
+
+TEST_CASE(moderate_class_caps_ladder_at_m8) {
+  // MODERATE with the cap enabled (off by default): no promotion above
+  // M8 however rich the SNR (eligibility only - a ladder already above
+  // the cap is left to the failure rules, never force-walked down); the
+  // cap lifts with the verdict.
+  AmcConfig capped = cfg();
+  capped.moderateMaxMode = 8;
+  Amc a(capped, 8, 0.0);
+  cleanFrames(a);
+  a.onLocalSnr(35.0);
+  a.setChannelClass(ChannelClass::Moderate);
+  a.evaluate(7.0);
+  CHECK(a.evaluate(8.0).kind == AmcDecision::Kind::None);  // M9 ineligible
+  Amc b(capped, 10, 0.0);
+  cleanFrames(b);
+  b.onLocalSnr(35.0);
+  b.setChannelClass(ChannelClass::Moderate);
+  CHECK(b.evaluate(7.0).kind == AmcDecision::Kind::None);   // no walk-down
+  CHECK(b.evaluate(14.0).kind == AmcDecision::Kind::None);  // no promote
+  a.setChannelClass(ChannelClass::Fading);  // Good again: cap lifts
+  a.evaluate(20.0);
+  auto p = a.evaluate(21.0);
+  CHECK(p.kind == AmcDecision::Kind::Promote);
+  CHECK_EQ(int(p.targetMode), 9);
 }
 
 TEST_CASE(failure_memory_ignores_snr_explained_demotions) {

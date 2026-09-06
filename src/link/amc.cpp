@@ -30,7 +30,8 @@ void Amc::onFrameResult(bool wasRetransmit, bool decodeOk) {
 
 void Amc::onQualityIndicators(uint8_t selectivity, double pilotStability) {
   selectivity_ = selectivity;
-  pilotStability_ = pilotStability;
+  // Negative = no sample this frame (no decoded payload); keep the last.
+  if (pilotStability >= 0.0) pilotStability_ = pilotStability;
 }
 
 void Amc::onProbeResult(bool clean, double /*now*/) { probeClean_ = clean; }
@@ -41,6 +42,16 @@ void Amc::onModeApplied(uint8_t mode, double now) {
   promoteStreak_ = 0;
   failStreak_ = 0;
   probeClean_ = false;  // a probe clears exactly one promotion
+  // The retry window is evidence about the mode it was collected at.
+  // Carrying it across a change let one bad window condemn every rung
+  // below it: measured as M10 -> M9 -> ... -> M4 -> CSS M1 in 170 s on
+  // a 23 dB CCIR-Moderate channel, one rung per 6 s dwell, with the
+  // window stale (no frame completed between decisions) and the ratio
+  // frozen at 0.38-0.44. A new rung gets a fresh 8-frame trial before
+  // the retry rule can judge it; the SNR floor rule and the 3-failure
+  // streak still demote immediately when the channel really collapses.
+  retryBits_ = 0;
+  windowFill_ = 0;
 }
 
 void Amc::pin(uint8_t mode, double now) {
@@ -105,6 +116,9 @@ bool Amc::modeEligible(uint8_t k, double effSnr,
   if (chanClass_ == ChannelClass::Severe && k > cfg_.severeMaxMode) {
     return false;
   }
+  if (chanClass_ == ChannelClass::Moderate && k > cfg_.moderateMaxMode) {
+    return false;
+  }
   const bool probeOk = probeClean_ || assumeProbeClean;
   const double floor = operatingFloorDb(k);
   if (floor >= 90.0) {
@@ -158,8 +172,9 @@ void Amc::noteFailure(double now, double effSnr) {
 
 double Amc::failHoldSec(double now) const {
   if (failMode_ == 255) return 0.0;
+  // repeats=1 -> 30 s, 2 -> 60 s, ... capped at 240 s (x cadence).
   const int doublings =
-      std::min(std::max(failRepeats_ - 1, 0), cfg_.failHoldMaxDoublings);
+      std::min(std::max(failRepeats_, 1), cfg_.failHoldMaxDoublings);
   const double hold = 15.0 * cadence() * double(1 << doublings);
   return std::max(0.0, hold - (now - failAt_));
 }
@@ -218,6 +233,15 @@ AmcDecision Amc::evaluate(double now) {
     degraded_ = true;  // at the bottom usable rung and still failing
     return {};
   }
+
+  // Class caps (Severe -> M7, Moderate -> M8) act on ELIGIBILITY only:
+  // a verdict that arrives while the ladder sits above its cap leaves
+  // the failure rules to bring it down. A forced one-rung-per-dwell
+  // walk-down was tried (2026-09-06) and withdrawn: under ISI the
+  // Severe verdict marched M10 -> M6 in 18 s, and at M6 the few decoded
+  // frames left CPMODE AUTO 400 s to reach its Long-CP verdict (the
+  // multipath CP test delivered 0 bytes); blocking promotion alone had
+  // passed it.
 
   // Forgiveness: operating AT or ABOVE the failed rung cleanly for a
   // full promote-hold clears the memory (we got back up and it held).

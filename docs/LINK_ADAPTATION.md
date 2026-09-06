@@ -33,7 +33,20 @@ Aggregated each received frame and each ACK:
 - retry ratio (retransmitted / total, sliding 16-frame window)
 - decode-failure ratio (header-ok-payload-fail / total)
 - frequency-selectivity index (per-carrier SNR variance from the equalizer)
-- pilot stability (variance of pilot phase innovations)
+- pilot stability — the pilot-residual energy relative to channel power
+  **in excess of its noise share**. The raw ratio is ~0.7 / SNR on pure
+  AWGN (bertool `pilot` column: 2.95 at M4 −7.5 dB, 0.006 at M11 22 dB,
+  zero Doppler), so uncompensated it made every robust-tier link below
+  ~−3 dB read SEVERE and no static channel read STATIC below ~13 dB.
+  The noise share is taken from the data-aided (post-decode EVM) noise
+  figure, which does not contain channel motion; the tracker's own noise
+  does, and subtracting it cancelled the excess (Moderate read 0 too).
+  Frames without a decoded payload (control frames, failures) give no
+  sample rather than a zero. After compensation: AWGN 0.001–0.007, CCIR
+  Good 0.001–0.009, CCIR Moderate 0.02–0.06 at M6 and 0.008–0.014 at
+  M10. The `M11+` gate's 0.25 bound (calibrated on an earlier tracker's
+  raw ratio) is effectively inert against these levels; the penalty box
+  is what keeps the fast tier off a Moderate channel.
 - dwell time since last mode change
 
 Effective SNR for decisions: `min(local, remote)` when the remote report is
@@ -64,11 +77,22 @@ flutter.
 
 **Penalty box (failure memory).** A demotion driven by frame *failures*
 (retry ratio, fail streak, fast demote) — not by SNR — remembers the
-rung it left. Promotion back into that rung or above holds for 15 s,
-doubling on every repeat at the same or a higher rung (30, 60, 120,
-240 s), unless the effective SNR has risen ≥ 3 dB since the failure; the
-memory clears once the link operates at or above the failed rung cleanly
-for a full hold. SNR alone is not evidence that a rung works: the fast
+rung it left. Promotion back into that rung or above holds for 30 s,
+doubling on every repeat at the same or a higher rung (60, 120, 240 s),
+unless the effective SNR has risen ≥ 6 dB since the failure; the memory
+clears once the link operates at or above the failed rung cleanly for a
+full hold. (A 15 s first hold was shorter than one promote-fail cycle
+at the fast tier, and a 3 dB override was unlocked by the ±3 dB
+frame-to-frame swing of the estimate on CCIR Moderate — measured as
+M9 ↔ M10 every ~40 s on a 23–26 dB Moderate channel, never learning.)
+
+**Fresh trial per rung.** A mode change clears the 16-frame retry
+window: it is evidence about the mode it was collected at. Carried
+across, one bad window condemned every rung below it — measured as
+M10 → M9 → … → M4 → CSS M1 in 170 s, one rung per 6 s dwell, on a 23 dB
+Moderate channel with no frame completed between decisions. The SNR
+floor rule and the 3-failure streak still demote immediately when the
+channel really collapses. SNR alone is not evidence that a rung works: the fast
 tier (M8+) fails 30–60% on CCIR Moderate at *any* SNR (its floors are
 measured on Good, see the WAVEFORM fading annex), and an SNR-only ladder
 re-tried it every promote-hold. SNR-explained (floor-break) demotions are
@@ -225,18 +249,39 @@ is the safe assumption and the wrong one at both extremes, both measured:
 already produces — no extra measurement on air, no wire format, no
 negotiation:
 
-| Signal | Static | Fading (Good) | Severe (Poor) |
-|---|---:|---:|---:|
-| pilot residual / channel power | 0.003–0.025 | 0.010–0.057 | 1.77–1.83 |
-| delay spread | ~0 | ~0.5–1 ms | ≥ 2 ms |
-| SNR variance | low | moderate | high |
-| frame error rate | ~0 | low | ≥ 35% |
+| Signal | Static | Fading (Good) | Moderate | Severe (Poor) |
+|---|---:|---:|---:|---:|
+| pilot excess (see Inputs) | 0.001–0.007 | 0.001–0.009 | ≥ 0.010 (0.008–0.014 at M10, 0.02–0.06 at M6) | ≥ 1.2 |
+| delay spread | ~0 | ~0.5–1 ms | ~1 ms | ≥ 2 ms |
+| SNR variance | low | moderate | moderate | high |
+| frame error rate | ~0 | low | fast tier fails | ≥ 35% |
 
-`Static` requires **all** gates; `Severe` requires **any two**; a verdict
-must repeat (`confirmRuns`) before it replaces the last one, because
+`Static` requires **all** gates; `Severe` requires **any two**;
+`Moderate` is the pilot excess alone (its noise share is already
+removed, so it is not an SNR proxy) once the EMA has been seeded from
+decoded payload frames — checked before `Static`, because a Moderate
+channel at high SNR looks quiet on every other signal. A verdict must
+repeat (`confirmRuns`) before it replaces the last one, because
 switching floor tables mid-session is disruptive and flapping is worse
 than being wrong in one direction. `Unknown` keeps the fading floors.
+(The pilot column was re-based on 2026-09-06: the older raw-ratio
+figures — AWGN 0.003–0.025, Good 0.010–0.057, Moderate 0.38–0.55 — were
+~0.7/SNR plus motion and belonged to an earlier tracker.)
 
 Consumption: `Static` switches `Amc::operatingFloorDb()` to the AWGN
 reference table (measured effect: static ramp 0.39 → 0.67 of its oracle);
-`Severe` caps the ladder at `severeMaxMode` (M7, the robust tier).
+`Severe` caps the ladder at `severeMaxMode` (M7, the robust tier);
+`Moderate` can cap it at `moderateMaxMode` (M8 when enabled; **off by
+default**, 13) — the fast tier's fading floors are measured on CCIR Good
+(WAVEFORM annex) and it fails 25–75% on Moderate at any SNR (bertool),
+while M8 still closes at 6%; measured with the cap on, the churn seed
+spread was a wash and the coupled schedule lost 8.8 KB and its pass, so
+the verdict is recorded (STATUS) but not acted on until a seed spread
+shows a benefit. Both caps
+act on eligibility only; a verdict that arrives while the ladder sits
+above its cap leaves the failure rules to bring it down (a forced
+one-rung-per-dwell walk-down was measured and withdrawn: under ISI the
+Severe verdict marched M10 → M6 in 18 s and starved CPMODE AUTO of
+decoded frames). The Moderate threshold is provisional: in the two-modem
+churn the verdict was driven by single pilot spikes through the 0.15
+EMA, and its cap did not change the soak outcomes.

@@ -41,12 +41,34 @@ TEST_CASE(ccir_good_does_not_read_static) {
   // Good fades: pilot residual an order of magnitude above AWGN, and a
   // real delay spread. Calling this Static would promote against
   // optimistic floors and cost the session.
+  // Pilot figure is the post-2026-09-06 EXCESS (noise share removed):
+  // Good reads 0.001-0.009; the old raw-ratio 0.045 would now read
+  // Moderate. Good is still not Static because its SNR varies.
   ChannelClassifier c;
   for (int i = 0; i < 30; ++i) {
-    c.onFrame(18.0 + (i % 5) * 1.2, 0.6, 0.045, true);
+    c.onFrame(18.0 + (i % 5) * 1.2, 0.6, 0.004, true);
   }
   CHECK(c.verdict() != ChannelClass::Static);
   CHECK(c.verdict() == ChannelClass::Fading);
+}
+
+TEST_CASE(ccir_moderate_reads_moderate_and_good_does_not) {
+  // Pilot EXCESS (noise share removed) at the fast tier: Good 0.001-
+  // 0.005, Moderate 0.008-0.014 (bertool `pilot`). Both fade, so the
+  // SNR variance is the same ordinary-fading figure.
+  ChannelClassifier m;
+  for (int i = 0; i < 30; ++i) m.onFrame(20.0 + (i % 5) * 1.2, 0.8, 0.012, true);
+  CHECK(m.verdict() == ChannelClass::Moderate);
+  ChannelClassifier g;
+  for (int i = 0; i < 30; ++i) g.onFrame(20.0 + (i % 5) * 1.2, 0.5, 0.003, true);
+  CHECK(g.verdict() == ChannelClass::Fading);
+  // No-sample frames (negative pilot: no decoded payload) do not dilute
+  // the EMA toward Fading.
+  ChannelClassifier d;
+  for (int i = 0; i < 30; ++i) {
+    d.onFrame(20.0 + (i % 5) * 1.2, 0.8, i % 2 ? 0.012 : -1.0, true);
+  }
+  CHECK(d.verdict() == ChannelClass::Moderate);
 }
 
 TEST_CASE(ccir_poor_like_channel_reads_severe) {

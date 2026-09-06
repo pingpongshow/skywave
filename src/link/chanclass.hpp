@@ -27,6 +27,9 @@ enum class ChannelClass : uint8_t {
   Static,       // AWGN-like: stable pilots, negligible spread, SNR steady
   Fading,       // ordinary ionospheric fading (the design assumption)
   Severe,       // CCIR-Poor-like: fast Doppler and/or deep spread
+  Moderate,     // CCIR-Moderate-like Doppler: the fast tier (M8+) fails
+                // 25-75% at ANY SNR (WAVEFORM fading annex - its floors
+                // are measured on Good), so the ladder is capped at M8
 };
 
 const char* toString(ChannelClass c);
@@ -53,6 +56,18 @@ struct ChanClassConfig {
   // The sharpest discriminator measured: Poor 1.77-1.83 against
   // Moderate 0.38-0.55. Worth a signal of its own.
   double severePilotStabMin = 1.20;
+
+  // MODERATE gate: pilot-residual EXCESS over its noise share (the
+  // figure the receiver reports since 2026-09-06; LINK_ADAPTATION.md
+  // "pilot stability"). Measured with bertool's `pilot` column at the
+  // fast tier: CCIR Good 0.001-0.005, CCIR Moderate 0.008-0.014
+  // (0.02-0.12 per frame in the two-modem churn at M9/M10), AWGN
+  // 0.001-0.007. The verdict caps the AMC ladder at M8 - the fast tier
+  // fails 25-75% on Moderate at any SNR (bertool) and an SNR-steered
+  // ladder sat at M9/M10 on a 23-26 dB Moderate channel moving almost
+  // nothing. Applied only once the EMA is seeded from decoded payload
+  // frames.
+  double moderatePilotMin = 0.010;
 
   // Hysteresis: a verdict must repeat before it replaces the last one.
   // Floor-table switching mid-session is disruptive; flapping is worse
@@ -88,6 +103,7 @@ class ChannelClassifier {
   double snrM2_ = 0.0;
   double spreadEma_ = 0.0;
   double pilotEma_ = 0.0;
+  bool havePilot_ = false;  // pilot EMA seeded (negative samples skip it)
   int frames_ = 0;
   int failures_ = 0;
 

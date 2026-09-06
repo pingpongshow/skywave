@@ -21,6 +21,15 @@ struct AmcConfig {
   // The robust tier is the only thing that works, so promoting past it
   // is guaranteed waste.
   uint8_t severeMaxMode = 7;
+  // Highest mode once the channel is classified MODERATE (CCIR-Moderate
+  // Doppler): the fast tier's fading floors are measured on CCIR Good
+  // (WAVEFORM annex) and it fails 25-75% on Moderate at any SNR; M8 is
+  // the last rung that closes there (bertool: 6% FER at 20 dB). OFF by
+  // default (13 = no cap): with the cap at 8 the churn seed spread was
+  // a wash (+4.6 KB on one seed of three) and the coupled schedule lost
+  // 8.8 KB and its pass (2026-09-06), and the verdict itself is still
+  // spike-driven through the classifier's EMA. Set to 8 to enable.
+  uint8_t moderateMaxMode = 13;
   Family family = Family::Wide;
   uint8_t maxMode = 13;
   // Bottom rung: kFirstMode (M4) normally, 0 when the session
@@ -60,8 +69,15 @@ struct AmcConfig {
   // are measured on Good), and an SNR-only ladder re-tried it every
   // promote-hold, flapping M6->M7->M8->M7->M6 inside a minute with the
   // MODE_CHANGE exchanges and the failed frames eating the turn.
-  double failRecoverDb = 3.0;
-  int failHoldMaxDoublings = 4;  // 15 s -> 240 s (x airtime cadence)
+  // 6 dB, not 3: on CCIR Moderate the estimate swings +-3 dB between
+  // frames at the fast tier (motion counted as noise), and a 3 dB
+  // override unlocked the box on noise alone - measured as M9 <-> M10
+  // every ~40 s on a 23-26 dB Moderate channel, never learning.
+  double failRecoverDb = 6.0;
+  // First failure holds 30 s, doubling to 240 s: a 15 s first hold was
+  // shorter than one promote-fail cycle at the fast tier (~40 s), so
+  // the repeat counter never advanced past one.
+  int failHoldMaxDoublings = 4;  // 30 s -> 240 s (x airtime cadence)
   // High-mode gates.
   double m11RetryMax = 0.10;
   // Pilot-residual energy relative to channel power (phy/receiver.hpp

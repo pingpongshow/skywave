@@ -2488,3 +2488,92 @@ granularity at the robust tier (the 4 KiB coalesce lump is already
 capped to 8 frames for the deep tier; the same cap should follow the
 mode, not the tier); (3) the soak watchdog should read delivered SNR,
 not the set point.
+
+## Instrument-then-fix round (2026-09-06, latest)
+
+Question asked: do the remaining fixes need more instrumentation? Yes,
+and the instrumentation changed the diagnosis. Three probes were added
+before anything was tuned: bertool rows print `evm` (data-aided
+post-decode SNR) and `pilot` (pilot-stability excess) next to `est`;
+`soak_st2` prints `estA`/`estB`, each modem's calibrated measured SNR,
+next to the schedule's set point. Testing order: bertool sweeps (AWGN,
+Good, Moderate) → unit tests → gate tier → churn seed spread and coupled
+schedule → full ctest, re-run after every change.
+
+### What the probes found
+
+1. **The two-modem world was delivering 8–10 dB less than its SNR
+   label** on the *static* preset (set 26 read 18.5, set 17 read 8–9):
+   the radio chain referenced the simulator's noise to unit power while
+   the worker's audio arrived at its own level times drive, ALC and
+   converter gains. bertool feeds unit-RMS frames directly and never
+   saw it. Every soak SNR axis before this round is mislabeled by that
+   much; the "set 9 dB delivers −6 dB" note was this, plus the fading
+   under-read. Fixed in `radiochain.cpp` (reference = measured signal
+   power above −30 dB of the burst peak); static now reads within ~3 dB.
+2. **The pilot-stability indicator was ~0.7/SNR on pure AWGN** (2.95 at
+   M4 −7.5 dB, 0.006 at M11 22 dB, zero Doppler): the classifier called
+   every robust-tier link below ~−3 dB SEVERE and could never call a
+   static path STATIC below ~13 dB. The receiver now reports the excess
+   over an EVM-derived noise share (the tracker's own noise contains the
+   motion and cancelled the excess when tried); frames without a decoded
+   payload give no sample. After: AWGN 0.001–0.007, Good 0.001–0.009,
+   Moderate 0.008–0.06 — a clean 5–10× separation of Moderate from Good.
+3. **The AMC's retry window survived mode changes**, so one bad window
+   condemned every rung below it: M10 → M9 → … → M4 → CSS M1 in 170 s on
+   a 23 dB Moderate channel, one rung per 6 s dwell, the ratio frozen at
+   0.38–0.44 with no frame completed between decisions. Cleared on mode
+   apply now; each rung gets a fresh 8-frame trial.
+4. **CPMODE AUTO read delay spread from failed frames** (4.4–4.6 ms on a
+   1 ms channel) and its peak-hold kept it. Decoded frames only now.
+5. The EVM estimator tracks the set point on AWGN within ~1 dB and
+   under-reads 3–5 dB on Moderate at the fast tier where the tracker
+   under-reads 5–10; the AMC still steers on the tracker figure (the
+   penalty box, not the estimate, is what should keep the fast tier off
+   Moderate). A within-symbol LS noise estimate is not possible: 25 taps
+   vs ~16 pilots on WIDE.
+
+### Tuned, tried, and withdrawn
+
+- Penalty box: first hold 30 s (15 was shorter than one promote-fail
+  cycle), recovery override 6 dB (the Moderate estimate swings ±3 dB).
+  Measured byte-identical on the churn seeds — the box's timing never
+  decided an outcome there — kept for the mechanism's correctness.
+- A `Moderate` channel-class verdict (pilot excess EMA ≥ 0.010) with an
+  M8 eligibility cap, the WAVEFORM annex's rule made executable. With
+  the cap on, the seed spread was a wash (+4.6 KB on one seed) and the
+  coupled schedule lost 8.8 KB and its pass, so the cap is **off by
+  default** (`moderateMaxMode = 13`); the verdict is recorded in STATUS
+  and unit-tested. The threshold is provisional: single pilot spikes
+  drive it through the 0.15 EMA.
+- A forced one-rung-per-dwell walk-down to a class cap: withdrawn. Under
+  ISI the Severe verdict marched M10 → M6 in 18 s and starved CPMODE
+  AUTO of decoded frames (multipath CP test: 0 bytes). Blocking
+  promotion alone had passed it.
+
+### Measurements (final binary; the honest SNR axis, not comparable to
+earlier rounds' churn numbers)
+
+| gate | value |
+|---|---|
+| M3 ramp fading / static | **0.98** / 0.70 |
+| VHF ramp to M14 | t=35 s |
+| ST2 one-way, half-duplex (B / 300 s) | 86,016 |
+| m2 bidirectional / CP multipath | 1.00 / 8192 B, Long |
+| ctest | 40/40 |
+
+| churn (honest axis) | turn-taking | legacy CCA |
+|---|---|---|
+| decoupled seeds 11 / 12 / 13 | 34,925 / 52,769 / 78,317 B, **all PASS** | — |
+| coupled | 46,095 B, PASS | 96,562–108,403 B, PASS |
+
+On the honest axis the schedule spends 600 s at a true 21–26 dB on CCIR
+Moderate, where the ladder lives at M9/M10 with 30–70% per-frame loss;
+each lost frame costs turn-taking a turn cycle, so it moves about half
+of what CCA moves there. The lever is now sharply defined and measured:
+keep the fast tier off Moderate. The Moderate verdict exists; what it
+needs is a threshold that survives spikes (a median over decoded frames,
+or requiring N consecutive samples above the line) and a seed spread
+showing the cap pays. The robust-tier pace wall (4 KiB messages against
+a 300 s watchdog at ≤ 9 dB true) remains as documented in the previous
+round.

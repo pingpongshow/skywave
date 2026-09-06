@@ -85,6 +85,15 @@ struct RxFrameResult {
   // short enough to fit in a few symbols - a fast-tier ACK - report the
   // seed; CSS frames measure on the preamble and are always converged.
   bool snrConverged = true;
+  // Data-aided SNR (dB, per carrier, UNCALIBRATED): after a successful
+  // payload decode the decoded bits are re-encoded and re-mapped, and
+  // the noise is taken from the error vector between each equalized
+  // (despread, posterior-H) symbol and its ideal point. Unlike the
+  // tracker's figure it contains no prediction lag, so under Doppler it
+  // does not count channel motion as noise. -99 when the payload did
+  // not decode or the frame has no payload codewords. Instrumentation
+  // for the estimator choice (bertool `evm` column).
+  double evmSnrDb = -99.0;
   std::vector<float> carrierSnrDb;  // per active carrier, at frame end
   double delaySpreadMs = 0.0;       // tap-extent estimate, at frame end
   // Pilot-residual energy relative to channel power: 0 = perfectly

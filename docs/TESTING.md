@@ -56,16 +56,34 @@ airtime and costs 20–30 percentage points of FER at the fading floors
 (kept at two); doubling OFDM frame length at `M8/M9` on Moderate raises
 FER from 29–50% to 54–58% (frame-length adaptation upward not adopted).
 
-Every sweep row also prints `est`, the receiver's mean estimated SNR over
-the frames whose header decoded, next to the set point. On `--preset
-awgn` this is the **SNR calibration** check (the AMC steers on this
-number against floor tables in the 3 kHz set-point convention): after
-`kOfdmSnrCalDb` it reads within ~1 dB of the set point at the floor
-region on every HF family. On the fading presets it also shows the
-estimator's fading bias — CCIR Moderate under-reads by 4–6 dB at M8
-(channel-motion innovation counted as noise), which is left in place
-because it keeps the fast tier out of a channel its floors were never
-measured on.
+Every sweep row also prints three receiver-side figures next to the set
+point: `est`, the mean tracker SNR over frames whose header decoded;
+`evm`, the mean **data-aided** SNR (decoded bits re-encoded and
+re-mapped, noise from the error vector of each equalized symbol) over
+frames whose payload decoded; and `pilot`, the mean pilot-stability
+excess. On `--preset awgn` `est` is the **SNR calibration** check (the
+AMC steers on it against floor tables in the 3 kHz set-point
+convention): after `kOfdmSnrCalDb` it reads within ~1 dB of the set
+point at the floor region on every HF family, and `evm` within ~1 dB
+everywhere. On the fading presets the two diverge, and that divergence
+is the estimator's fading bias: on CCIR Moderate the tracker under-reads
+by 5–10 dB at the fast tier (channel-motion innovation counted as noise)
+while `evm` under-reads by 3–5 (WIDE M10 at 24 dB: est 15.8, evm 19.5).
+The tracker figure remains what the AMC steers on; the penalty box, not
+the estimate, keeps the fast tier off Moderate. `pilot` is what
+calibrated the noise-share coefficient and the classifier's thresholds
+(LINK_ADAPTATION.md).
+
+**The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
+each modem's calibrated measured SNR, next to the schedule's set point.
+That field found the radio chain referencing its noise to unit power
+while the worker's audio arrived at its own level times drive, ALC and
+converter gains: the static preset delivered **8–10 dB less** than its
+label (set 26 read 18.5, set 17 read 8–9). The chain now references the
+SNR to the signal power actually arriving at the channel (samples above
+−30 dB of the burst peak), and the static preset reads within ~3 dB of
+its label. Every soak number recorded before 2026-09-06 (late) sits on
+the mislabeled axis.
 
 ### 3. Two-Modem Integration
 

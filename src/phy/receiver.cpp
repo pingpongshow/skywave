@@ -21,6 +21,16 @@ namespace {
 // snrDb() is reported as a measurement (ChannelTracker::noiseUpdates:
 // the EMA runs fast for the first 8 symbols, then settles).
 constexpr int kSnrConvergedSymbols = 8;
+// Pilot-residual energy per unit of data-aided (EVM) noise variance on
+// AWGN: the residual of a Kalman-predicted pilot is measurement noise
+// plus the filter's own uncertainty share. Fitted from bertool's `pilot`
+// column as raw-ratio x EVM-linear: 0.63-0.75 across M6-M10 from -2.5
+// to 18 dB. At 0.7 the AWGN excess reads ~0 at every point (0.001-
+// 0.007), CCIR Good 0.001-0.009, CCIR Moderate 0.02-0.06 at M6 and
+// 0.008-0.014 at M10. (In the tracker's own raw-noise terms the same
+// coefficient is ~1.5, but that figure contains channel motion under
+// Doppler and cannot serve as the reference.)
+constexpr double kPilotNoiseCoefEvm = 0.7;
 
 // Walks OFDM symbols of one codeword (mirror of appendOfdmSymbols): FFTs
 // each group symbol at integer positions, runs the tracker, despreads with
@@ -37,6 +47,10 @@ struct SymbolWalker {
   // symbols, normalized so an ideal point sits on the unit constellation.
   // Null in the hot path - collecting costs one divide per symbol.
   std::vector<cfloat>* constellationOut = nullptr;
+  // Optional: the MRC gain `a` of each despread symbol, in step with
+  // constellationOut (the equalized symbol is z/a, whose noise variance
+  // is the per-carrier noise divided by a). For the data-aided SNR.
+  std::vector<float>* gainOut = nullptr;
   Fft fft{kFftBaseband};
 
   // Collect exactly `bits` LLRs coded at the given parameters. Returns
@@ -91,6 +105,7 @@ struct SymbolWalker {
         }
         if (constellationOut && a > 1e-12f) {
           constellationOut->push_back(z / a);
+          if (gainOut) gainOut->push_back(a);
         }
         demapLlr(cst, z, a, nvar, llr);
         got += bps;
@@ -716,16 +731,22 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     long totalCoded = 0;
     for (int n : cwN) totalCoded += n;
     std::vector<float> allLlr;
+    // Equalized symbols are always collected now: one complex divide per
+    // despread symbol against a 320-point FFT and a Kalman update per
+    // OFDM symbol, and they feed the data-aided SNR below.
     std::vector<cfloat> constPts;
-    if (wantConstellation) {
-      constPts.reserve(512);
-      walker.constellationOut = &constPts;
-    }
+    std::vector<float> gains;
+    constPts.reserve(512);
+    gains.reserve(512);
+    walker.constellationOut = &constPts;
+    walker.gainOut = &gains;
     const bool haveAll = walker.collect(md.constellation, md.spread,
                                         hdr->cpMode, int(totalCoded),
                                         allLlr);
     walker.constellationOut = nullptr;
-    res.constellation = std::move(constPts);
+    walker.gainOut = nullptr;
+    std::vector<uint8_t> codedStream;  // re-encoded decoded bits, in air order
+    codedStream.reserve(size_t(totalCoded));
     size_t llrOff = 0;
     // IR (rate-stepdown): an r1/2 frame may be a step-down retransmission
     // of an earlier rate>1/2 attempt - add that attempt's stored
@@ -777,6 +798,13 @@ std::optional<RxFrameResult> receiveFrame(Family family,
                 tracker.snrDb());
       }
       if (!dec) ok = false;
+      if (dec) {
+        // Rebuild this codeword's on-air bits for the data-aided SNR.
+        std::vector<uint8_t> cwBits, il;
+        pcode.encode(info, cwBits);
+        interleaveBits(cwBits, il);
+        codedStream.insert(codedStream.end(), il.begin(), il.end());
+      }
       size_t want = std::min(remaining, size_t(pcode.k()));
       if (collectPriors && sys.size() >= want) {
         sysLlrs.insert(sysLlrs.end(), sys.begin(), sys.begin() + long(want));
@@ -797,7 +825,31 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     if (ok) {
       auto bytes = bitsToBytes(restInfoBits);
       white.insert(white.end(), bytes.begin(), bytes.end());
+      // Data-aided SNR: error vector of each equalized symbol against
+      // the ideal point of its decoded bits. z/a = s + w with
+      // var(w) = sigma^2 / a, so the per-carrier noise is a * |w|^2;
+      // signal is the tracker's mean |H|^2, the same numerator the
+      // tracker's own snrDb() uses.
+      const int bps = bitsPerSymbol(md.constellation);
+      const size_t nSym = std::min(constPts.size(), codedStream.size() / size_t(bps));
+      if (nSym > 0 && gains.size() >= nSym) {
+        double nv = 0.0;
+        for (size_t i = 0; i < nSym; ++i) {
+          uint32_t v = 0;
+          for (int b = 0; b < bps; ++b) {
+            v = (v << 1) | (codedStream[i * size_t(bps) + size_t(b)] & 1);
+          }
+          const cfloat e = constPts[i] - mapSymbol(md.constellation, v);
+          nv += double(gains[i]) * std::norm(e);
+        }
+        nv /= double(nSym);
+        double p = 0.0;
+        for (const auto& v : tracker.h()) p += std::norm(v);
+        p /= double(std::max<size_t>(tracker.h().size(), 1));
+        res.evmSnrDb = 10.0 * std::log10(std::max(p / std::max(nv, 1e-12), 1e-9));
+      }
     }
+    if (wantConstellation) res.constellation = std::move(constPts);
   }
   res.payloadOk = ok && white.size() >= size_t(hdr->length);
   if (res.payloadOk) {
@@ -836,8 +888,39 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     // nothing ever computed it, so that gate has been evaluating a
     // constant 0 and never firing.
     if (residN > 0 && chanPow > 1e-12) {
-      res.pilotStability =
+      const double ratio =
           (residSum / double(residN)) / (chanPow / double(h.size()));
+      // The raw ratio is NOT a channel-motion indicator by itself: on
+      // pure AWGN the pilot residual is measurement noise, so the ratio
+      // reads ~1.5 / SNR (measured with bertool's `pilot` column: 2.95
+      // at M4 -7.5 dB, 1.0 at M6 -2.5 dB, 0.043 at M8 12 dB, 0.006 at
+      // M11 22 dB - all with zero Doppler). Uncompensated, the
+      // classifier called every robust-tier link below ~-3 dB SEVERE
+      // and could never call a static channel STATIC below ~13 dB (its
+      // 0.03 bound), so the AMC used fading floors on AWGN paths at the
+      // robust tier - a 12 dB penalty at M6. Report the EXCESS over the
+      // noise share: what channel motion adds. The calibration table
+      // (AmcConfig::pilotStabilityMax, M10 15-25 dB) is unaffected to
+      // within its own spread - the noise share there is <= 0.05.
+      // The noise share must come from a MOTION-FREE noise figure: the
+      // tracker's own nv already contains the prediction lag under
+      // Doppler, and subtracting it cancelled the very excess being
+      // measured (Moderate read 0.000 too). Use the data-aided EVM
+      // noise when the payload decoded (coefficient re-fitted in those
+      // terms: ~0.6 at the floor region), and fall back to the tracker
+      // figure otherwise - a failed frame's zero excess is harmless,
+      // the FER gate keeps such a channel from reading Static.
+      if (res.evmSnrDb > -90.0) {
+        const double noiseShare =
+            kPilotNoiseCoefEvm / std::pow(10.0, res.evmSnrDb / 10.0);
+        res.pilotStability = std::max(0.0, ratio - noiseShare);
+      } else {
+        // No decoded payload (control frame, or a failed one): no
+        // motion-free noise figure, so no sample - the tracker-based
+        // share over-subtracts under fading and read a flat 0 that
+        // diluted the classifier's EMA with every ACK.
+        res.pilotStability = -1.0;
+      }
     }
     // Selectivity: peak-to-median carrier SNR spread, scaled to the
     // 0..255 index units the M12+ gate uses.

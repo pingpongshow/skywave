@@ -282,10 +282,19 @@ int main() {
 
     if (now - lastReportAt > 120.0) {
       lastReportAt = now;
+      // What each modem MEASURED (calibrated to the same 3 kHz convention
+      // as the set point) next to the set point: the gap between them is
+      // the estimator's fading bias, and it is what the AMC steers on.
+      auto measured = [&](Node& n) {
+        const std::string st = w.cmd(n, "STATUS");
+        const auto p = st.find(" SNR=");
+        return p == std::string::npos ? -99.0 : std::atof(st.c_str() + p + 5);
+      };
       std::printf(
-          "SOAK t=%5.0fs snr=%5.1f %-8s bo=%d A->B=%zu B->A=%zu recon=%d\n",
+          "SOAK t=%5.0fs snr=%5.1f %-8s bo=%d A->B=%zu B->A=%zu recon=%d "
+          "estA=%.1f estB=%.1f\n",
           now, snr, presetName(preset), boActive ? 1 : 0, w.b.dataAcc.size(),
-          w.a.dataAcc.size(), reconnects);
+          w.a.dataAcc.size(), reconnects, measured(w.a), measured(w.b));
       if (std::getenv("SKW_SOAK_DEBUG")) {
         std::printf("  A %s\n  B %s\n", w.cmd(w.a, "STATUS").c_str(),
                     w.cmd(w.b, "STATUS").c_str());

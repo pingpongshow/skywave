@@ -311,6 +311,12 @@ int main(int argc, char** argv) {
         // reads as -6 dB in the soak).
         double estSum = 0.0;
         int estN = 0;
+        // Data-aided (post-decode EVM) SNR and the pilot-stability
+        // indicator, over frames whose payload decoded: the estimator
+        // comparison under fading, and the classifier's per-mode
+        // calibration question.
+        double evmSum = 0.0, pilotSum = 0.0;
+        int evmN = 0;
         for (int t = 0; t < a.trials; ++t) {
           ChansimParams cp = presetParams(a.preset);
           cp.snr3kDb = r.snrDb;
@@ -326,6 +332,11 @@ int main(int argc, char** argv) {
           if (res) {
             estSum += res->snrDb;
             ++estN;
+            if (res->payloadOk && res->evmSnrDb > -90.0) {
+              evmSum += res->evmSnrDb;
+              pilotSum += res->pilotStability;
+              ++evmN;
+            }
           }
           if (!res) {
             if (st == RxStage::NoDetect) ++r.noDetect;
@@ -339,9 +350,11 @@ int main(int argc, char** argv) {
           }
         }
         const double est = estN > 0 ? estSum / estN : -99.0;
-        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f | est %6.1f\n",
+        const double evm = evmN > 0 ? evmSum / evmN : -99.0;
+        const double pilot = evmN > 0 ? pilotSum / evmN : -1.0;
+        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f | est %6.1f evm %6.1f pilot %6.3f\n",
                plan(fam).name, mode, floor, r.snrDb, r.noDetect, r.zcFail,
-               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est);
+               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est, evm, pilot);
         fflush(stdout);
         if (csv) {
           fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,

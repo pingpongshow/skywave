@@ -72,6 +72,33 @@ std::vector<float> radioChain(const RadioChainParams& p,
     down.process(a, bb);
     ChansimParams cp = p.channel;
     cp.seed = p.channel.seed ? p.channel.seed : p.seed;
+    // Reference the SNR to the signal ACTUALLY arriving at the channel,
+    // not to unit power. bertool feeds Chansim a unit-RMS baseband frame
+    // directly, so its set point is exact; through this chain the same
+    // frame arrives at the worker's audio level times drive, ALC and
+    // converter gains, and the fixed unit reference delivered 8-10 dB
+    // LESS than the label (measured 2026-09-06 with the soak's estA/estB
+    // fields on the static preset: set 26 read 18.5, set 17 read 8-9).
+    // Every soak SNR axis before this was mislabeled by that much.
+    // Power is averaged over samples carrying signal (above -30 dB of
+    // the burst peak) so the lead/tail silence in a capture does not
+    // dilute the reference; the Rayleigh taps average to unity, so the
+    // pre-fading power is the right nominal.
+    {
+      double peak = 0.0;
+      for (const auto& v : bb) peak = std::max(peak, double(std::norm(v)));
+      const double thr = peak * 1e-3;
+      double sum = 0.0;
+      size_t n = 0;
+      for (const auto& v : bb) {
+        const double pw = std::norm(v);
+        if (pw > thr) {
+          sum += pw;
+          ++n;
+        }
+      }
+      if (n > 0 && sum > 0.0) cp.refSignalPower = sum / double(n);
+    }
     auto faded = Chansim::run(cp, bb);
     Upconverter up;
     std::vector<float> back;

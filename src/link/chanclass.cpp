@@ -10,6 +10,7 @@ const char* toString(ChannelClass c) {
     case ChannelClass::Static: return "STATIC";
     case ChannelClass::Fading: return "FADING";
     case ChannelClass::Severe: return "SEVERE";
+    case ChannelClass::Moderate: return "MODERATE";
     case ChannelClass::Unknown: break;
   }
   return "UNKNOWN";
@@ -55,9 +56,15 @@ void ChannelClassifier::onFrame(double snrDb, double spreadMs,
 
   spreadEma_ = n_ == 1 ? spreadMs
                        : spreadEma_ + kEmaAlpha * (spreadMs - spreadEma_);
-  pilotEma_ = n_ == 1
-                  ? pilotStability
-                  : pilotEma_ + kEmaAlpha * (pilotStability - pilotEma_);
+  // A negative pilot figure means "no sample" (a frame without a decoded
+  // payload has no motion-free noise reference, receiver.cpp): the EMA
+  // holds rather than being diluted toward zero by every ACK.
+  if (pilotStability >= 0.0) {
+    pilotEma_ = !havePilot_
+                    ? pilotStability
+                    : pilotEma_ + kEmaAlpha * (pilotStability - pilotEma_);
+    havePilot_ = true;
+  }
 
   if (frames_ >= cfg_.minSamples && n_ >= 2) {
     const ChannelClass now = classifyNow();
@@ -105,6 +112,14 @@ ChannelClass ChannelClassifier::classifyNow() const {
   if (pilotEma_ >= cfg_.severePilotStabMin) ++severe;
   if (severe >= 2) return ChannelClass::Severe;
 
+  // MODERATE: channel motion beyond CCIR Good, read from the pilot
+  // excess alone (its noise share is already removed, so it is not an
+  // SNR proxy). Checked before STATIC: a Moderate channel at high SNR
+  // can look quiet on every other signal.
+  if (havePilot_ && pilotEma_ >= cfg_.moderatePilotMin) {
+    return ChannelClass::Moderate;
+  }
+
   // STATIC requires everything to be quiet at once.
   if (var <= cfg_.staticSnrVarMax && spreadEma_ <= cfg_.staticSpreadMsMax &&
       pilotEma_ <= cfg_.staticPilotStabMax && fer <= cfg_.staticFerMax) {
@@ -119,6 +134,7 @@ void ChannelClassifier::reset() {
   snrM2_ = 0.0;
   spreadEma_ = 0.0;
   pilotEma_ = 0.0;
+  havePilot_ = false;
   frames_ = 0;
   failures_ = 0;
   verdict_ = ChannelClass::Unknown;
