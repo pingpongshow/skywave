@@ -279,8 +279,18 @@ Negotiated at `START`; the AMC may clamp downward at runtime:
 |---|---:|---:|
 | `M4–M6` | 2 | 1 |
 | `M7–M9` | 4 | 2 |
-| `M10–M13` (HF band profile) | 8 | 4 |
+| `M10–M13` (HF band profile) | 16 | 4 |
 | `M13–M14` (VHF-FM band profile) | 16 | 4 |
+
+The HF fast-tier window was 8 until 2026-09-06. The per-turn statistic
+(`SKW_TURN_DEBUG` `TURNSTAT`) showed ~2.4 KB in flight per round trip at
+M10–M13 against a 3–8 KB RTT × rate product: window-limited. At 16 the
+one-way half-duplex test went 86,016 → 106,496 B / 300 s and the coupled
+two-way churn 91.2 → 196.7 KB — above listen-before-talk CCA on the
+same schedule for the first time. The old caution ("the ARQ timeout
+budgets one container of airtime, a deeper window times out its own
+head-of-line burst") predated the measured-RTT timeout and the TX-queue
+delay term, and did not reproduce.
 
 Multi-frame bursts use the PHY **burst container**
 ([WAVEFORM.md](WAVEFORM.md)) — one preamble/sync/header for the whole
@@ -334,9 +344,10 @@ otherwise due. The bit mirrors current state: a later ACK without it
 withdraws the request.
 
 **Handover.** When the peer has requested the turn, the ISS keeps it for
-a short **minimum hold** (2 measured round trips — one full
-send-and-acknowledge cycle, so every turn moves at least a window of
-data before the handover cost is paid again), then stops pulling new
+a **minimum hold** of 4 measured round trips (two send-and-acknowledge
+cycles; at 2 the ISS used 7–40% of its own turn — one window, its ACK
+wait, then a handover whose cost is itself ~1 RTT; at 4 the robust tier
+reached ~80%), then stops pulling new
 segments and sends `TURN_GRANT` (u8 epoch, incremented per handover) at
 the **next window boundary** — the moment nothing is in flight and
 nothing already pulled is waiting to air. An ISS with no backlog hands

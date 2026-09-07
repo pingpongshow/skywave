@@ -2643,3 +2643,51 @@ seed-11 trace — a robust-tier turn that carries one to three 138-byte
 frames in ~35 s (window 2, one frame per burst, 2-RTT minimum hold).
 Next levers: window/frames-per-burst at M5–M7 under turn-taking, and a
 mode-following coalesce cap.
+
+## Turn utilisation round (2026-09-06, latest)
+
+Instrument: `TURNSTAT` (under `SKW_TURN_DEBUG`) prints, at every
+handover, how long the ISS held the turn and how many DATA frames,
+bytes and bursts it sent — utilisation of the turn the handover cost
+buys, grouped by mode.
+
+### Baseline (2-RTT hold, HF window 8)
+
+| mode | turn | frames | bytes/s of turn | share of net rate |
+|---|---:|---:|---:|---:|
+| M6 | 37 s | 2.9 | 9.2 | 22% |
+| M8 | 21–24 s | 4.6–5.3 | 50 | 23% |
+| M10 | 25–40 s | 7.3–7.7 | 60–80 | 15–19% |
+| M13 | 16 s | 3.8 | 87 | 7% |
+
+One window, its ACK wait, then a handover whose own cost is ~1 RTT.
+
+### Fixes, each A/B'd by env knob
+
+- **Minimum hold 2 → 4 RTT** (`SKW_TURN_HOLD_RTTS`): M6 went from 9.2
+  to 32.6 B/s of turn (~80% of net); seeds 33.4 / 58.9 / FAIL →
+  37.2 / 75.1 / 77.8 KB, all PASS; coupled 85.3 → 91.2 KB. The fast tier
+  barely moved: its turns were window-limited.
+- **HF window at M10+ 8 → 16** (`SKW_HF_WINDOW`): one-way half-duplex
+  86,016 → **106,496 B / 300 s**; coupled churn 91.2 → **196.7 KB** —
+  above legacy CCA (120 KB) on the same schedule for the first time.
+  Seeds 32.3 / 65.7 / 89.5 KB, all PASS (a wash against the window-8
+  spread: the seeds live mostly at M6–M9, where the window is
+  unchanged). Fading ramp 0.90 (from 0.98, gate 0.75), every other gate
+  unchanged.
+  The old caution that a deeper window would time out its own head-
+  of-line burst predated the measured-RTT timeout and did not reproduce.
+- **Absolute hold floor 30 s** (`SKW_TURN_HOLD_MIN_SEC`): neutral with
+  window 16, a stall on its own — left at 6 s.
+- **Two frames per burst at M5/M6** (`SKW_ROBUST_FPB`): byte-identical
+  on seed 11, M6 turn utilisation unchanged — left at 1.
+
+### Where the turn still goes
+
+At M10+ with window 16 a turn is now ~2 windows per 4 RTT; the next
+ceiling is the frames-per-burst (4) against the 4095-byte PHY container
+cap, and the listen turn after every burst. At the robust tier a 40 s
+turn carries ~6 frames of ~140 bytes: the frame is small because the
+segment budget is one codeword, so preamble and header dominate airtime
+— the deep-tier "codeword target" growth rule (`cssCwTarget_`) has an
+OFDM-robust-tier analogue waiting to be measured.

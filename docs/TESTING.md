@@ -90,8 +90,13 @@ Diagnostic A/B knobs kept from the same round: `SKW_CHANCLASS_DEBUG`
 mode), `SKW_DRAIN_CAP_MULT` (turn-taking drain cap in handoff intervals,
 default 2; 3 halved the coupled churn), `SKW_DUP_RETRY` (count
 duplicate arrivals as retries, the pre-2026-09-06 rule; pinned seed 11
-at M6). The churn soak is deterministic but chaotic: compare cells of a
-2×2 across the seed spread and the coupled schedule, never one run.
+at M6). `SKW_TURN_DEBUG` also prints `TURNSTAT` at every handover — turn
+duration, DATA frames, bytes and bursts sent while ISS, mode, srtt — the
+per-turn utilisation that sized the minimum hold and the HF window
+(`SKW_TURN_HOLD_RTTS`, `SKW_TURN_HOLD_MIN_SEC`, `SKW_HF_WINDOW`,
+`SKW_ROBUST_FPB` are the A/B knobs). The churn soak is deterministic but
+chaotic: compare cells of a 2×2 across the seed spread and the coupled
+schedule, never one run.
 
 ### 3. Two-Modem Integration
 

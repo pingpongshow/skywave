@@ -397,6 +397,11 @@ class LinkEngine {
   // nothing outstanding (PACTOR's changeover rule). -1 = not draining.
   double turnDrainSince_ = -1.0;
   bool turnDrainRetx_ = false;  // head-of-line fast-retransmit done this drain
+  // Per-ISS-turn utilisation (SKW_TURN_DEBUG "TURNSTAT" at handover):
+  // DATA frames, payload bytes and bursts sent while holding the turn.
+  int turnFrames_ = 0;
+  size_t turnBytes_ = 0;
+  int turnBursts_ = 0;
   void setTurnRole(TurnRole r, double now);
   void queueTurnGrant();
   void grantTurn(double now);

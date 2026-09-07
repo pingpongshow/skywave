@@ -62,6 +62,18 @@ int macWindow(int mode) {
   if (mode <= 3) return 1;
   if (mode <= 6) return 2;
   if (mode <= 9) return 4;
+  // HF window above M9: 16 (was 8). TURNSTAT at M10-M13 showed ~2.4 KB
+  // per round trip against a 3-8 KB RTT x rate product - window-
+  // limited. Measured at 16: one-way half-duplex 86,016 -> 106,496 B /
+  // 300 s, coupled two-way churn 91.2 -> 196.7 KB, every gate green.
+  // The old caution that a deeper window would time out its own
+  // head-of-line burst predated the measured-RTT timeout plus the
+  // TX-queue delay term and did not reproduce. SKW_HF_WINDOW is the A/B.
+  static const int kHfWindow = [] {
+    const char* e = getenv("SKW_HF_WINDOW");
+    return e ? atoi(e) : 16;
+  }();
+  if (mode >= 10 && activeBand() != Band::VhfFm) return kHfWindow;
   // M13+ window 16 on VHF-FM only: the top rungs there need >= 2 full
   // containers in flight to hide the ACK round trip (PROTOCOL.md MAC
   // profiles). On HF the ARQ timeout budgets one container of airtime,
@@ -79,7 +91,14 @@ CpMode cpForSpread(double spreadMs) {
 }
 
 int framesPerBurst(int mode) {
-  if (mode <= 6) return 1;
+  // Robust tier frames per burst: diagnostic A/B (SKW_ROBUST_FPB).
+  // TURNSTAT at M5/M6: one frame per burst, each with its own ACK wait,
+  // 5 frames in a 60-80 s turn.
+  static const int kRobustFpb = [] {
+    const char* e = getenv("SKW_ROBUST_FPB");
+    return e ? atoi(e) : 1;
+  }();
+  if (mode <= 6) return kRobustFpb;
   if (mode <= 9) return 2;
   return 4;
 }
@@ -93,7 +112,15 @@ constexpr double kResumeWindowSec = 600.0;
 // window boundary. Two round trips = one full send-and-acknowledge
 // cycle. The previous scheme held a fixed max(45 s, 3 x ARQ timeout)
 // "quantum" sized to the store-and-forward world's inflated RTT.
-constexpr double kTurnMinHoldRtts = 2.0;
+// Measured with TURNSTAT at two round trips: the ISS used 7-40% of its
+// own turn (M6 22%, M8 23%, M10 15-19%, M13 7%) - one window, its ACK
+// wait, then the handover, whose cost is itself ~1 RTT. Four round
+// trips amortise it (SKW_TURN_HOLD_RTTS is the A/B).
+constexpr double kTurnMinHoldRtts = 4.0;
+// Absolute floor on the hold: at the fast tier a round trip is ~3 s,
+// so four of them is one burst and its ACK (TURNSTAT at M13: 15 s
+// turns carrying 4.6 frames). SKW_TURN_HOLD_MIN_SEC is the A/B.
+constexpr double kTurnMinHoldSec = 6.0;
 // Probe "clean" threshold relative to the candidate rung's floor, in the
 // calibrated (3 kHz-noise) SNR convention. Was ref + 1.0 read against an
 // estimate ~4 dB optimistic on WIDE (constants.hpp kOfdmSnrCalDb), i.e.
@@ -384,6 +411,18 @@ void LinkEngine::applySealCap() {
 void LinkEngine::setTurnRole(TurnRole r, double now) {
   if (turnRole_ == r) return;
   static const bool dbg = getenv("SKW_TURN_DEBUG") != nullptr;
+  if (dbg && turnRole_ == TurnRole::Iss) {
+    // Utilisation of the turn just ended: what the handover cost buys.
+    fprintf(stderr,
+            "%s TURNSTAT t=%.1f dur=%.1f frames=%d bytes=%zu bursts=%d "
+            "mode=%d srtt=%.1f\n",
+            cfg_.policy.ownCall.c_str(), now, now - roleSince_, turnFrames_,
+            turnBytes_, turnBursts_, mode_,
+            arqTx_.haveRtt() ? arqTx_.srttSec() : -1.0);
+  }
+  turnFrames_ = 0;
+  turnBytes_ = 0;
+  turnBursts_ = 0;
   if (dbg) {
     fprintf(stderr, "%s TURN t=%.1f %s->%s dataWait=%d grantAwait=%d "
             "breakReq=%d lastRx=%.1f roleSince=%.1f\n",
@@ -1957,9 +1996,17 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
         // (2 x ARQ timeout, 30-60 s). Measured on the corrected world as
         // turn-taking losing to legacy CCA 2.7:1 on a static-start
         // churn - handover overhead, not collisions, was the cost.
+        static const double kHoldRtts = [] {
+          const char* e = getenv("SKW_TURN_HOLD_RTTS");  // diagnostic A/B
+          return e ? atof(e) : kTurnMinHoldRtts;
+        }();
+        static const double kHoldMinSec = [] {
+          const char* e = getenv("SKW_TURN_HOLD_MIN_SEC");  // diagnostic A/B
+          return e ? atof(e) : kTurnMinHoldSec;
+        }();
         const double minHoldSec = std::max(
-            6.0, kTurnMinHoldRtts *
-                     (arqTx_.haveRtt() ? arqTx_.srttSec() : 10.0));
+            kHoldMinSec,
+            kHoldRtts * (arqTx_.haveRtt() ? arqTx_.srttSec() : 10.0));
         const bool queuedData =
             std::any_of(outQueue_.begin(), outQueue_.end(),
                         [](const OutFrame& q) {
@@ -2308,8 +2355,13 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // this is what the post-drain listen-turn decision sees.
   if (txQueueSec_ <= 0.35) {
     lastBurstHadData_ = pick->env.type == LinkType::Data;
+    if (pick->env.type == LinkType::Data) ++turnBursts_;
   } else if (pick->env.type == LinkType::Data) {
     lastBurstHadData_ = true;
+  }
+  if (pick->env.type == LinkType::Data) {
+    ++turnFrames_;
+    turnBytes_ += pick->body.size();
   }
   OutFrame f = std::move(*pick);
   outQueue_.erase(pick);
