@@ -74,6 +74,16 @@ the estimate, keeps the fast tier off Moderate. `pilot` is what
 calibrated the noise-share coefficient and the classifier's thresholds
 (LINK_ADAPTATION.md).
 
+Three further columns carry the **frame-size economics**: `air` (frame
+airtime), `ovh` (share of airtime that is not payload symbols) and
+`good`, the expected goodput of that frame shape under ARQ —
+`payload × (1−FER) / air`, since a failed frame costs its whole airtime
+and is sent again. Frame length pays exactly while `good` rises. This is
+what sized the robust-tier codeword target (`--payload 140/280/560/1120`
+at `--modes 5,6,7`: goodput monotonic, 1.6–2.2×, overhead 79% → 30% at
+M7); `SKW_ROBUST_AIR_CAP` is the matching A/B knob in the soak, because
+the frame is also the unit of the AMC's 16-frame evidence window.
+
 **The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
 each modem's calibrated measured SNR, next to the schedule's set point.
 That field found the radio chain referencing its noise to unit power

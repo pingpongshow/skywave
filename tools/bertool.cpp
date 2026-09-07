@@ -352,9 +352,22 @@ int main(int argc, char** argv) {
         const double est = estN > 0 ? estSum / estN : -99.0;
         const double evm = evmN > 0 ? evmSum / evmN : -99.0;
         const double pilot = evmN > 0 ? pilotSum / evmN : -1.0;
-        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f | est %6.1f evm %6.1f pilot %6.3f\n",
+        // FRAME-SIZE ECONOMICS. `ovh` is the share of airtime that is
+        // not payload symbols (preamble, ZC sync, header) - the cost a
+        // longer frame amortises. `good` is the expected goodput of
+        // this frame shape under ARQ: a frame that fails costs its whole
+        // airtime and must be sent again, so the expected airtime per
+        // delivered frame is air/(1-FER) and the goodput is
+        // payload x (1-FER) / air. Frame length pays exactly while
+        // `good` rises - the overhead saving against the fading-outage
+        // penalty of a longer frame, measured rather than argued.
+        const double ovhFrac = airSec > 0 ? 1.0 - paySec / airSec : 0.0;
+        const double good =
+            airSec > 0 ? double(payloadLen) * (1.0 - r.fer()) / airSec : 0.0;
+        printf("%-7s M%-3d %7.1f %7.1f | %5d %5d %5d %5d %6.1f%% | %7.0f | est %6.1f evm %6.1f pilot %6.3f | %5zuB air %5.1f ovh %3.0f%% good %6.1f\n",
                plan(fam).name, mode, floor, r.snrDb, r.noDetect, r.zcFail,
-               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est, evm, pilot);
+               r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est, evm, pilot,
+               payloadLen, airSec, 100.0 * ovhFrac, good);
         fflush(stdout);
         if (csv) {
           fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,

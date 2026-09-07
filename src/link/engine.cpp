@@ -1405,11 +1405,46 @@ void LinkEngine::updateArqTimeout() {
   // on the CHANNEL, which is exactly what the classifier measures - so
   // ask it instead of guessing a constant that must be wrong on one side
   // or the other.
-  const int cwTarget =
-      (mode_ >= 13 && activeBand() == Band::VhfFm)
-          ? 6 * fpb
-          : (mode_ <= 3 ? cssCwTarget_ : (mode_ <= 7 ? 1 : 2)) * fpb;
+  // The ROBUST TIER (M4-M7) faces the same trade for the same reason and
+  // gets the same adaptive answer (constants.hpp kRobustCw*): its
+  // preamble + ZC sync + header cost fixed seconds while one codeword
+  // carries ~120 bytes, so a 1-codeword frame spends 49-85% of its
+  // airtime on overhead and measured 17-24 B/s of goodput against 26-51
+  // at 8 codewords. Grown on clean deliveries and halved on loss, so the
+  // fade exposure of a longer frame is answered by the channel rather
+  // than by a constant.
+  const bool robustTier = mode_ >= kFirstMode && mode_ <= 7;
+  int cwTarget = (mode_ >= 13 && activeBand() == Band::VhfFm)
+                     ? 6 * fpb
+                     : (mode_ <= 3 ? cssCwTarget_
+                        : robustTier ? robustCwTarget_
+                                     : 2) *
+                           fpb;
   dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
+  if (robustTier) {
+    // Airtime bound: a frame is the unit of retransmission, of the ARQ
+    // timer and of a turn's minimum hold, none of which the goodput
+    // sweep can see. Shrink the target until the frame fits.
+    auto frameAir = [&](size_t budget) {
+      TxFrameParams probe;
+      probe.family = cfg_.policy.family;
+      probe.sig = sigForMode(mode_);
+      probe.mode = mode_;
+      probe.cpMode = cpMode_;
+      std::vector<uint8_t> shape(static_cast<size_t>(fpb) *
+                                 (budget + (fpb == 1 ? 13 : 15)));
+      probe.payload = shape;
+      return frameAirtimeSec(probe);
+    };
+    static const double kAirCap = [] {
+      const char* e = getenv("SKW_ROBUST_AIR_CAP");  // diagnostic A/B
+      return e ? atof(e) : kRobustFrameAirCapSec;
+    }();
+    while (cwTarget > fpb * kRobustCwMin && frameAir(dataBudget_) > kAirCap) {
+      cwTarget = std::max(fpb * kRobustCwMin, cwTarget / 2);
+      dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
+    }
+  }
   applySealCap();  // deep tier / lossy link: ~8 frames; clean OFDM: full
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
@@ -1479,6 +1514,15 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   if (nowCss && !wasCss) {
     cssCwTarget_ = kCssCwMin;
     cssCleanRun_ = 0;
+  }
+  // Entering the robust tier from anywhere else: a frame length learned
+  // at another tier says nothing here, and a demotion into M4-M7 means
+  // the channel just got worse - start short and re-earn the length.
+  const bool wasRobust = mode_ >= kFirstMode && mode_ <= 7;
+  const bool nowRobust = mode >= kFirstMode && mode <= 7;
+  if (nowRobust && !wasRobust) {
+    robustCwTarget_ = kRobustCwMin;
+    robustCleanRun_ = 0;
   }
   mode_ = mode;
   cpMode_ = cp;
@@ -1720,6 +1764,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   if (mode_ <= 3 && nto > 0 && cssCwTarget_ > kCssCwMin) {
     cssCleanRun_ = 0;
     cssCwTarget_ = std::max(kCssCwMin, cssCwTarget_ / 2);
+    updateArqTimeout();
+  }
+  if (mode_ >= kFirstMode && mode_ <= 7 && nto > 0 &&
+      robustCwTarget_ > kRobustCwMin) {
+    robustCleanRun_ = 0;
+    robustCwTarget_ = std::max(kRobustCwMin, robustCwTarget_ / 2);
     updateArqTimeout();
   }
   if (nto > 0 && amc_) {
@@ -3295,6 +3345,18 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
   // releases frames before any dedicated ACK is parsed, so an ACK-only
   // hook saw no progress and never grew (observed: the target stayed at
   // 2 codewords and goodput stayed at 7% of net).
+  if (mode_ >= kFirstMode && mode_ <= 7 &&
+      arqTx_.inFlight() < inFlightBefore) {
+    if (++robustCleanRun_ >= kCssGrowRun && robustCwTarget_ < kRobustCwMax) {
+      robustCleanRun_ = 0;
+      robustCwTarget_ = std::min(kRobustCwMax, robustCwTarget_ * 2);
+      updateArqTimeout();
+      if (getenv("SKW_CSS_DEBUG")) {
+        fprintf(stderr, "robust grow -> cw=%d budget=%zu\n", robustCwTarget_,
+                dataBudget_);
+      }
+    }
+  }
   if (mode_ <= 3 && arqTx_.inFlight() < inFlightBefore) {
     if (++cssCleanRun_ >= kCssGrowRun && cssCwTarget_ < kCssCwMax) {
       cssCleanRun_ = 0;

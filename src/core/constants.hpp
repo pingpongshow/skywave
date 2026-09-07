@@ -439,6 +439,43 @@ inline constexpr int kCssCwMin = 2;
 inline constexpr int kCssCwMax = 16;
 inline constexpr int kCssGrowRun = 2;   // clean deliveries before growing
 
+// OFDM ROBUST TIER (M4-M7) frame length, same trade as the deep tier and
+// the same adaptive answer. MEASURED 2026-09-07 with `bertool --payload`
+// at the WIDE fading floors (goodput = payload x (1-FER) / airtime, the
+// expected rate under ARQ where a failed frame costs its whole airtime):
+//     CCIR Moderate   140 B    280 B    560 B   1120 B
+//       M5             16.7     19.9     22.0     26.4
+//       M6             20.9     26.9     33.1     42.1
+//       M7             23.5     34.4     40.6     51.0
+//     CCIR Good        M7 26.9 -> 42.3 -> 59.1
+// Goodput rises monotonically because overhead falls (M7 79% -> 30% of
+// airtime) faster than outage FER rises. One codeword was never a
+// measured choice - it is the fast tier's rule applied downward, where
+// preamble + sync + header cost the same seconds but the payload is a
+// fraction of the bytes. (The 2026-09-05 "frame-length adaptation NOT
+// adopted" verdict was measured at M8/M9, which already carry 2
+// codewords per frame and sit at 30-44% overhead.)
+inline constexpr int kRobustCwMin = 1;
+inline constexpr int kRobustCwMax = 8;
+// Airtime bound on a robust-tier frame. Longer frames keep paying in the
+// bertool sweep, but a frame is also the unit of retransmission, of the
+// ARQ timer, of a turn's minimum hold, and of the AMC's evidence - and
+// the sweep cannot see any of those. That last one binds first: the
+// AMC's retry window is 16 FRAMES, so quadrupling frame length quarters
+// the sample rate a ramp is tracked with. MEASURED against the M3 ramp
+// gate (>= 0.75 of a genie oracle) and the churn seed spread:
+//     cap    ramp   seed 11   seed 12   seed 13   coupled
+//     off    0.98    32,336    65,662    89,473   196,667
+//     6 s    0.90         -         -         -         -
+//     10 s   0.87    37,006    73,028    89,473   196,667
+//     14 s   0.75         -         -         -         -
+//     20 s   0.75    37,006    63,043    89,473   196,667
+// 10 s takes the whole throughput win (+14% and +11% on the two seeds
+// that spend time in the robust tier) and keeps ramp margin; beyond it
+// the ramp collapses to the gate and seed 12 regresses. The coupled
+// schedule is identical in every cell - it never leaves the fast tier.
+inline constexpr double kRobustFrameAirCapSec = 10.0;
+
 // Anti-starvation backstop: how many ARQ timeouts queued DATA may wait
 // behind a busy channel before it airs regardless of the busy verdict.
 // On a link where BOTH ends have traffic the channel is busy essentially

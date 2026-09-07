@@ -2691,3 +2691,70 @@ turn carries ~6 frames of ~140 bytes: the frame is small because the
 segment budget is one codeword, so preamble and header dominate airtime
 — the deep-tier "codeword target" growth rule (`cssCwTarget_`) has an
 OFDM-robust-tier analogue waiting to be measured.
+
+## Robust-tier frame length (2026-09-07)
+
+The lever the previous round named: at M4–M7 a frame carried ONE
+codeword (~120 B) while preamble, ZC sync and header cost fixed seconds,
+so a 40 s turn moved ~6 frames of ~140 bytes.
+
+### Instrument
+
+`bertool` rows now carry the frame-size economics: `air` (frame
+airtime), `ovh` (share of airtime that is not payload symbols) and
+`good` — the expected goodput of that frame shape under ARQ,
+`payload × (1−FER) / air`, since a frame that fails costs its whole
+airtime and must be sent again. Frame length pays exactly while `good`
+rises, which turns "longer frames amortise overhead vs longer frames
+meet more fades" from an argument into a measurement.
+
+### Measure (WIDE, at the fading floors)
+
+| CCIR Moderate | 140 B | 280 B | 560 B | 1120 B |
+|---|---:|---:|---:|---:|
+| M5 | 16.7 | 19.9 | 22.0 | 26.4 |
+| M6 | 20.9 | 26.9 | 33.1 | 42.1 |
+| M7 | 23.5 | 34.4 | 40.6 | 51.0 |
+
+Monotonic, 1.6–2.2×, on the *worse* preset (CCIR Good is stronger:
+M7 26.9 → 59.1). Overhead falls faster than outage FER rises — M7 goes
+from 79% overhead to 30%. One codeword was never a measured choice: it
+is the fast tier's rule applied downward. (The 2026-09-05 "frame-length
+adaptation not adopted" verdict was measured at M8/M9, which already
+carry 2 codewords and sit at 30–44% overhead. It stands there.)
+
+### Fix
+
+A robust-tier codeword target (`kRobustCw*`), the deep tier's rule
+applied to M4–M7: grow after 2 clean deliveries, halve on any loss,
+reset to 1 on entry to the tier (a demotion into M4–M7 means the channel
+just got worse — re-earn the length). Bounded by frame **airtime**
+rather than a codeword count, which is what the goodput sweep cannot
+see: a frame is also the unit of retransmission, of the ARQ timer, of a
+turn's minimum hold, and of the AMC's evidence.
+
+That last one binds first — the AMC's retry window is 16 **frames**, so
+quadrupling frame length quarters the sample rate a ramp is tracked
+with. The cap was A/B'd (`SKW_ROBUST_AIR_CAP`) against the ramp gate and
+the seed spread:
+
+| cap | M3 ramp | seed 11 | seed 12 | seed 13 | coupled |
+|---|---:|---:|---:|---:|---:|
+| off | 0.98 | 32,336 | 65,662 | 89,473 | 196,667 |
+| 6 s | 0.90 | — | — | — | — |
+| **10 s** | **0.87** | **37,006** | **73,028** | 89,473 | 196,667 |
+| 14 s | 0.75 | — | — | — | — |
+| 20 s | 0.75 | 37,006 | 63,043 | 89,473 | 196,667 |
+
+10 s takes the whole throughput win (+14% and +11% on the two seeds that
+spend time in the robust tier) with ramp margin left; past it the ramp
+collapses onto its gate and seed 12 regresses. The coupled schedule is
+byte-identical in every cell — it never leaves the fast tier, which is
+also why this lever was invisible until the seed spread was read
+separately from it.
+
+Residual cost: the ramp ratio 0.98 → 0.87, partly genie inflation (the
+oracle itself rises from 96,000 to 105,000 B as frames lengthen), partly
+real tracking loss from the thinner per-frame evidence. If that becomes
+binding, the AMC's frame-count windows are the thing to make
+airtime-based, not the frame length.
