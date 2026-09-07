@@ -18,6 +18,7 @@
 // new measurements on air, no wire format, no negotiation.
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace skw {
@@ -67,7 +68,14 @@ struct ChanClassConfig {
   // ladder sat at M9/M10 on a 23-26 dB Moderate channel moving almost
   // nothing. Applied only once the EMA is seeded from decoded payload
   // frames.
-  double moderatePilotMin = 0.010;
+  // Applied to the MEDIAN of the last kPilotWindow decoded-frame samples,
+  // not an EMA: single spikes (0.1-0.45 on Moderate, 0.12 once on Good)
+  // drove the EMA verdict. Measured medians per 120 s window in the
+  // two-modem churn (SKW_CHANCLASS_DEBUG): static 0.003, CCIR Good at
+  // M6-M8 0.004-0.0045 (p75 <= 0.006), CCIR Moderate at M8-M11
+  // 0.008-0.021 (p25 0.003-0.011).
+  double moderatePilotMin = 0.007;
+  int moderatePilotMinSamples = 5;
 
   // Hysteresis: a verdict must repeat before it replaces the last one.
   // Floor-table switching mid-session is disruptive; flapping is worse
@@ -102,8 +110,13 @@ class ChannelClassifier {
   double snrMean_ = 0.0;
   double snrM2_ = 0.0;
   double spreadEma_ = 0.0;
-  double pilotEma_ = 0.0;
-  bool havePilot_ = false;  // pilot EMA seeded (negative samples skip it)
+  // Pilot-excess samples from decoded frames (negative = no sample),
+  // judged by their median so one spike cannot flip a verdict.
+  static constexpr int kPilotWindow = 9;
+  std::array<double, kPilotWindow> pilotWin_{};
+  int pilotN_ = 0;     // samples held (<= kPilotWindow)
+  int pilotHead_ = 0;  // next slot
+  double pilotMedian() const;
   int frames_ = 0;
   int failures_ = 0;
 

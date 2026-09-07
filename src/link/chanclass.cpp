@@ -1,5 +1,6 @@
 #include "link/chanclass.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 
@@ -57,13 +58,12 @@ void ChannelClassifier::onFrame(double snrDb, double spreadMs,
   spreadEma_ = n_ == 1 ? spreadMs
                        : spreadEma_ + kEmaAlpha * (spreadMs - spreadEma_);
   // A negative pilot figure means "no sample" (a frame without a decoded
-  // payload has no motion-free noise reference, receiver.cpp): the EMA
-  // holds rather than being diluted toward zero by every ACK.
+  // payload has no motion-free noise reference, receiver.cpp): the
+  // window holds rather than being diluted toward zero by every ACK.
   if (pilotStability >= 0.0) {
-    pilotEma_ = !havePilot_
-                    ? pilotStability
-                    : pilotEma_ + kEmaAlpha * (pilotStability - pilotEma_);
-    havePilot_ = true;
+    pilotWin_[size_t(pilotHead_)] = pilotStability;
+    pilotHead_ = (pilotHead_ + 1) % kPilotWindow;
+    if (pilotN_ < kPilotWindow) ++pilotN_;
   }
 
   if (frames_ >= cfg_.minSamples && n_ >= 2) {
@@ -81,6 +81,14 @@ void ChannelClassifier::onFrame(double snrDb, double spreadMs,
     frames_ /= 2;
     failures_ /= 2;
   }
+}
+
+double ChannelClassifier::pilotMedian() const {
+  if (pilotN_ == 0) return -1.0;
+  std::array<double, kPilotWindow> v{};
+  for (int i = 0; i < pilotN_; ++i) v[size_t(i)] = pilotWin_[size_t(i)];
+  std::sort(v.begin(), v.begin() + pilotN_);
+  return v[size_t(pilotN_ / 2)];
 }
 
 double ChannelClassifier::snrVariance() const {
@@ -109,20 +117,23 @@ ChannelClass ChannelClassifier::classifyNow() const {
   if (var >= cfg_.severeSnrVarMin) ++severe;
   if (spreadEma_ >= cfg_.severeSpreadMsMin) ++severe;
   if (fer >= cfg_.severeFerMin) ++severe;
-  if (pilotEma_ >= cfg_.severePilotStabMin) ++severe;
+  const double pilot = pilotMedian();  // -1 with no samples yet
+  if (pilotN_ > 0 && pilot >= cfg_.severePilotStabMin) ++severe;
   if (severe >= 2) return ChannelClass::Severe;
 
   // MODERATE: channel motion beyond CCIR Good, read from the pilot
   // excess alone (its noise share is already removed, so it is not an
   // SNR proxy). Checked before STATIC: a Moderate channel at high SNR
   // can look quiet on every other signal.
-  if (havePilot_ && pilotEma_ >= cfg_.moderatePilotMin) {
+  if (pilotN_ >= cfg_.moderatePilotMinSamples &&
+      pilot >= cfg_.moderatePilotMin) {
     return ChannelClass::Moderate;
   }
 
   // STATIC requires everything to be quiet at once.
   if (var <= cfg_.staticSnrVarMax && spreadEma_ <= cfg_.staticSpreadMsMax &&
-      pilotEma_ <= cfg_.staticPilotStabMax && fer <= cfg_.staticFerMax) {
+      (pilotN_ == 0 || pilot <= cfg_.staticPilotStabMax) &&
+      fer <= cfg_.staticFerMax) {
     return ChannelClass::Static;
   }
   return ChannelClass::Fading;
@@ -133,8 +144,8 @@ void ChannelClassifier::reset() {
   snrMean_ = 0.0;
   snrM2_ = 0.0;
   spreadEma_ = 0.0;
-  pilotEma_ = 0.0;
-  havePilot_ = false;
+  pilotN_ = 0;
+  pilotHead_ = 0;
   frames_ = 0;
   failures_ = 0;
   verdict_ = ChannelClass::Unknown;

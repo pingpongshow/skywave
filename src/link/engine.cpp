@@ -396,6 +396,7 @@ void LinkEngine::setTurnRole(TurnRole r, double now) {
   turnRole_ = r;
   roleSince_ = now;
   turnDrainSince_ = -1.0;   // a drain belongs to the turn that started it
+  turnDrainRetx_ = false;
   dataQueuedSince_ = -1.0;  // the starvation clock re-arms fresh per role
   // A station without the sending role cannot retransmit, so its ACK
   // timers must not run (they would only burn retry budget and charge
@@ -1974,16 +1975,41 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           // The window is clear when nothing is in flight and nothing
           // already pulled is still waiting to air. Granting with
           // unacknowledged frames in flight strands them for the peer's
-          // whole turn (the IRS cannot retransmit). The cap is only the
-          // deaf-peer backstop: a peer that has gone deaf to us must not
-          // hold the turn hostage past two ARQ timeouts.
+          // whole turn (the IRS cannot retransmit).
           const bool windowClear = arqTx_.inFlight() == 0 && !queuedData;
+          // A window that will not clear is a LOST ACK (or a lost
+          // frame): during a drain nothing new is pulled, so the ISS
+          // would otherwise sit silent until that frame's ARQ timer -
+          // 90 s at the robust tier. Measured: 110 s of dead air with
+          // one frame in flight, gate open, backlog waiting, then the
+          // drain cap at 2 x 90 s. Fast-retransmit the head-of-line
+          // frame once after one handoff interval, RTT-paced.
+          if (!windowClear && !turnDrainRetx_ &&
+              now - turnDrainSince_ > turnHandoffSec()) {
+            turnDrainRetx_ = true;
+            if (auto s = arqTx_.oldestInFlight()) arqTx_.nakAt(*s, now);
+          }
+          // The cap is the deaf-peer backstop, paced to the measured
+          // round trip like every other turn timer, not to the ARQ
+          // timeout: stranding one frame for the peer's turn costs a
+          // turn cycle, holding the turn for 180 s cost the whole
+          // schedule. Two handoff intervals (>= 12 s). Three was tried
+          // so the fast-retransmit's ACK could return first: it halved
+          // the coupled churn (85.3 -> 41.8 KB, both retry rules) -
+          // the extra interval of held turn costs more than the
+          // occasional stranded frame. SKW_DRAIN_CAP_MULT is the A/B.
+          static const double kDrainCapMult = [] {
+            const char* e = getenv("SKW_DRAIN_CAP_MULT");  // diagnostic A/B
+            return e ? atof(e) : 2.0;
+          }();
           const bool capped =
-              now - turnDrainSince_ > 2.0 * arqTx_.timeoutSec();
+              now - turnDrainSince_ >
+              std::max(6.0 * kDrainCapMult, kDrainCapMult * turnHandoffSec());
           if (windowClear || capped) grantTurn(now);
         }
       } else {
         turnDrainSince_ = -1.0;  // request withdrawn / not pending
+        turnDrainRetx_ = false;
       }
     } else if (turnDataWaiting()) {
       // IRS with data: the break request rides every ACK
@@ -2479,6 +2505,18 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
       (res->payloadOk || finalAttempt)) {
     chanClass_.onFrame(res->snrDb, res->delaySpreadMs, res->pilotStability,
                        res->payloadOk);
+    static const bool clsDbg = getenv("SKW_CHANCLASS_DEBUG") != nullptr;
+    if (clsDbg) {
+      // Per-frame classifier input: what the Moderate statistic has to
+      // be designed from (pilot excess per decoded frame, by mode).
+      fprintf(stderr,
+              "%s cls t=%.1f mode=%d snr=%.1f evm=%.1f spread=%.2f "
+              "pilot=%.4f ok=%d verdict=%d\n",
+              cfg_.policy.ownCall.c_str(), now, int(res->header.mode),
+              res->snrDb, res->evmSnrDb, res->delaySpreadMs,
+              res->pilotStability, res->payloadOk ? 1 : 0,
+              int(chanClass_.verdict()));
+    }
     if (amc_) {
       amc_->setChannelClass(chanClass_.verdict());
       // The M11+ pilot-stability and M12+ selectivity gates have existed
@@ -2866,7 +2904,9 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
           setTurnRole(TurnRole::Irs, now);
         }
       }
-      if (amc_) amc_->onFrameResult(d->rv > 0, true);
+      // (AMC retry accounting happens after the ARQ accept below: a
+      // retransmission that arrives as a DUPLICATE proves the original
+      // got through, so it was the MAC's doing, not the channel's.)
       // Stash the proto flags with the payload so they survive the
       // out-of-order window and reach the proto layer in order.
       std::vector<uint8_t> stored;
@@ -2875,6 +2915,21 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                        (kFlagCompressed | kFlagMoreFragments));
       stored.insert(stored.end(), d->payload.begin(), d->payload.end());
       const auto acc = arqRx_.onData(f.env.sequence, std::move(stored));
+      // A retransmission counts as channel evidence only when it is the
+      // FIRST copy to arrive (the earlier copies were lost). A duplicate
+      // means the original was received and the retransmit was
+      // spurious - a frame stranded at a turn handover, or the drain's
+      // fast-retransmit racing a late ACK. Turn-taking produces those
+      // structurally; counted as retries they held the ratio at 0.2-0.5
+      // and pinned the ladder at M6 for 300 s at a measured 10-12 dB,
+      // above the 0.15 promotion gate (churn seed 11).
+      if (amc_) {
+        static const bool kCountDupRetries =
+            getenv("SKW_DUP_RETRY") != nullptr;  // diagnostic A/B: old rule
+        const bool duplicate = acc == decltype(acc)::Duplicate;
+        amc_->onFrameResult(d->rv > 0 && (kCountDupRetries || !duplicate),
+                            true);
+      }
       static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
       if (protoDbg) {
         fprintf(stderr, "%s rxDATA seq=%u flags=%02x len=%zu acc=%d\n",

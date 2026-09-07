@@ -85,6 +85,14 @@ SNR to the signal power actually arriving at the channel (samples above
 its label. Every soak number recorded before 2026-09-06 (late) sits on
 the mislabeled axis.
 
+Diagnostic A/B knobs kept from the same round: `SKW_CHANCLASS_DEBUG`
+(per-frame classifier input — pilot excess, EVM, spread, verdict, by
+mode), `SKW_DRAIN_CAP_MULT` (turn-taking drain cap in handoff intervals,
+default 2; 3 halved the coupled churn), `SKW_DUP_RETRY` (count
+duplicate arrivals as retries, the pre-2026-09-06 rule; pinned seed 11
+at M6). The churn soak is deterministic but chaotic: compare cells of a
+2×2 across the seed spread and the coupled schedule, never one run.
+
 ### 3. Two-Modem Integration
 
 Two in-process modem instances cross-wired through two independent chansim

@@ -340,9 +340,16 @@ data before the handover cost is paid again), then stops pulling new
 segments and sends `TURN_GRANT` (u8 epoch, incremented per handover) at
 the **next window boundary** — the moment nothing is in flight and
 nothing already pulled is waiting to air. An ISS with no backlog hands
-over as soon as its window clears. The only fixed timer is the deaf-peer
-backstop: a peer that has gone deaf to us cannot hold the turn hostage
-past two ARQ timeouts. (Earlier: a fixed `max(45 s, 3 × ARQ timeout)`
+over as soon as its window clears. A window that will not clear during
+the drain means a lost ACK or a lost frame; since the drain pulls no new
+segments, the ISS fast-retransmits the head-of-line frame once after one
+handoff interval (RTT-paced) rather than waiting for that frame's ARQ
+timer — 90 s at the robust tier, measured as 110 s of dead air with one
+frame in flight and the gate open. The only fixed timer is the deaf-peer
+backstop, also RTT-paced: two handoff intervals (≥ 12 s), after which
+the turn is granted with the frame stranded for the peer's turn — a
+turn cycle, against the 180 s (two ARQ timeouts) the old cap cost the
+schedule. (Earlier: a fixed `max(45 s, 3 × ARQ timeout)`
 quantum, whose drain test also required the proto backlog to be empty —
 so under continuous load every handover waited out the full backstop.
 Measured as the whole of turn-taking's throughput deficit against CCA on

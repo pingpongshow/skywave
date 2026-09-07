@@ -30,7 +30,14 @@ Aggregated each received frame and each ACK:
   the controller makes no SNR-based decision (failure-driven demotions
   still apply)
 - freshest remote-reported SNR (from ACK/keepalive bodies)
-- retry ratio (retransmitted / total, sliding 16-frame window)
+- retry ratio (retransmitted / total, sliding 16-frame window, cleared on
+  every mode change). A received retransmission counts only when it is
+  the **first copy to arrive**; a duplicate proves the original got
+  through, so that retransmission was the MAC's doing (a frame stranded
+  at a turn handover, the drain's fast-retransmit racing a late ACK),
+  not the channel's. Counted as retries, those held the ratio at
+  0.2–0.5 and pinned the ladder at M6 for 300 s at a measured 10–12 dB,
+  above the 0.15 promotion gate.
 - decode-failure ratio (header-ok-payload-fail / total)
 - frequency-selectivity index (per-carrier SNR variance from the equalizer)
 - pilot stability — the pilot-residual energy relative to channel power

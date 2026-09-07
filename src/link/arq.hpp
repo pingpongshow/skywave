@@ -83,6 +83,13 @@ class ArqTx {
   // fading). Charged as a retry like any retransmission, so the retry
   // budget still bounds a dead link. Returns true if a frame was queued.
   bool nakAt(uint16_t seq, double now);
+  // Oldest unacknowledged sequence (the head-of-line frame), if any:
+  // what a turn-taking drain fast-retransmits when the window will not
+  // clear on its own.
+  std::optional<uint16_t> oldestInFlight() const {
+    if (pending_.empty()) return std::nullopt;
+    return pending_.front().seq;
+  }
 
   // Cumulative-only feedback from the ENVELOPE's piggybacked ack_base
   // (PROTOCOL.md: "every data-bearing frame also piggybacks ack_base").

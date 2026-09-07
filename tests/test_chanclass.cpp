@@ -63,12 +63,25 @@ TEST_CASE(ccir_moderate_reads_moderate_and_good_does_not) {
   for (int i = 0; i < 30; ++i) g.onFrame(20.0 + (i % 5) * 1.2, 0.5, 0.003, true);
   CHECK(g.verdict() == ChannelClass::Fading);
   // No-sample frames (negative pilot: no decoded payload) do not dilute
-  // the EMA toward Fading.
+  // the window toward Fading.
   ChannelClassifier d;
   for (int i = 0; i < 30; ++i) {
     d.onFrame(20.0 + (i % 5) * 1.2, 0.8, i % 2 ? 0.012 : -1.0, true);
   }
   CHECK(d.verdict() == ChannelClass::Moderate);
+  // Spike-proof: a Good channel with one 0.3 outlier in every five
+  // samples (measured maxima 0.12-0.45) keeps a Good median.
+  ChannelClassifier s;
+  for (int i = 0; i < 40; ++i) {
+    s.onFrame(20.0 + (i % 5) * 1.2, 0.5, i % 5 == 0 ? 0.3 : 0.003, true);
+  }
+  CHECK(s.verdict() == ChannelClass::Fading);
+  // And a Moderate channel with occasional clean frames stays Moderate.
+  ChannelClassifier t;
+  for (int i = 0; i < 40; ++i) {
+    t.onFrame(20.0 + (i % 5) * 1.2, 0.8, i % 4 == 0 ? 0.002 : 0.012, true);
+  }
+  CHECK(t.verdict() == ChannelClass::Moderate);
 }
 
 TEST_CASE(ccir_poor_like_channel_reads_severe) {

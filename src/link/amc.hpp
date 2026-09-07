@@ -24,12 +24,11 @@ struct AmcConfig {
   // Highest mode once the channel is classified MODERATE (CCIR-Moderate
   // Doppler): the fast tier's fading floors are measured on CCIR Good
   // (WAVEFORM annex) and it fails 25-75% on Moderate at any SNR; M8 is
-  // the last rung that closes there (bertool: 6% FER at 20 dB). OFF by
-  // default (13 = no cap): with the cap at 8 the churn seed spread was
-  // a wash (+4.6 KB on one seed of three) and the coupled schedule lost
-  // 8.8 KB and its pass (2026-09-06), and the verdict itself is still
-  // spike-driven through the classifier's EMA. Set to 8 to enable.
-  uint8_t moderateMaxMode = 13;
+  // the last rung that closes there (bertool: 6% FER at 20 dB). With
+  // the first, EMA-driven verdict the cap was a wash on the seed spread
+  // and cost the coupled schedule 8.8 KB; re-enabled with the median
+  // verdict (chanclass.hpp moderatePilotMin) and re-measured.
+  uint8_t moderateMaxMode = 8;
   Family family = Family::Wide;
   uint8_t maxMode = 13;
   // Bottom rung: kFirstMode (M4) normally, 0 when the session

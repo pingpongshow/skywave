@@ -396,6 +396,7 @@ class LinkEngine {
   // let the in-flight window empty, so the turn changes hands with
   // nothing outstanding (PACTOR's changeover rule). -1 = not draining.
   double turnDrainSince_ = -1.0;
+  bool turnDrainRetx_ = false;  // head-of-line fast-retransmit done this drain
   void setTurnRole(TurnRole r, double now);
   void queueTurnGrant();
   void grantTurn(double now);

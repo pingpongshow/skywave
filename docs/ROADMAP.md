@@ -2577,3 +2577,69 @@ or requiring N consecutive samples above the line) and a seed spread
 showing the cap pays. The robust-tier pace wall (4 KiB messages against
 a 300 s watchdog at ≤ 9 dB true) remains as documented in the previous
 round.
+
+## Median verdict, drain wedge, duplicate-aware retries (2026-09-06, latest)
+
+Instrument → test → fix, three times over.
+
+### 1. Moderate verdict, spike-proof
+
+`SKW_CHANCLASS_DEBUG` prints the classifier's per-frame input. The
+per-window distribution of the pilot excess over decoded frames in the
+two-modem churn: static median 0.003 (max 0.008); CCIR Good at M6–M8
+median 0.004–0.0045, p75 ≤ 0.006; CCIR Moderate at M8–M11 median
+0.008–0.021 with p25 0.003–0.011 — and single spikes of 0.1–0.45 on
+Moderate, 0.12 once on Good, which is what had driven the EMA verdict.
+The classifier now judges the **median of the last 9 decoded-frame
+samples** (≥ 5 samples, threshold 0.007), unit-tested against spikes in
+both directions, and the M8 cap is on. On its own the cap left the
+coupled schedule at 37.3 KB FAIL — because the real stall was elsewhere.
+
+### 2. The drain wedge
+
+Frame-level trace of the frozen window: the ISS sat from t=544 to 654
+with one unacknowledged frame, nothing queued, backlog waiting, gate
+open — sending nothing. The handover drain pulls no new segments while
+it waits for the window to clear; the stuck frame's retransmit timer is
+the ARQ timeout (90 s at the robust tier), and the drain's own cap was
+2× that. Three minutes of dead air per lost ACK. Now the drain
+fast-retransmits the head-of-line frame once after one handoff
+interval, and caps at two handoff intervals (≥ 12 s), RTT-paced like
+every other turn timer. Coupled churn: 37.3 KB FAIL → **85.3 KB PASS**
+(legacy CCA 105–115 KB on the same schedule). A three-interval cap, so
+the retransmit's ACK could return first, was A/B'd and halved that
+(41.8 KB under either retry rule): the extra held interval costs more
+than an occasional stranded frame.
+
+### 3. Duplicates are not channel evidence
+
+Seed 11 then failed on the pace wall with the ladder pinned at M6 for
+300 s at a measured 10–12 dB (M7 eligible): the retry ratio sat at
+0.2–0.5, above the 0.15 promotion gate, and the "retries" were the
+MAC's — frames stranded at handovers and drain fast-retransmits arriving
+as **duplicates**. A duplicate proves the original was received. The
+receiver now counts a retransmission only when it is the first copy to
+arrive. Seed 11: FAIL → 33.4 KB PASS; neutral on the coupled schedule
+(byte-identical under both rules).
+
+### The 2×2 (coupled / seeds 11, 12, 13)
+
+| cell | coupled | seed 11 | seed 12 | seed 13 |
+|---|---|---|---|---|
+| cap 2×, duplicates counted | 85,330 PASS | FAIL t=761 | 63,344 | 70,664 |
+| **cap 2×, duplicate-aware (chosen)** | **85,330 PASS** | **33,361 PASS** | 58,891 | FAIL t=821 |
+| cap 3×, duplicate-aware | 41,775 | 28,068 | 58,891 | FAIL t=821 |
+| cap 3×, duplicates counted | 41,775 | 28,068 | 66,263 | FAIL t=801 |
+
+Seed 13's failures are all in its deep tail (set ≤ 8 dB, measured ≤ 3):
+the robust-tier pace wall; its one pass was the lucky cell. Both knobs
+remain as diagnostics (`SKW_DRAIN_CAP_MULT`, `SKW_DUP_RETRY`).
+
+Gates on the final binary: fading ramp 0.98, static 0.70, VHF M14 at
+t=35, CP multipath 8192 B Long, one-way half-duplex 86,016 B/300 s,
+ctest 40/40. What remains is the pace wall itself: at ≤ 9 dB true a
+4 KiB coalesced message against a 300 s watchdog, and — visible in the
+seed-11 trace — a robust-tier turn that carries one to three 138-byte
+frames in ~35 s (window 2, one frame per burst, 2-RTT minimum hold).
+Next levers: window/frames-per-burst at M5–M7 under turn-taking, and a
+mode-following coalesce cap.
