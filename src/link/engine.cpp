@@ -1800,7 +1800,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     // evidence a sender gets when the receiver, hearing nothing, reports
     // nothing, and weakening them costs AMC tracking. Reverted.
     for (int i = 0; i < std::min(nto, 4) * 2; ++i) {
-      amc_->onFrameResult(false, false);
+      amc_->onFrameResult(false, false, now);
     }
   }
   if (arqTx_.failed() && fsm_.state() == FsmState::Connected) {
@@ -1973,11 +1973,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       if (amcDbg) {
         fprintf(stderr,
                 "%s amc t=%.0f mode=%d eff=%.1f retry=%.2f pilot=%.3f "
-                "sel=%d class=%d decision=%d->%d\n",
+                "sel=%d class=%d fill=%d span=%.1f decision=%d->%d\n",
                 cfg_.policy.ownCall.c_str(), now, mode_,
                 amc_->effectiveSnrDb(now), amc_->retryRatio(),
                 amc_->pilotStability(), int(amc_->selectivity()),
-                int(amc_->channelClass()), int(d.kind), int(d.targetMode));
+                int(amc_->channelClass()), amc_->windowFill(),
+                amc_->windowSpanSec(now), int(d.kind), int(d.targetMode));
       }
       // Probe requirement: fragile high modes (gate config) and every
       // kFadingNA row (near-static-only - including CSS M2/M3 on the
@@ -2629,7 +2630,7 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   }
   if (!res || !res->payloadOk) {
     if (amc_ && stage == RxStage::Ok && finalAttempt) {
-      amc_->onFrameResult(false, false);
+      amc_->onFrameResult(false, false, now);
     }
     // EXPLICIT NAK (PACTOR's CS-NAK). A DATA-class burst whose PHY
     // header decoded but whose payload failed its FINAL attempt is a
@@ -3030,7 +3031,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             getenv("SKW_DUP_RETRY") != nullptr;  // diagnostic A/B: old rule
         const bool duplicate = acc == decltype(acc)::Duplicate;
         amc_->onFrameResult(d->rv > 0 && (kCountDupRetries || !duplicate),
-                            true);
+                            true, now);
       }
       static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
       if (protoDbg) {
@@ -3115,7 +3116,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         // times the old demotion pressure for the same loss and knocked
         // M14 down mid-run (VHF sustained gate 24.0 vs 25.0 kbps). The
         // static M3 case that needed charging at all had 22 NAKs.
-        if (amc_) amc_->onFrameResult(false, false);
+        if (amc_) amc_->onFrameResult(false, false, now);
       }
       // Turn-taking: mirror the peer's break request. Tracking the
       // LATEST ACK (set or clear) means a withdrawn request cannot

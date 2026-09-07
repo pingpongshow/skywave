@@ -2758,3 +2758,64 @@ oracle itself rises from 96,000 to 105,000 B as frames lengthen), partly
 real tracking loss from the thinner per-frame evidence. If that becomes
 binding, the AMC's frame-count windows are the thing to make
 airtime-based, not the frame length.
+
+## AMC evidence and climb rate (2026-09-07, later)
+
+The previous round left a residual: longer robust-tier frames cost the
+M3 ramp 0.98 → 0.87, and the suspected mechanism was the AMC's 16-FRAME
+retry window going stale as frames lengthen.
+
+### Instrument
+
+`Amc` now records the arrival time of each sample in its retry window
+and reports `windowFill` and `windowSpanSec` — how much wall time the
+evidence behind the retry ratio actually covers. Both appear in the
+`SKW_AMC_DEBUG` line.
+
+### The suspicion was wrong
+
+On the ramp the window reads `fill=0` from start to finish: the AMC
+makes every decision there on SNR alone, because the sender's frame
+evidence comes from its own received DATA and the ramp is one-way. Frame
+length cannot be thinning evidence that was never there.
+
+What the per-segment trace shows instead is a **climb-rate** limit. The
+ladder promotes one rung per decision, and each rung costs a
+MODE_CHANGE round trip that now waits behind a longer frame:
+
+| segment | +8 dB | +12 dB | +16 dB | +20 dB |
+|---|---|---|---|---|
+| oracle | M6 | M8 | M10 | M11 |
+| AMC, 10 s cap | M5 | M7 | M9 | M11 |
+| AMC, 20 s cap | M5 | M6 | M7 | M10 |
+
+The AMC trails the oracle by one to three rungs the whole way up, and
+the gap widens with frame airtime. That is the actual cost, and it is
+not specific to long frames - it is there at every cap.
+
+### Fix attempted, measured, rejected
+
+Multi-rung promotion (`AmcConfig::maxPromoteStep`, bounded at 2, only
+into a rung that clears its floor by an extra `skipHeadroomDb` = 3 dB
+with a clean retry window, never into a probe-gated or `kFadingNA`
+rung). It does exactly what it was built to do on the ramp and loses
+the throughput it was meant to protect:
+
+| | M3 ramp | static | coupled churn | seed 11 | seed 12 | seed 13 | total |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| step 1 | 0.87 | 0.68 | 196,667 | 37,006 | 73,028 | 89,473 | 396,174 |
+| step 2 | 0.89 | 0.70 | **122,931** | 40,043 | 69,708 | 96,344 | 329,026 |
+
+A 37% coupled regression against a 2-point ramp gain; −17% of all bytes
+moved across the four scenarios, with the seeds split two up, one down. The ramp is a
+tracking metric on a monotone SNR sweep, where skipping a rung is free;
+the churn is a fading channel where the skipped rung IS the evidence,
+and landing two rungs high on CCIR Moderate pays the failure and
+penalty-box cost over and over. Default 1; the mechanism and the knob
+stay for the record, unit-tested on both settings.
+
+The climb-rate limit itself stands as the open item: one rung per
+MODE_CHANGE round trip. Attacking it by skipping rungs is what failed;
+attacking the round trip (announce latency, or promoting on the
+announce rather than the ACK for upward steps at the robust tier) has
+not been tried.

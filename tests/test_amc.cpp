@@ -48,9 +48,31 @@ TEST_CASE(promote_requires_margin_dwell_consecutive) {
   CHECK(a.evaluate(7.0).kind == AmcDecision::Kind::None);
   auto d = a.evaluate(8.0);
   CHECK(d.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(d.targetMode), 9);  // single step only
+  CHECK_EQ(int(d.targetMode), 9);  // single step: maxPromoteStep is 1
   a.onModeApplied(9, 8.0);
   CHECK_EQ(int(a.mode()), 9);
+  // With multi-rung promotion enabled (measured and left off by
+  // default, see AmcConfig::maxPromoteStep) the same abundant SNR takes
+  // two rungs, bounded by the step and by the skip headroom.
+  AmcConfig two = cfg();
+  two.maxPromoteStep = 2;
+  Amc m(two, 8, 0.0);
+  cleanFrames(m);
+  m.onLocalSnr(25.0);
+  m.evaluate(7.0);
+  auto dm = m.evaluate(8.0);
+  CHECK(dm.kind == AmcDecision::Kind::Promote);
+  CHECK_EQ(int(dm.targetMode), 10);
+  // Enough margin for the next rung but not for the one above it: a
+  // single step even with skipping enabled.
+  Amc c(two, 8, 0.0);
+  cleanFrames(c);
+  c.onLocalSnr(floorOf(10) + two.promoteMarginDb + two.skipHeadroomDb -
+               0.1 + 1.5);
+  c.evaluate(7.0);
+  auto dc = c.evaluate(8.0);
+  CHECK(dc.kind == AmcDecision::Kind::Promote);
+  CHECK_EQ(int(dc.targetMode), 9);
   // SNR just below the next promote margin: no promotion.
   Amc b(cfg(), 8, 0.0);
   cleanFrames(b);
@@ -139,7 +161,7 @@ TEST_CASE(high_mode_gates) {
     a.evaluate(9.0);
     auto d = a.evaluate(10.0);
     CHECK(d.kind == AmcDecision::Kind::Promote);
-    CHECK_EQ(int(d.targetMode), 11);
+    CHECK(int(d.targetMode) >= 11);  // gate cleared (step may be 2 rungs)
   }
   // M12 additionally needs low selectivity.
   {
@@ -216,7 +238,7 @@ TEST_CASE(failure_memory_holds_promotion_and_doubles) {
   CHECK(a.evaluate(32.0).kind == AmcDecision::Kind::None);  // streak 1
   auto p = a.evaluate(33.0);
   CHECK(p.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(p.targetMode), 9);
+  CHECK(int(p.targetMode) >= 9);  // the box expired (step may be 2 rungs)
   a.onModeApplied(9, 33.0);
   // Fail AGAIN at the same rung, same SNR: the hold doubles to 60 s.
   for (int i = 0; i < 16; ++i) a.onFrameResult(i % 5 < 2, true);
@@ -268,7 +290,7 @@ TEST_CASE(moderate_class_caps_ladder_at_m8) {
   a.evaluate(20.0);
   auto p = a.evaluate(21.0);
   CHECK(p.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(p.targetMode), 9);
+  CHECK(int(p.targetMode) >= 9);  // past the lifted cap
 }
 
 TEST_CASE(failure_memory_ignores_snr_explained_demotions) {

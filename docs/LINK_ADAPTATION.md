@@ -30,8 +30,13 @@ Aggregated each received frame and each ACK:
   the controller makes no SNR-based decision (failure-driven demotions
   still apply)
 - freshest remote-reported SNR (from ACK/keepalive bodies)
-- retry ratio (retransmitted / total, sliding 16-frame window, cleared on
-  every mode change). A received retransmission counts only when it is
+- retry ratio (retransmitted / total, sliding 16-**frame** window, cleared
+  on every mode change). `Amc::windowSpanSec` reports how much wall time
+  that window covers — it is frame-counted, so at robust-tier airtimes it
+  can describe a stretch of channel minutes old. On a one-way transfer
+  the sender's window is *empty* (`fill=0`): its frame evidence comes
+  from DATA it receives, so it adapts on SNR alone, which is what the M3
+  ramp measures. A received retransmission counts only when it is
   the **first copy to arrive**; a duplicate proves the original got
   through, so that retransmission was the MAC's doing (a frame stranded
   at a turn handover, the drain's fast-retransmit racing a late ACK),
@@ -69,6 +74,16 @@ Per-family mode floors come from the WAVEFORM tables. AMC applies margins:
 | demote from mode `k` | effective SNR < floor(k) − 3.5 dB, **or** retry ratio > 0.35, **or** 3 consecutive decode failures |
 | fast demote | 2-step drop when retry ratio > 0.5 in the window, min dwell waived |
 | promotion step | single step only (`k → k+1`); no promotion skipping |
+
+Multi-rung promotion was built and measured (`AmcConfig::maxPromoteStep`,
+bounded at 2, only into a rung clearing its floor by an extra 3 dB with
+a clean retry window): M3 ramp 0.87 → 0.89 but the coupled churn
+196,667 → 122,931 B. The ramp is a tracking metric on a monotone sweep,
+where skipping a rung is free; on a fading channel the skipped rung is
+the evidence. Left at 1. The underlying limit — one rung per
+`MODE_CHANGE` round trip, so the climb rate is set by exchange latency
+rather than by the channel — is unaddressed; the AMC trails a genie
+oracle by one to three rungs the whole way up a ramp.
 
 The margins are **negative on purpose**: the floors are one-shot 10–15%
 FER points, and with chase/IR HARQ plus selective-repeat ARQ a rung is

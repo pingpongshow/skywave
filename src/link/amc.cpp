@@ -21,11 +21,18 @@ void Amc::onRemoteSnr(double snrDb, double now) {
   remoteTime_ = now;
 }
 
-void Amc::onFrameResult(bool wasRetransmit, bool decodeOk) {
+void Amc::onFrameResult(bool wasRetransmit, bool decodeOk, double now) {
   retryBits_ = uint32_t((retryBits_ << 1) | (wasRetransmit ? 1u : 0u)) &
                0xFFFFu;
   windowFill_ = std::min(windowFill_ + 1, 16);
   failStreak_ = decodeOk ? 0 : failStreak_ + 1;
+  if (now >= 0.0) {
+    sampleAt_[size_t(sampleHead_)] = now;
+    sampleHead_ = (sampleHead_ + 1) % 16;
+    // Oldest still inside the window: the slot the next write will evict.
+    oldestSampleAt_ = windowFill_ >= 16 ? sampleAt_[size_t(sampleHead_)]
+                                        : sampleAt_[0];
+  }
 }
 
 void Amc::onQualityIndicators(uint8_t selectivity, double pilotStability) {
@@ -291,7 +298,25 @@ AmcDecision Amc::evaluate(double now) {
     return {};
   }
   promoteStreak_ = 0;
-  return {AmcDecision::Kind::Promote, next};
+  // Multi-rung step when the channel is plainly ahead of the ladder
+  // (AmcConfig::maxPromoteStep). Bounded, and only over rungs that are
+  // themselves eligible with headroom - never a leap past evidence.
+  uint8_t target = next;
+  if (retry <= 0.0) {
+    for (int step = 1; step < cfg_.maxPromoteStep; ++step) {
+      uint8_t hi = uint8_t(target + 1);
+      // Skip over kFadingNA rungs exactly as the single-step ladder does.
+      while (hi < cfg_.maxMode && operatingFloorDb(hi) >= 90.0) ++hi;
+      if (hi > cfg_.maxMode || operatingFloorDb(hi) >= 90.0) break;
+      if (!modeEligible(hi, eff)) break;
+      if (eff < operatingFloorDb(hi) + cfg_.promoteMarginDb +
+                    cfg_.skipHeadroomDb) {
+        break;
+      }
+      target = hi;
+    }
+  }
+  return {AmcDecision::Kind::Promote, target};
 }
 
 }  // namespace skw

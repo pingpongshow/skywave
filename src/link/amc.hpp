@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -77,6 +78,34 @@ struct AmcConfig {
   // shorter than one promote-fail cycle at the fast tier (~40 s), so
   // the repeat counter never advanced past one.
   int failHoldMaxDoublings = 4;  // 30 s -> 240 s (x airtime cadence)
+  // PROMOTION STEP. One rung per decision costs one MODE_CHANGE round
+  // trip per rung, so the climb rate is set by the exchange latency, not
+  // by the channel: on the M3 ramp the AMC trails the oracle by 1-3
+  // rungs the whole way up, and the gap widens with frame airtime
+  // (measured at a 20 s robust-tier frame cap: M6/M7/M10 where the
+  // oracle is at M8/M10/M11). A two-rung step is taken only when the
+  // upper rung clears its floor by skipHeadroomDb ON TOP of the ordinary
+  // promote margin and the retry window is clean - the same evidence
+  // two sequential single steps would act on, minus the chance to
+  // observe a failure at the rung being skipped, which is what the
+  // headroom pays for. Gated rungs (kFadingNA, probe-required) are never
+  // skipped into: modeEligible refuses them without a clean probe.
+  //
+  // MEASURED AND REJECTED (2026-09-07), default 1. It does what it was
+  // built to do on the ramp - M3 ramp 0.87 -> 0.89, and 0.75 -> 0.82 at
+  // a 20 s robust-tier frame cap, static 0.68 -> 0.70 - and loses the
+  // throughput it was meant to protect:
+  //           coupled churn   seed 11   seed 12   seed 13     total
+  //   step 1     196,667       37,006    73,028    89,473   396,174
+  //   step 2     122,931       40,043    69,708    96,344   329,026
+  // A 37% coupled regression, -17% of all bytes moved. The ramp is a TRACKING metric on a
+  // monotone SNR sweep, where skipping a rung is free; the churn is a
+  // fading channel where the skipped rung is the evidence, and landing
+  // two rungs high on CCIR Moderate pays the failure and penalty-box
+  // cost repeatedly. Set to 2 to re-measure; the ladder's climb rate
+  // (one MODE_CHANGE round trip per rung) remains the real limit.
+  int maxPromoteStep = 1;
+  double skipHeadroomDb = 3.0;
   // High-mode gates.
   double m11RetryMax = 0.10;
   // Pilot-residual energy relative to channel power (phy/receiver.hpp
@@ -111,7 +140,9 @@ class Amc {
   // --- observations ----------------------------------------------------
   void onLocalSnr(double snrDb);            // post-equalizer, per frame
   void onRemoteSnr(double snrDb, double now);
-  void onFrameResult(bool wasRetransmit, bool decodeOk);  // 16-frame window
+  // 16-frame sliding window. `now` is instrumentation only (window span);
+  // decisions are unaffected by it.
+  void onFrameResult(bool wasRetransmit, bool decodeOk, double now = -1.0);
   void onQualityIndicators(uint8_t selectivity, double pilotStability);
   // Channel character (link/chanclass.hpp). STATIC switches the floor
   // table to the AWGN reference - the fading floors leave large
@@ -152,6 +183,13 @@ class Amc {
   // fade-edge reading for a minute once only converged frames fed it.
   bool haveLocalSnr() const { return haveLocal_; }
   double localSnrDb() const { return localSnr_; }
+  int windowFill() const { return windowFill_; }
+  // Wall-clock span of the evidence the retry ratio is computed over:
+  // the retry window is 16 FRAMES, so at long frames it describes a
+  // stretch of channel that may be minutes old. -1 when unknown.
+  double windowSpanSec(double now) const {
+    return oldestSampleAt_ < 0.0 ? -1.0 : now - oldestSampleAt_;
+  }
   // Failure memory (tests / debug): the lowest rung whose last attempt
   // failed on frames, 255 when clear; and the hold still in force.
   uint8_t failedMode() const { return failMode_; }
@@ -190,6 +228,10 @@ class Amc {
   // Sliding 16-frame result window (bit i: retransmit flag).
   uint32_t retryBits_ = 0;
   int windowFill_ = 0;
+  // Arrival times of the samples in the window (instrumentation).
+  std::array<double, 16> sampleAt_{};
+  int sampleHead_ = 0;
+  double oldestSampleAt_ = -1.0;
   int promoteStreak_ = 0;
 };
 
