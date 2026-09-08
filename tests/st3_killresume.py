@@ -75,7 +75,16 @@ def main():
         # ctest Timeout that looked like a modem failure.
         deadline = t0 + 5400
         next_kill_at = len(got) + 2048
-        while len(got) < len(payload) and time.time() < deadline:
+        # Loop until the payload's own TAIL arrives, not until a byte
+        # COUNT is reached: a replayed message means more bytes cross
+        # the link than the application submitted, so a length test
+        # stops short of the end and reports a false shortfall (seen as
+        # "24176/24576 B in order, 400 B replayed" - the modem was
+        # correct, the harness stopped early).
+        def tail_arrived():
+            return len(got) >= 64 and got[-64:] == payload[-64:]
+
+        while not tail_arrived() and time.time() < deadline:
             try:
                 chunk = b_data.recv(65536)
                 if chunk:

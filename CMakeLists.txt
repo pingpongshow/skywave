@@ -277,11 +277,18 @@ if(BUILD_TESTS)
     # it a `ctest -j` (or a stray manual run) makes one of them fail in a
     # couple of seconds on device-open, which looks like a modem defect
     # and is not one.
+    # SKW_CHANMEM_PATH= for the same reason skw_test() sets it: a test
+    # must never touch the operator's real channel-memory store. These
+    # two were missed, so every ST3 run has been reading AND WRITING
+    # ~/.skywave/chanmem.bin - which also feeds the initial-mode seed on
+    # each reconnect, making the kill/resume gate depend on whatever the
+    # last run happened to leave behind.
     set_tests_properties(st3_hardware PROPERTIES
       LABELS "hardware"
       TIMEOUT 14400
       SKIP_RETURN_CODE 77
       RESOURCE_LOCK "loopback_audio"
+      ENVIRONMENT "SKW_CHANMEM_PATH="
       DISABLED $<NOT:$<BOOL:${SKW_HARDWARE_TESTS}>>)
     # SIGKILL/resume hammer over the same devices. The script existed but
     # was registered with NOTHING, so no gate ever ran it; it also guards
@@ -298,7 +305,7 @@ if(BUILD_TESTS)
       TIMEOUT 6000
       SKIP_RETURN_CODE 77
       RESOURCE_LOCK "loopback_audio"
-      ENVIRONMENT "SKW_HARDWARE_TESTS=1"
+      ENVIRONMENT "SKW_HARDWARE_TESTS=1;SKW_CHANMEM_PATH="
       DISABLED $<NOT:$<BOOL:${SKW_HARDWARE_TESTS}>>)
   endif()
   skw_test(test_ptt)
