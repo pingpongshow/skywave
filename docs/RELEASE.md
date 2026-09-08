@@ -15,7 +15,28 @@ on breaking wire changes, never for releases. Both are 1.
    cmake -B build-crypto -DENABLE_CRYPTO=ON && cmake --build build-crypto -j && ctest --test-dir build-crypto
    ```
 2. **Sanitizer sweeps** (`build-asan`, `build-ubsan`: same suites green;
-   ThreadSanitizer on `test_st2` + `test_tcp` at minimum). Toolchain
+   ThreadSanitizer on `test_st2` + `test_tcp` at minimum).
+
+   **Configure the sanitizer trees with `-DENABLE_GUI=OFF`:**
+   ```
+   cmake -B build-asan -DENABLE_ASAN=ON -DENABLE_GUI=OFF \
+     -DCMAKE_C_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang \
+     -DCMAKE_CXX_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang++
+   ```
+   Every test binary links `skywave_core`, which links SDL2 when the
+   GUI is on — so SDL2's library initializer runs at load time in every
+   test, including ones that never touch a window. Under ASan that
+   initializer takes its failure path and calls `error_dialog`, which
+   opens a modal `NSAlert` and blocks in `runModal` forever. The first
+   test hangs with a dialog on the operator's screen and ctest reports
+   nothing at all; `sample <pid>` shows the stack ending in
+   `dllinit → error_dialog → -[NSAlert runModal]`. TSan hangs the same
+   way; UBSan does not. Turning the GUI off removes SDL2 from the test
+   binaries entirely, which is right anyway — these sweeps target the
+   modem, and the GUI has its own gate (`test_gui`, plus
+   `SKW_GUI_WINDOW=1` for the real-window path).
+
+   Toolchain
    note (see ROADMAP deviations, 2026-07-30): Apple clang 17 compiler-rt
    on Darwin 25.6 cannot start ASan/TSan at all; Command Line Tools
    26.6 (clang 21) fixes this — configure the sanitizer builds with
