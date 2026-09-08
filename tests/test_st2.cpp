@@ -165,7 +165,11 @@ TEST_CASE(st2_oneway_throughput_floor) {
   CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
   CHECK(w.waitState(w.a, "CONNECTED", 12000));
 
-  // Deterministic incompressible stream, <= 4 KiB in flight.
+  // Deterministic incompressible stream. The window bounds UNDELIVERED
+  // bytes and proto delivery is head-of-line, so it caps throughput at
+  // window / delivery-gap regardless of the link: at 4 KiB this gate
+  // measured the harness (the two-modem soak, same pattern, ran 98-100%
+  // with the feed window shut and the modem's TX buffer empty).
   uint64_t s = 0x9E3779B97F4A7C15ull;
   std::vector<uint8_t> sent;
   const double t0 = double(w.clk.nowUs()) * 1e-6;

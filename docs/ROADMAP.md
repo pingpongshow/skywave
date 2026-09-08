@@ -2931,3 +2931,69 @@ is the same thing that puts an 85 s floor under delivery. Both ends of
 that trade are now measured; the next round should ask whether the IRS
 should be able to deliver mid-turn, e.g. by granting the turn back early
 once its own reverse backlog is empty.
+
+## The soak's offered load, and what a turn actually carries (2026-09-07)
+
+Instrument: `soak_st2` reports `offA` (bytes offered), `txbufA` (the
+modem's TX backlog) and `starvedA` (share of samples with the feed
+window shut). `SKW_SOAK_WINDOW` sets that window.
+
+### The soak was measuring its own flow control
+
+The feed offers more only while `sent < delivered + 4096` — a 4 KiB
+window gated on DELIVERY, and proto delivery is head-of-line. Throughput
+can therefore never exceed window / delivery-gap however fast the link
+is. Measured: the window is shut **98–100%** of every churn run, with
+the modem's TX buffer repeatedly at **zero**. The link spends the run
+waiting to be fed.
+
+That is why several levers in the preceding rounds "won": anything that
+shortened the delivery gap reopened the window sooner and scored as
+throughput, whatever it cost in airtime. The registered gate
+`st2_oneway_throughput_floor` has the identical pattern.
+
+### Opening the window does not simply raise the number
+
+At 64 KiB the link is genuinely loaded (TX backlog ~64 KB) and goodput
+**falls**: coupled churn 196,667 → 59,760 B, and seed 13 fails. Same
+400 s schedule, two offered loads:
+
+| | 64 KiB | 4 KiB |
+|---|---|---|
+| mode reached | M8–M9 (net 1714–2571 B/s) | M11 (net 5860 B/s) |
+| turns | 4 | 21 |
+| mean turn | 39.3 s | 16.2 s |
+| **bytes per second of turn** | **89.0** | **89.7** |
+
+The per-turn rate is the same to within 1% — and it is ~1.5% of what
+M11 supports. The shallow window simply produced five times as many
+turns. So the churn soak has never been mode-limited OR window-limited
+in the way the last several rounds assumed: **a turn carries ~89 B/s
+whatever the mode**, and everything else was arithmetic on the number of
+turns.
+
+Defaults are unchanged (4 KiB) so every recorded baseline and gate stays
+comparable; `SKW_SOAK_WINDOW` makes the dependence explicit.
+
+### What this means for the preceding rounds
+
+Their throughput deltas are real as measurements of *the soak*, and they
+do not establish what they appeared to about the link. Frame growth,
+the turn-hold change, the HF window, the drain fast-retransmit and the
+duplicate-aware retry rule all moved delivery-gap arithmetic. The ones
+with independent evidence stand on that evidence (bertool goodput for
+frame length; the one-way gate for the window; MCLAT for commit
+latency); the rest should be re-measured against a load model that is
+not delivery-gated.
+
+### Two open items, in order
+
+1. **~89 B/s per turn regardless of mode.** At M9, 11.8 frames in 39.3 s
+   is roughly half the turn spent not transmitting — the post-burst
+   listen window and ACK turnaround. This is the real throughput
+   ceiling and nothing measured so far has touched it.
+2. **Goodput falls 3.3× under a deep offered queue**, with the AMC
+   settling two to three rungs lower (M8–M9 vs M11) and turns
+   lengthening 2.4×. A file transfer is exactly this load. Whether the
+   cause is the AMC, the turn scheduler under an always-full backlog, or
+   head-of-line delivery of full 4 KiB messages is not yet separated.

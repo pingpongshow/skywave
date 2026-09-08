@@ -167,24 +167,49 @@ int main() {
   double callingSince = -1.0;
 
   auto simNow = [&] { return double(w.clk.nowUs()) * 1e-6 - t0; };
+  // Starvation sampling: how often A has nothing left to send. The feed
+  // is a 4 KiB window that only reopens when bytes are DELIVERED, so on
+  // a link whose delivery gaps are tens of seconds the offered load,
+  // not the link, sets the rate.
+  size_t starveA = 0, starveSamples = 0;
+  double lastStarveAt = -1e9;
+  const size_t kFeedWindow = [] {
+    const char* e = std::getenv("SKW_SOAK_WINDOW");  // A/B; 4096 = old
+    return e ? size_t(std::atol(e)) : size_t(4096);
+  }();
 
   while (simNow() < simSecTarget) {
     w.round();
     const double now = simNow();
 
-    // --- keep the directions loaded (<= 4 KiB in flight each). The
-    // floor scenario is ONE-WAY: the documented tier floors are one-way
-    // FER gates, and sustained simultaneous two-way bulk at the floor
-    // is a known-limitation regime (ROADMAP).
+    // --- keep the directions loaded. The window bounds UNDELIVERED
+    // bytes, and proto delivery is head-of-line, so it is a
+    // delivery-gated window: throughput can never exceed window /
+    // delivery-gap however fast the link is. At 4 KiB it was closed
+    // 98-100% of every churn run with the modem's TX buffer repeatedly
+    // EMPTY (measured 2026-09-07, `starvedA` / `txbufA` above), which
+    // made the soak measure its own flow control - a lever that shrank
+    // delivery gaps scored as a throughput win even when it cost the
+    // link airtime. 64 KiB keeps the link the limit while bounding the
+    // verification buffers. The floor scenario stays ONE-WAY: the
+    // documented tier floors are one-way FER gates, and sustained
+    // simultaneous two-way bulk at the floor is a known-limitation
+    // regime (ROADMAP).
     if (!boActive) {
-      if (gA.sent.size() < w.b.dataAcc.size() + 4096) {
+      if (gA.sent.size() < w.b.dataAcc.size() + kFeedWindow) {
         auto c = gA.chunk(256 + rng.u32(768));
         ::send(w.a.dataFd, c.data(), c.size(), 0);
       }
-      if (!oneWay && gB.sent.size() < w.a.dataAcc.size() + 4096) {
+      if (!oneWay && gB.sent.size() < w.a.dataAcc.size() + kFeedWindow) {
         auto c = gB.chunk(256 + rng.u32(768));
         ::send(w.b.dataFd, c.data(), c.size(), 0);
       }
+    }
+
+    if (now - lastStarveAt >= 2.0) {
+      lastStarveAt = now;
+      ++starveSamples;
+      if (gA.sent.size() >= w.b.dataAcc.size() + kFeedWindow) ++starveA;
     }
 
     // --- verify newly delivered bytes (incremental, byte-exact) --------
@@ -290,11 +315,22 @@ int main() {
         const auto p = st.find(" SNR=");
         return p == std::string::npos ? -99.0 : std::atof(st.c_str() + p + 5);
       };
+      // OFFERED vs DELIVERED. The feed below keeps only 4 KiB in flight
+      // per direction and reopens on DELIVERY, so when the link's TX
+      // buffer runs dry the harness - not the modem - is the limit.
+      auto txbuf = [&](Node& n) {
+        const std::string st = w.cmd(n, "STATUS");
+        const auto p = st.find(" TXBUF=");
+        return p == std::string::npos ? -1L : std::atol(st.c_str() + p + 7);
+      };
       std::printf(
           "SOAK t=%5.0fs snr=%5.1f %-8s bo=%d A->B=%zu B->A=%zu recon=%d "
-          "estA=%.1f estB=%.1f\n",
+          "estA=%.1f estB=%.1f offA=%zu txbufA=%ld starvedA=%.0f%%\n",
           now, snr, presetName(preset), boActive ? 1 : 0, w.b.dataAcc.size(),
-          w.a.dataAcc.size(), reconnects, measured(w.a), measured(w.b));
+          w.a.dataAcc.size(), reconnects, measured(w.a), measured(w.b),
+          gA.sent.size(), txbuf(w.a),
+          starveSamples > 0 ? 100.0 * double(starveA) / double(starveSamples)
+                            : -1.0);
       if (std::getenv("SKW_SOAK_DEBUG")) {
         std::printf("  A %s\n  B %s\n", w.cmd(w.a, "STATUS").c_str(),
                     w.cmd(w.b, "STATUS").c_str());

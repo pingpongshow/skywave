@@ -84,6 +84,20 @@ at `--modes 5,6,7`: goodput monotonic, 1.6–2.2×, overhead 79% → 30% at
 M7); `SKW_ROBUST_AIR_CAP` is the matching A/B knob in the soak, because
 the frame is also the unit of the AMC's 16-frame evidence window.
 
+**The soak is a robustness test, not a throughput benchmark.** Its feed
+offers more only while `sent < delivered + SKW_SOAK_WINDOW` (4 KiB by
+default) and proto delivery is head-of-line, so delivered bytes are
+capped at window / delivery-gap however fast the link is. Measured, that
+window is shut 98–100% of a churn run with the modem's TX buffer
+repeatedly empty (`starvedA`, `txbufA` in the status line). Any lever
+that shortens the delivery gap therefore scores as "throughput" even if
+it costs the link airtime — several did, in the rounds before this was
+found. Opening the window is not a fix by itself: at 64 KiB the link is
+loaded but goodput *falls* 3.3× and the AMC settles two to three rungs
+lower. A turn carries ~89 B/s at M9 and at M11 alike. Use
+`SKW_SOAK_WINDOW` deliberately, and prefer bertool or the one-way gate
+for anything claiming a rate.
+
 **The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
 each modem's calibrated measured SNR, next to the schedule's set point.
 That field found the radio chain referencing its noise to unit power
