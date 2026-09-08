@@ -1123,7 +1123,38 @@ doc was updated)*
      ladder) and the simulated world is far too fast to produce it. The
      test is kept and LABELLED as a smoke, because a passing test that
      cannot fail on the bug it names is worse than none.
-  3. **DATA CONTINUITY AFTER A PEER RESTART (OPEN).** With both fixes in
+  3. **DATA CONTINUITY AFTER A PEER RESTART — FIXED, WITH A CHANGED
+     GUARANTEE.** `ProtoTx` now keeps each sealed message after its last
+     fragment goes out (`unconfirmed_`, bounded by the ARQ window since
+     the engine only pulls a segment when the window has room); the
+     engine records the ARQ sequence each message ends at and releases
+     the copy when the contiguous acknowledged point passes it. On a
+     fresh-peer fallback the unconfirmed set is re-queued and the
+     part-way-out message rewinds to byte 0. Replay is MESSAGE-granular
+     by necessity: a restarted peer has an empty assembly buffer, so
+     resuming at an ARQ sequence boundary would hand it a
+     more-fragments continuation whose head it never saw and the chain
+     would be dropped as malformed.
+     THE GUARANTEE CHANGES. Across a peer restart delivery is
+     AT-LEAST-ONCE, bounded by one coalesced message (HF: 4096 B). A
+     peer that dies between handing a message to its application and
+     getting its acknowledgement back to us is indistinguishable, from
+     the sender's side, from one that never received it; replaying is
+     the only choice that cannot LOSE data. Exactly-once here is the
+     two-generals problem and no protocol solves it against a peer that
+     keeps no state. The uncertainty is therefore PUBLISHED, not hidden:
+     `EVT:STREAM_REPLAY <bytes>`. PROTOCOL.md gains "Reconnecting to a
+     Peer That Lost Its Session"; INTERFACES.md documents the event.
+     The gate asserted `got == payload` - exactly-once - which was
+     unachievable by construction and went unnoticed because the gate
+     had never been run; it now checks every byte in order with
+     repetition bounded by one message.
+     Measured device-free before the fix: 4096 of 32768 B delivered,
+     28672 LOST. After: 36864 B across the link, whole payload in order,
+     4096 B repeated. The ST2 peer-death test covers this and IS a real
+     guard - verified to fail without the change (unlike its reconnect
+     assertions, which the simulated world cannot exercise).
+     ORIGINAL SYMPTOM: With both fixes in
      place the gate RECONNECTS ("reconnected at 174 s", where it never
      had) and then fails on a further layer: `8192/24576 B,
      prefix_exact=True, kills=1`. What arrived is byte-exact - nothing
