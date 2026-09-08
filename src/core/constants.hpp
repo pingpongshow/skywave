@@ -476,6 +476,26 @@ inline constexpr int kRobustCwMax = 8;
 // schedule is identical in every cell - it never leaves the fast tier.
 inline constexpr double kRobustFrameAirCapSec = 10.0;
 
+// Target airtime of one coalesced proto message (engine applySealCap),
+// 0 = no airtime bound. Proto assembly is head-of-line, so a message's
+// airtime looked like the app-visible delivery interval - and it is not
+// the binding term. MEASURED 2026-09-07 (SKW_DELIV_DEBUG, churn):
+// delivery gaps 89-132 s median at M6-M9, while the median ISS turn is
+// 42 s, i.e. an ~85 s turn CYCLE. A station can only deliver what
+// arrived while the peer held the turn, so the cycle floors the gap and
+// shrinking messages under it buys nothing:
+//              coupled    seed 11   seed 12   seed 13
+//   off       196,667     37,006    63,344    89,473
+//   45 s      196,667     37,006    61,099    89,473
+//   25 s      196,667     29,671    63,344    89,473
+// Left at 0. (An earlier version divided a burst-container's airtime
+// into a single frame's budget, capping framesPerBurst times too hard;
+// that bit the fast tier it was meant to leave alone - coupled 196.7 ->
+// 120.7 KB - while lifting the robust-tier seeds 12-37%. Tempting, and
+// the wrong reason: it was a bug, not a bound.) SKW_DELIVER_TARGET_SEC
+// re-enables it for measurement.
+inline constexpr double kDeliverTargetSec = 0.0;
+
 // Anti-starvation backstop: how many ARQ timeouts queued DATA may wait
 // behind a busy channel before it airs regardless of the busy verdict.
 // On a link where BOTH ends have traffic the channel is busy essentially

@@ -446,6 +446,15 @@ head-of-line fragment cannot zero delivery of a whole 4 KiB message
 while later fragments keep arriving. TX-local policy; receivers
 reassemble whatever sizes arrive.
 
+A further **airtime** bound — cap a message at what the link carries in
+N seconds, so the bound follows the mode rather than the tier — was
+built and measured, and is off (`kDeliverTargetSec = 0`). Delivery gaps
+under turn-taking are floored by the turn cycle (~85 s: a station
+delivers only what arrived while the peer held the turn), so messages
+smaller than that buy nothing; measured, the bound never helped and cost
+up to 20% on a seed. `SKW_DELIVER_TARGET_SEC` re-enables it and
+`SKW_DELIV_DEBUG` reports the gaps it is meant to shrink.
+
 TX order, applied above the link layer:
 
 ```text

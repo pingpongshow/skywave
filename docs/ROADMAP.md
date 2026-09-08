@@ -2870,3 +2870,64 @@ the same bottleneck must be measured as a 2×2, not one after the other.
 Both of these looked like clear wins in isolation, and the second would
 have been committed on a single-cell measurement that showed a
 regression it did not cause.
+
+## Delivery granularity: the turn cycle, not the message (2026-09-07, last)
+
+The long-standing "pace wall" was described as a 4 KiB coalesced message
+that cannot complete inside a 300 s watchdog at robust-tier rates, with
+a named fix waiting: make the coalesce cap follow the mode instead of
+the tier.
+
+### Instrument
+
+`SKW_DELIV_DEBUG` prints every app-visible delivery: bytes, the gap
+since the previous one, and the mode. Proto assembly is head-of-line, so
+this gap — not the frame rate — is what a stall watchdog and a human
+both observe. Churn seed 11:
+
+| mode | deliveries | median gap | max gap |
+|---|---:|---:|---:|
+| M6 | 1 | 89.3 s | 89.3 s |
+| M7 | 4 | 131.8 s | 223.7 s |
+| M8 | 14 | 41.4 s | 131.5 s |
+| M10 | 4 | 9.2 s | 17.9 s |
+
+### The fix, and why it is off
+
+A mode-following bound: cap a message at the payload the link carries in
+`kDeliverTargetSec` of airtime, so the fast tier lands above
+`coalesceMaxBytes` and nothing changes while the robust tier seals
+messages that actually arrive. Measured against the current baseline:
+
+| | coupled | seed 11 | seed 12 | seed 13 |
+|---|---:|---:|---:|---:|
+| off | 196,667 | 37,006 | 63,344 | 89,473 |
+| 45 s | 196,667 | 37,006 | 61,099 | 89,473 |
+| 25 s | 196,667 | 29,671 | 63,344 | 89,473 |
+
+It never helps and sometimes hurts, and `TURNSTAT` says why: the median
+ISS turn is 42.3 s, so the **turn cycle is ~85 s**. A station can only
+deliver what arrived while the peer held the turn, so the cycle floors
+the delivery gap and shrinking messages beneath it buys nothing. The
+measured gaps (41–132 s) sit within a small factor of that cycle, not of
+any message size. Default 0; `SKW_DELIVER_TARGET_SEC` re-enables it.
+
+### The near miss worth recording
+
+The first version divided a burst container's airtime into a *single
+frame's* budget, capping `framesPerBurst` times harder than intended. It
+bit the fast tier it was designed to leave alone (coupled 196.7 →
+120.7 KB) while lifting the robust-tier seeds 12–37%, and the seed-11
+target curve was beautifully monotone (15 s: 53.2 KB, 25 s: 50.6,
+35 s: 41.5, 45 s: 38.0, off: 37.0). Every one of those numbers is real;
+none of them measures what the constant claims to. Fixing the units made
+the whole effect vanish. A monotone response curve is not evidence that
+the knob means what its name says.
+
+**Delivery latency at the robust tier is therefore a MAC question, not a
+proto one.** The lever is the turn cycle: the 4-RTT minimum hold that
+made turns long enough to be worth their handover (and paid +14%/+11%)
+is the same thing that puts an 85 s floor under delivery. Both ends of
+that trade are now measured; the next round should ask whether the IRS
+should be able to deliver mid-turn, e.g. by granting the turn back early
+once its own reverse backlog is empty.

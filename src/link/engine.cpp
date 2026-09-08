@@ -403,9 +403,40 @@ uint8_t LinkEngine::ackRxFlags() const {
 void LinkEngine::applySealCap() {
   static const bool kLossyCap = getenv("SKW_NO_LOSSY_CAP") == nullptr;  // A/B
   const size_t bounded = std::max<size_t>(8 * dataBudget_, 192);
-  protoTx_.setSealCap(mode_ <= 3 || (kLossyCap && lossyCoalesce_)
-                          ? bounded
-                          : size_t(-1));
+  size_t cap =
+      mode_ <= 3 || (kLossyCap && lossyCoalesce_) ? bounded : size_t(-1);
+  // DELIVERY BOUND, mode-following. Proto assembly is head-of-line: the
+  // app sees nothing until a whole coalesced message lands, so a
+  // message's airtime IS the delivery interval, and a stall watchdog
+  // (or a human) sees exactly that. The cap above follows the TIER -
+  // deep or lossy - which left the robust tier coalescing the full
+  // 4 KiB. MEASURED (SKW_DELIV_DEBUG, churn seed 11): median gap
+  // between app-visible deliveries 131.8 s at M7 (max 223.7) and 89.3 s
+  // at M6, against the soak's 300 s no-progress watchdog. Bounding a
+  // message by frames-per-message instead scales with the mode: at the
+  // fast tier the bound lands above coalesceMaxBytes and nothing
+  // changes, while the robust tier seals smaller messages that actually
+  // arrive. The cost is compression ratio and per-message overhead on
+  // small blocks, which is why the target is measured, not assumed.
+  static const double kDeliverTarget = [] {
+    const char* e = getenv("SKW_DELIVER_TARGET_SEC");  // diagnostic A/B
+    return e ? atof(e) : kDeliverTargetSec;
+  }();
+  // Bytes per second of airtime at the current shape. dataBurstBytes_ is
+  // the payload of one TX unit (a burst container carries framesPerBurst
+  // frames) and dataFrameAirSec_ is that same unit's airtime, so the two
+  // must be paired: dividing container airtime into a single frame's
+  // budget under-counts by framesPerBurst and made this bound bite four
+  // times too hard at M10+ (measured: coupled churn 196.7 -> 120.7 KB,
+  // a tier the bound is supposed to leave alone).
+  if (dataFrameAirSec_ > 0.0 && kDeliverTarget > 0.0 &&
+      dataBurstBytes_ > 0) {
+    const double bytesPerSec = double(dataBurstBytes_) / dataFrameAirSec_;
+    const size_t byAirtime =
+        std::max<size_t>(size_t(kDeliverTarget * bytesPerSec), 192);
+    cap = std::min(cap, byAirtime);
+  }
+  protoTx_.setSealCap(cap);
 }
 
 void LinkEngine::setTurnRole(TurnRole r, double now) {
@@ -515,7 +546,20 @@ void LinkEngine::sendData(std::span<const uint8_t> bytes) {
 }
 
 std::vector<uint8_t> LinkEngine::takeReceivedData() {
-  return protoRx_.takeBytes();
+  auto out = protoRx_.takeBytes();
+  // DELIVERY GRANULARITY (SKW_DELIV_DEBUG). Head-of-line assembly means
+  // the app sees nothing until a whole coalesced message lands, so this
+  // interval - not the frame rate - is what a stall watchdog observes.
+  if (!out.empty()) {
+    static const bool dbg = getenv("SKW_DELIV_DEBUG") != nullptr;
+    if (dbg) {
+      fprintf(stderr, "%s DELIV t=%.1f bytes=%zu gap=%.1f mode=%d\n",
+              cfg_.policy.ownCall.c_str(), lastNow_, out.size(),
+              lastDeliverAt_ < 0.0 ? -1.0 : lastNow_ - lastDeliverAt_, mode_);
+    }
+    lastDeliverAt_ = lastNow_;
+  }
+  return out;
 }
 
 bool LinkEngine::sendFile(const std::string& name,
@@ -1445,7 +1489,6 @@ void LinkEngine::updateArqTimeout() {
       dataBudget_ = dataPayloadBudget(mode_, fpb, cwTarget);
     }
   }
-  applySealCap();  // deep tier / lossy link: ~8 frames; clean OFDM: full
   std::vector<uint8_t> seg(
       static_cast<size_t>(fpb) * (dataBudget_ + (fpb == 1 ? 13 : 15)));
   TxFrameParams tp;
@@ -1465,6 +1508,9 @@ void LinkEngine::updateArqTimeout() {
   const double batch =
       (activeBand() == Band::VhfFm && mode_ >= 13) ? 4.0 : 1.0;
   const double dataAir = frameAirtimeSec(tp);
+  dataFrameAirSec_ = dataAir;
+  dataBurstBytes_ = size_t(fpb) * dataBudget_;
+  applySealCap();  // needs the frame airtime: see the delivery bound
   ackAirSec_ = frameAirtimeSec(ta);
   arqTx_.setTimeout(batch * dataAir + ackAirSec_ + 3.0);
 

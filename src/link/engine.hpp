@@ -373,6 +373,9 @@ class LinkEngine {
   // Deep-tier adaptive frame length, in LDPC codewords per frame.
   // MODE_CHANGE commit latency (instrumentation, SKW_MODE_DEBUG MCLAT):
   // when the exchange was requested and from which rung.
+  double lastDeliverAt_ = -1.0;  // app-visible delivery (SKW_DELIV_DEBUG)
+  double dataFrameAirSec_ = 0.0;  // current DATA TX-unit airtime (seal cap)
+  size_t dataBurstBytes_ = 0;     // payload bytes in that same TX unit
   double modeReqAt_ = -1.0;
   int modeReqFrom_ = 0;
   int cssCwTarget_ = 2;
