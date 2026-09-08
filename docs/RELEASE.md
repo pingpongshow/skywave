@@ -44,13 +44,18 @@ on breaking wire changes, never for releases. Both are 1.
    construction.
    ```
    build/bertool --preset awgn --trials 40 --csv docs/conformance/rel_awgn.csv
-   build/bertool --preset moderate --trials 40 --modes 4,5,6,7 --families wide,mid,ultra
-   build/bertool --preset good --trials 40 --modes 8,9,10,11,12,13
-   build/bertool --preset good --trials 40 --modes 4,5,6,7 --families narrow
+   build/bertool --preset moderate --trials 40 --modes 4,5,6,7 --families wide,mid,ultra --csv docs/conformance/rel_mod.csv
+   build/bertool --preset good --trials 40 --modes 8,9,10,11,12,13 --csv docs/conformance/rel_good.csv
+   build/bertool --preset good --trials 40 --modes 4,5,6,7 --families narrow --csv docs/conformance/rel_good_narrow.csv
    build/bertool --css --preset awgn --trials 40 --csv docs/conformance/rel_css.csv
    build/bertool --band vhf-fm --trials 40 --csv docs/conformance/rel_vhf.csv
    ```
-   Every sweep must print `== all points pass ==`.
+   Every sweep must print `== all points pass ==` (the CSS sweep prints
+   `== all CSS points pass ==`). **Every sweep writes a CSV.** The three
+   fading commands previously had no `--csv`, so `rel_mod.csv` and
+   `rel_good.csv` sat at their v1.0.0 contents while the gate was
+   re-run and reported green — the archived fading evidence did not
+   reflect the code being released. Check the file timestamps.
 4. **ST3 hardware gate** (real/virtual audio devices). The gate is a
    CONFIGURE-time option, not an environment variable — `ctest` cannot
    enable a test that was configured `DISABLED`, and the old
