@@ -110,6 +110,7 @@ class ProtoTx {
   void confirmMessages(size_t n);
   void replayUnconfirmed();
   size_t unconfirmedMessages() const { return unconfirmed_.size(); }
+  // APPLICATION bytes held unconfirmed (not the framed size).
   size_t unconfirmedBytes() const;
 
  private:
@@ -124,6 +125,12 @@ class ProtoTx {
     uint8_t flags = 0;
     std::vector<uint8_t> bytes;  // marker + body
     size_t off = 0;
+    // APPLICATION bytes this message carries, before the service tag,
+    // the marker and any compression. EVT:STREAM_REPLAY reports these,
+    // because the number is only useful to an application if it counts
+    // in the units the application submitted - the framed size is 2-3
+    // bytes larger when stored and can be far SMALLER when compressed.
+    size_t rawBytes = 0;
   };
   std::deque<Msg> msgs_;
   std::deque<Msg> unconfirmed_;

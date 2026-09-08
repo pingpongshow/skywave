@@ -209,8 +209,12 @@ to any value. They are read once and cost nothing when unset.
 `SKW_AMC_DEBUG`, `SKW_ARQ_DEBUG`, `SKW_CCA_DEBUG`, `SKW_CHANCLASS_DEBUG`,
 `SKW_CP_DEBUG`, `SKW_CSS_DEBUG`, `SKW_DELIV_DEBUG`, `SKW_EMIT_DEBUG`,
 `SKW_EQ_DEBUG`, `SKW_FRAME_DEBUG`, `SKW_MASK_DEBUG`, `SKW_MODE_DEBUG`,
-`SKW_PROTO_DEBUG`, `SKW_PUMP_DEBUG`, `SKW_RX_DEBUG`, `SKW_RXLADDER_DEBUG`,
-`SKW_TURN_DEBUG`, `SKW_TX_DEBUG`, `SKW_TXA_DEBUG`.
+`SKW_PROTO_DEBUG`, `SKW_PUMP_DEBUG`, `SKW_REPLAY_DEBUG`, `SKW_RX_DEBUG`,
+`SKW_RXLADDER_DEBUG`, `SKW_TURN_DEBUG`, `SKW_TX_DEBUG`, `SKW_TXA_DEBUG`.
+
+`SKW_REPLAY_DEBUG` traces the peer-restart replay bookkeeping: how many
+message-end sequences are outstanding, how many messages are held
+unconfirmed and their size, and the ARQ's oldest in-flight sequence.
 
 ### Test-harness only
 

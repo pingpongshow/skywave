@@ -658,8 +658,8 @@ void LinkEngine::replayPipelineForFreshPeer() {
     // unconfirmed when we have not seen its last frame acknowledged,
     // which does NOT mean the peer failed to deliver it: a peer that
     // dies between handing the message to its application and getting
-    // our way is indistinguishable, from here, from one that never
-    // received it. Replaying is the only choice that cannot LOSE data,
+    // its acknowledgement back to us is indistinguishable, from here,
+    // from one that never received it. Replaying cannot LOSE data,
     // so the bytes go again and the size of the uncertainty is
     // published rather than hidden. An application that cares can
     // discard this many bytes from the front of what follows.

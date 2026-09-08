@@ -86,6 +86,7 @@ void ProtoTx::seal(uint8_t svcTag, std::span<const uint8_t> raw) {
   body.push_back(svcTag);
   body.insert(body.end(), raw.begin(), raw.end());
   Msg m;
+  m.rawBytes = raw.size();
   if (zstd_) {
     auto z = zstdPack(body);
     if (!z.empty() && z.size() + kCompressMinSaving <= body.size()) {
@@ -167,7 +168,7 @@ void ProtoTx::replayUnconfirmed() {
 
 size_t ProtoTx::unconfirmedBytes() const {
   size_t n = 0;
-  for (const auto& m : unconfirmed_) n += m.bytes.size();
+  for (const auto& m : unconfirmed_) n += m.rawBytes;
   return n;
 }
 
