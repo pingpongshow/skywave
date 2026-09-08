@@ -1896,6 +1896,16 @@ throughput lever (bandwidth-delay product currently caps a window at
 8 frames per round trip). Fixing the stall was the correctness issue;
 latency reduction is a separate, measurable piece of work.
 
+  RESOLVED 2026-09-07. The premise was wrong: most of the 12.4 s was
+  the ST2 world's store-and-forward shuttle described in the paragraph
+  above, not the decode ladder. Once the world drained TX audio in real
+  time and streamed half-duplex, the figure did not survive. What
+  remained of the throughput lever was addressed as separate measured
+  items: the NAK / burst-end decode-latency path, the turn minimum hold
+  (2 -> 4 RTTs, floor 6 s), and the HF fast-tier window (8 -> 16 at
+  M10+, which is where the "8 frames per round trip" cap actually
+  bit). The window is now 16 at M10+ and 4 at M7-M9 (PROTOCOL.md).
+
 ### CORRECTION: soak comparisons were confounded by persistent channel memory
 
 Several attributions recorded above were made on INVALID evidence and are
