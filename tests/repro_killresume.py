@@ -10,58 +10,50 @@ import os
 import signal
 import socket
 import sys
-import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from st3_hardware import Ctrl, list_devices, find, launch  # noqa: E402
 
 
-class EventTap:
-    """Second control connection that only collects EVT: notifications.
+class RecordingCtrl(Ctrl):
+    """Ctrl that KEEPS the EVT: lines instead of discarding them.
 
-    Ctrl.cmd() discards them, so the disconnect CAUSE - the one thing
-    that names why a station left a session - was invisible. This taps
-    the stream on its own socket and timestamps each event.
+    The modem delivers notifications to the control client, and
+    Ctrl.cmd() drops anything starting with EVT:/MON: as it hunts for a
+    command reply - so the disconnect CAUSE, the one field that says why
+    a station left a session, was thrown away. A second socket does not
+    help: notifications go to the command connection. Recording them
+    here does.
     """
 
-    def __init__(self, port, label):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
-        self.sock.settimeout(1.0)
+    def __init__(self, port, label, timeout=20.0):
+        super().__init__(port, timeout)
         self.label = label
         self.t0 = time.time()
         self.events = []
-        self.stop = False
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
 
-    def _run(self):
-        buf = b""
-        while not self.stop:
-            try:
-                chunk = self.sock.recv(65536)
-            except socket.timeout:
-                continue
-            except OSError:
-                return
-            if not chunk:
-                return
-            buf += chunk
-            while b"\n" in buf:
-                raw, buf = buf.split(b"\n", 1)
+    def cmd(self, line):
+        self.sock.sendall((line + "\n").encode())
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            while b"\n" in self.buf:
+                raw, self.buf = self.buf.split(b"\n", 1)
                 text = raw.decode(errors="replace").strip()
+                if text.startswith("MON:"):
+                    continue
                 if text.startswith("EVT:"):
                     self.events.append((time.time() - self.t0, text))
                     print(f"  EVT {self.label} "
                           f"[{time.time() - self.t0:6.0f}s] {text}",
                           flush=True)
-
-    def close(self):
-        self.stop = True
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+                    continue
+                return text
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise RuntimeError("control port closed")
+            self.buf += chunk
+        raise TimeoutError(f"no response to {line!r}")
 
 
 def st(ctrl, who):
@@ -86,9 +78,8 @@ def main():
     b_proc, _ = launch(binary, "K6XYZ", fwd, rev, 9210, 9211, logdir)
     try:
         time.sleep(3.0)
-        a = Ctrl(9201)
-        b = Ctrl(9211)
-        taps = [EventTap(9201, "A")]
+        a = RecordingCtrl(9201, "A")
+        b = RecordingCtrl(9211, "B")
         print("A LISTEN:", a.cmd("LISTEN ON"))
         print("B LISTEN:", b.cmd("LISTEN ON"))
         print("A CONNECT:", a.cmd("CONNECT K6XYZ"))
@@ -118,8 +109,7 @@ def main():
         time.sleep(1.5)
         b_proc, _ = launch(binary, "K6XYZ", fwd, rev, 9210, 9211, logdir)
         time.sleep(3.0)
-        b = Ctrl(9211)
-        taps.append(EventTap(9211, "B"))
+        b = RecordingCtrl(9211, "B")
         print("B relaunched, LISTEN:", b.cmd("LISTEN ON"))
         print("B STATE:", st(b, "B"))
 
@@ -156,8 +146,6 @@ def main():
         print("FAIL: no reconnect in 240 s")
         return 1
     finally:
-        for t in locals().get("taps", []):
-            t.close()
         for p in (a_proc, b_proc):
             try:
                 p.terminate()

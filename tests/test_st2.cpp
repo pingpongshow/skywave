@@ -199,4 +199,59 @@ TEST_CASE(st2_oneway_throughput_floor) {
   CHECK(w.b.dataAcc.size() >= 28672);
 }
 
+// Reconnect after the PEER DIES, in the simulated world - the same
+// scenario as the ST3 kill/resume gate, without the audio devices.
+// Destroying and re-emplacing B's ModemWorker reproduces a SIGKILL and
+// relaunch faithfully: all engine state is gone, while the audio rings
+// keep whatever signal was in flight.
+//
+// This guards a bug that SHIPPED. The survivor retransmits for ~110 s
+// after the peer dies; a station that cannot decode any of that opened
+// one capture per detected preamble and retired none (a capture only
+// retires at the end of a ladder whose last rung needs a 90 s window),
+// reaching 33-38 open captures and falling BEHIND REAL TIME. It then
+// heard the peer's CALLs and decoded none of them - deaf, not slow, and
+// the link could never be re-established. See maxPendingRx() in
+// worker.cpp and the ladder section of DSP.md.
+TEST_CASE(st2_peer_death_then_reconnect) {
+  World w(24.0, 7);
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  CHECK(w.waitState(w.a, "CONNECTED", 3000));
+  CHECK(w.waitState(w.b, "CONNECTED", 500));
+
+  // Get traffic moving so the peer dies mid-transfer, which is what
+  // leaves the survivor retransmitting into a station that cannot
+  // decode it.
+  std::vector<uint8_t> payload(4096);
+  for (size_t i = 0; i < payload.size(); ++i) {
+    payload[i] = uint8_t((i * 131 + 7) % 251);
+  }
+  ::send(w.a.dataFd, payload.data(), payload.size(), 0);
+  for (int i = 0; i < 4000 && w.b.dataAcc.size() < 512; ++i) w.round();
+  CHECK(w.b.dataAcc.size() >= 512);
+
+  // Kill and relaunch B.
+  w.b.w.reset();
+  w.b.w.emplace(w.b.cfg, w.clk, w.b.rxRing, w.b.txRing);
+  w.b.ctrlAcc.clear();
+  w.b.dataAcc.clear();
+  CHECK(w.cmd(w.b, "LISTEN ON") == "LISTEN ON");
+
+  // The survivor must notice the dead peer by itself and stand down.
+  CHECK(w.waitState(w.a, "LISTENING", 12000));
+
+  // And the link must come back. BOTH ends must agree it is up: the
+  // failure this guards against is not only "no reconnect" but the
+  // half-open state, where one end completes the handshake and the
+  // other has already given up.
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  const bool aUp = w.waitState(w.a, "CONNECTED", 8000);
+  const bool bUp = w.waitState(w.b, "CONNECTED", 1000);
+  std::printf("peer-death reconnect: A %s, B %s\n",
+              aUp ? "CONNECTED" : "NOT CONNECTED",
+              bUp ? "CONNECTED" : "NOT CONNECTED");
+  CHECK(aUp);
+  CHECK(bUp);
+}
+
 SKYTEST_MAIN
