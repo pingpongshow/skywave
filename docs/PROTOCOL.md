@@ -122,7 +122,11 @@ CONNECTED                              CONNECTED
 - optional: crypto KEX response
 
 `START_NAK` reasons: family mismatch, version mismatch, capability conflict,
-busy, policy refusal.
+busy, policy refusal, **resume-invalid**. The responder sends the reason it
+actually computed - it used to send `busy` for every refusal regardless,
+which made a refused connect undiagnosable from the calling end. Only
+`resume-invalid` is non-fatal: the caller falls back to a clean `START` on
+the same call (see "Reconnecting to a Peer That Lost Its Session").
 
 **ULTRA fallback**: `ULTRA` is opt-in on both ends and uses its own chirp
 span, so a non-ULTRA station will not even detect an ULTRA call. When
