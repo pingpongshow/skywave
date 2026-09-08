@@ -30,6 +30,21 @@
 | `test_crypto` | KEX vectors, AEAD round-trip, implicit nonce sequence, replay window, epoch rotation |
 | `test_voice` | codec framing, PLC behavior, mode-mapping table |
 
+The table above is the design-time list. `ctest` is the inventory of
+what actually exists; run it rather than reading this list to find out
+what is covered.
+
+### 1b. Docs conformance (`docs_floors`)
+
+`tests/check_docs_floors.py`, run by ctest, asserts that every OFDM
+floor published in WAVEFORM.md equals `kFloors` in
+`core/constants.hpp`. It exists because three NARROW rows had drifted
+from the code without anything noticing: a stale number in a markdown
+table looks exactly like a fresh one, and a floor entry is a
+measurement, so a wrong one silently mis-aims the AMC. Exits 77 (ctest
+SKIP) if it cannot parse either file, so a parser that needs updating
+does not masquerade as a floor regression.
+
 ### 2. PHY Conformance (bertool)
 
 For each family × mode × CCIR preset, bertool sweeps SNR and asserts the
