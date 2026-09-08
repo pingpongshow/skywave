@@ -1066,6 +1066,42 @@ doc was updated)*
   Command Line Tools 26.6 (clang 21.0.0) fixed both runtimes; the
   deferred sweeps then ran clean — ASan FULL suite 37/37, TSan
   `test_tcp` + `test_st2` pass, zero race reports.
+- **Kill/resume, first real run / 2026-09-07** — Registering
+  `tests/st3_killresume.py` with ctest (it had never been wired to
+  anything) exposed two defects in reconnect-after-peer-death. The
+  scenario: A and B connected, A sending, B SIGKILLed and relaunched
+  listening, A calls again.
+  1. **CAPTURE-BACKLOG DEAFNESS (FIXED)**. The survivor retransmits for
+     ~110 s after the peer dies. A station that cannot decode any of it
+     opens one capture per detected preamble and retires none - a
+     capture only retires at the end of a 7-rung ladder whose last rung
+     needs a 90 s window. Measured on the relaunched station:
+     33-38 open captures, the history buffer pinned at its full 94 s
+     (the trim must keep every open capture's start), and the front
+     capture gaining ~1 s of audio per 1.2 s of WALL CLOCK - the
+     receiver behind real time, because every capture ends in a 90 s
+     HARQ decode and only two decode attempts run per audio chunk. The
+     result is deafness, not slowness: the peer's CALLs were heard (the
+     block level showed signal throughout) and never decoded, and the
+     station transmitted NOTHING for the whole attempt (tx=0 samples
+     against 10.8M received). Fixed by capping the backlog at 8 and
+     evicting the OLDEST (`SKW_MAX_PENDING_RX`); a fresh preamble is
+     worth more than a capture that has already failed several rungs,
+     and the cap also bounds the history. After: backlog 8, the peer
+     answers 9 s into the calling attempt, 1.21M samples transmitted.
+     DSP.md now documents the ladder, which had no design write-up.
+  2. **HALF-OPEN HANDSHAKE (OPEN)**. With the deafness gone the gate
+     still fails, on a different and clearly separate defect. The two
+     ends disagree about whether a session exists:
+       t+9 s   A CALLING     B CONNECTING
+       t+19 s  A CONNECTING  B CONNECTING
+       t+30 s  A LISTENING   B CONNECTING   <- A gives up
+       t+36 s  A LISTENING   B CONNECTED    <- B completes anyway
+       t+156 s A LISTENING   B LISTENING    <- B finally times out
+     A abandons the session while waiting for START_ACK; B accepts and
+     sits in CONNECTED for two minutes against a peer that is idle and
+     listening. Nothing reconciles the disagreement from B's side except
+     its own inactivity timeout. Not diagnosed further.
 - **Release engineering / 2026-09-07** — Three gate defects found while
   running the v1.1.0 sequence, all of the same shape: a gate that
   reported success without producing evidence.

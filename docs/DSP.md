@@ -81,6 +81,45 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
 - `FLYWHEEL`: on lost pilots mid-frame, hold last CFO/timing for up to 8
   symbols before declaring frame loss (rides through short fades/impulses)
 
+### Capture Window Ladder
+
+A frame's length is not known until its self-describing header decodes,
+so the receiver cannot know how much audio a detected preamble needs.
+Each detection opens a **capture** at the preamble start, and the
+capture's window grows along a fixed ladder of baseband seconds until
+the engine accepts a frame:
+
+`2.5 → 5 → 10 → 20 → 34 → 60 → 90`
+
+The last rung exceeds the longest legal frame on air; the 60 and 90 s
+rungs exist for the CSS deep tier, where a MID or NARROW `M0` handshake
+frame runs 35–55 s. Two shortcuts retire a capture early:
+
+- **Burst-end finalization**: a PHY header survives payload failure and
+  states the burst's exact airtime, so once that much audio plus margin
+  exists the capture runs its final attempt on exactly that window and
+  retires. Without it, every rung past the burst's real end re-decodes
+  the same samples plus more trailing noise.
+- **Quiet try**: when the channel goes quiet between rungs, decode with
+  exactly the audio that exists rather than waiting for the next rung.
+
+Two bounds keep the ladder from consuming the receiver:
+
+- **Decode budget**: two decode attempts per audio chunk (~30 ms).
+  Draining a capture's whole ladder in one pass held the worker mutex
+  for 20+ s and stalled the control port.
+- **Backlog cap**: at most 8 open captures; a new detection evicts the
+  oldest (`SKW_MAX_PENDING_RX`). This bound is not an optimization. The
+  history buffer must retain every open capture's start, so an unbounded
+  backlog pins the full 94 s of history, and since each capture ends in
+  a 90 s-window HARQ decode the receiver falls **behind real time** and
+  goes deaf. Measured: after a dead peer's ~110 s of undecodable
+  retransmission a station held 33–38 open captures, gained 1 s of audio
+  per 1.2 s of wall clock, and heard but never decoded the peer's
+  subsequent calls — it transmitted nothing at all until the backlog
+  drained. A new preamble is worth more than a capture that has already
+  failed several rungs, which is why the eviction takes the oldest.
+
 ### Channel Estimation and Equalization
 
 - initial estimate: ZC symbol → per-carrier complex gain
