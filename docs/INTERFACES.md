@@ -90,6 +90,7 @@ gated feature from a typo.
 | `PROBE ON\|OFF` | probe-before-promote |
 | `MASKING ON\|OFF` | carrier masking |
 | `RESUME ON\|OFF` | session resume |
+| `ULTRA ON\|OFF` | permit the opt-in 2.7 kHz ULTRA family (`ultra_enable`); `FAMILY ULTRA` is refused while this is OFF |
 
 #### Status and Observability
 
