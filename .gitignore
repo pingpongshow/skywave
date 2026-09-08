@@ -5,3 +5,5 @@ build*/
 test-artifacts/
 compile_commands.json
 .cache/
+st3_*.log
+skywave-*.tar.gz

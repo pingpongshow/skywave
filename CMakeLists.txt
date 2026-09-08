@@ -247,17 +247,28 @@ if(BUILD_TESTS)
   endif()
   # ST3 (TESTING.md): two real processes over real/virtual audio devices.
   # Labeled `hardware` and excluded from default runs: ctest -L hardware.
+  option(SKW_HARDWARE_TESTS "Enable the ST3 real-audio-device gate" OFF)
   find_package(Python3 COMPONENTS Interpreter)
   if(Python3_FOUND)
     add_test(NAME st3_hardware
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/st3_hardware.py
                      --binary $<TARGET_FILE:skywave>)
+    # Gated by a CACHE OPTION, not $ENV{...}: the generator expression is
+    # evaluated when CMAKE CONFIGURES, so the previously documented
+    # `SKW_HARDWARE_TESTS=1 ctest -L hardware` silently ran NOTHING on a
+    # tree configured without the variable set - "Not Run (Disabled)",
+    # then "No tests were found!!!", and ctest still exited 0, so the
+    # release gate could be "run" without ever executing. An option is
+    # explicit, survives in the cache, and shows up in the build config.
+    # The script still exits 77 (SKIP_RETURN_CODE) when the loopback
+    # devices are absent, so enabling it on a machine without them
+    # SKIPS rather than fails.
     set_tests_properties(st3_hardware PROPERTIES
       LABELS "hardware"
       TIMEOUT 14400
       SKIP_RETURN_CODE 77
-      DISABLED $<NOT:$<BOOL:$ENV{SKW_HARDWARE_TESTS}>>)
+      DISABLED $<NOT:$<BOOL:${SKW_HARDWARE_TESTS}>>)
   endif()
   skw_test(test_ptt)
   skw_test(test_amc)

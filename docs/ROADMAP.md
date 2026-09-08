@@ -427,7 +427,9 @@ SIGPIPE'd the process (now SO_NOSIGPIPE/MSG_NOSIGNAL in TcpServer). Phase 5 exit
 (real/virtual audio devices - BlackHole/VB-Cable - two processes,
 independent clocks, ≥2 h zero-drop soak; ctest label `hardware`).
 ✓ ST3 smoke-verified 2026-07-29 (`tests/st3_hardware.py`, ctest
-`st3_hardware`, label `hardware`, enabled via `SKW_HARDWARE_TESTS=1`):
+`st3_hardware`, label `hardware`, enabled via the configure option
+`-DSKW_HARDWARE_TESTS=ON`; it was an env var until 2026-09-07, which
+never worked from `ctest` - see the release-readiness entry):
 two REAL `skywave` processes linked through BlackHole 2ch (forward) and
 VB-Cable (reverse) — each with its own audio clock and worker thread,
 driven exclusively through the TCP control/data ports. Connected in
@@ -3055,3 +3057,56 @@ The container-fill defect is real and now measured; the fix for it is
 not a bigger window but a way to fill a container without holding more
 frames unacknowledged — e.g. letting a container carry a retransmission
 alongside new segments, which the current pump does not do.
+
+## Release readiness pass — v1.0.0 (2026-09-07)
+
+Ran RELEASE.md's seven gates against the current tree rather than
+chasing another throughput lever. Results and the one real defect found.
+
+| gate | result |
+|---|---|
+| 1. Full suites, both flavors | **pass** — 40/40 plain, 40/40 crypto |
+| 2. Sanitizer sweeps | ASan in progress; UBSan/TSan builds configured with the CommandLineTools clang 21 the deviations log requires |
+| 3. Conformance sweeps | **pass after two floor corrections** (below) |
+| 4. ST3 hardware gate | **pass** — real devices, connected 19 s, byte-exact, M11 at 36 dB, 6 cycles 0 drops |
+| 5. Endurance soak | running (30 min, real devices) |
+| 6. Clean-prefix install | **pass** — staged binary reports `skywave 1.0.0`, docs installed |
+| 7. Docs refresh | this entry |
+
+### The defect gate 3 found
+
+Two conformance points failed, and neither was a regression — the
+ARCHIVED release CSVs record the same misses, so the floor tables have
+been optimistic since they were set:
+
+- **NARROW M9 AWGN**, floor −0.5 → **1.5**. At 200 trials the FER at
+  floor+1 is 14.5% against a ≤10% spec. 11 of 18 failures are HEADER
+  decodes: 13 carriers give the header codeword very little frequency
+  diversity.
+- **WIDE M11 fading**, floor 16.0 → **17.0**. 18.0% at floor+1 against
+  the 15% fading base, 8.0% at floor+3.
+
+bertool is deterministic, so the 40-trial sweep reproduces its numbers
+exactly on re-run; the 200-trial runs are what established the true
+values. Both entries feed the AMC, which was promoting into NARROW M9
+about 2 dB early and WIDE M11 about 1 dB early — correcting the tables
+makes the ladder honest on those rungs. All six sweeps now print
+"all points pass"; the M3 ramp still passes at 0.84/0.68 (the raised
+M11 floor lifts the genie oracle as well).
+
+### What a release still needs
+
+1. The sanitizer and endurance gates must finish clean.
+2. ~~The hardware gate could not be enabled from `ctest`.~~ FIXED: it is
+   now the configure option `-DSKW_HARDWARE_TESTS=ON` (a `DISABLED`
+   generator expression reads the environment when CMake configures, so
+   the documented `SKW_HARDWARE_TESTS=1 ctest -L hardware` reported
+   `Not Run (Disabled)` → `No tests were found!!!` and still exited 0 —
+   the gate could appear to pass while executing nothing). RELEASE.md
+   updated; `st3_killresume.py` still takes the env var for its own
+   direct invocation.
+3. The open items from this session's measurement rounds are all
+   throughput levers, none of them correctness: mid-tier container
+   starvation, goodput under a deep offered queue, and the soak's
+   delivery-gated feed window. None block a release; all are recorded
+   above with their measurements and their A/B knobs.

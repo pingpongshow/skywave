@@ -36,13 +36,25 @@ breaking wire changes, never for releases.
    build/bertool --band vhf-fm --trials 40 --csv docs/conformance/rel_vhf.csv
    ```
    Every sweep must print `== all points pass ==`.
-4. **ST3 hardware gate** (real/virtual audio devices):
+4. **ST3 hardware gate** (real/virtual audio devices). The gate is a
+   CONFIGURE-time option, not an environment variable — `ctest` cannot
+   enable a test that was configured `DISABLED`, and the old
+   `SKW_HARDWARE_TESTS=1 ctest -L hardware` form silently ran NOTHING
+   (`Not Run (Disabled)` → `No tests were found!!!`) while still exiting
+   0, so the gate could appear to pass without executing:
    ```
-   SKW_HARDWARE_TESTS=1 ctest --test-dir build -L hardware --output-on-failure
+   cmake -B build -DSKW_HARDWARE_TESTS=ON
+   ctest --test-dir build -L hardware --output-on-failure
+   ```
+   Without the loopback devices the script exits 77 and ctest reports a
+   SKIP. Equivalent direct invocation (useful when a build tree is
+   configured without the option):
+   ```
+   tests/st3_hardware.py --binary build/skywave
    ```
 5. **Endurance soak** (nightly-class, not per-commit):
    ```
-   SKW_HARDWARE_TESTS=1 SKW_ST3_SOAK=7200 ctest --test-dir build -L hardware
+   tests/st3_hardware.py --binary build/skywave --soak-sec 7200
    ```
 6. **Clean-prefix install**
    ```
