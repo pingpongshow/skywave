@@ -177,9 +177,16 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // MID
     {{-16.5, -14.0, -12.0, -9.0,
       -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5, 99.0}},
-    // NARROW
+    // NARROW. M9 RE-MEASURED 2026-09-07 (bertool --preset awgn, 200
+    // trials): -0.5 was optimistic by 2 dB - at floor+1 the FER is
+    // 14.5% against a <= 10% spec, and 11 of 18 failures are HEADER
+    // decodes, not payload (13 carriers give the header codeword very
+    // little frequency diversity). 10% falls at ~1.5 dB. The archived
+    // rel_awgn.csv shows the same miss (17.5% at 40 trials), so this
+    // entry has been optimistic since it was set, and the AMC has been
+    // promoting into M9 on NARROW about 2 dB early.
     {{-19.5, -17.5, -15.0, -12.0,
-      -15.0, -12.5, -10.0, -7.5, -3.5, -0.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
+      -15.0, -12.5, -10.0, -7.5, -3.5, 1.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,
       -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5, 99.0}},
@@ -207,8 +214,13 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // r1/2 16QAM under fading; M13 = kFadingNA like NARROW's. CSS
     // M2/M3 = kFadingNA: 1 ms delay spread is 2.4 of their chips and
     // the shallow spreading leaves a flat outage tail - ARQ territory)
+    // M11 RE-MEASURED 2026-09-07 (bertool --preset good, 200 trials):
+    // 16.0 was optimistic by ~1 dB - at floor+1 the FER is 18.0%
+    // against the 15% fading base, 8.0% at floor+3. 15% falls at
+    // ~17.5 dB. Also a long-standing miss (the archived release sweep
+    // fails the same point), not a regression.
     {{-3.0, 0.0, kFadingNA, kFadingNA,
-      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 16.0, 26.0, kFadingNA, kFadingNA}},
+      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 17.0, 26.0, kFadingNA, kFadingNA}},
     // MID
     {{-10.0, -7.0, -5.0, -3.0,
       -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5, kFadingNA}},
