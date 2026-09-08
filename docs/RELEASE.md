@@ -3,8 +3,9 @@
 Versioning: semantic, single source of truth in the top-level
 `CMakeLists.txt` `project(skywave VERSION x.y.z)`. `skywave --version`
 reports it (`SKW_VERSION`). Wire compatibility is governed separately by
-`kWireVersion` / `kProtocolVersion` (constants) — bump those ONLY on
-breaking wire changes, never for releases.
+`kWireVersion` (`core/constants.hpp`, PHY header) and
+`kProtocolVersion` (`link/handshake.hpp`, handshake) — bump those ONLY
+on breaking wire changes, never for releases. Both are 1.
 
 ## Gate sequence (all must pass, in order)
 
