@@ -1102,15 +1102,21 @@ doc was updated)*
      sits in CONNECTED for two minutes against a peer that is idle and
      listening. Nothing reconciles the disagreement from B's side except
      its own inactivity timeout.
-     FIRST HYPOTHESIS TESTED AND DISPROVED: that the response timeout
+     FIRST HYPOTHESIS TESTED AND INSUFFICIENT: that the response timeout
      ignores the peer's DECODE latency (only airtime is counted, and the
      capture ladder can hold a control frame 5-10 s past arrival). A 15 s
      peer-decode allowance in `armResponse` moved A's give-up from t+30 s
-     to t+33 s and left the half-open state exactly as it was - 14 s in
-     WaitStartAck against a 26 s armed timeout. The response timeout is
-     therefore NOT what ends the attempt; something above the FSM tears
-     the caller down. Reverted (95d78ec). Next place to look is the
-     engine's own session teardown, not the FSM's timers.
+     to t+33 s and left the half-open state exactly as it was, so the
+     allowance is not the fix and was reverted (95d78ec).
+     DO NOT READ MORE INTO THOSE NUMBERS THAN THEY CARRY. The timeline
+     comes from polling STATE over the control port, and the control port
+     is exactly what goes slow under decode load - the timestamps are
+     upper bounds with seconds of unknown skew, so "14 s in WaitStartAck
+     against a 26 s armed timeout" is NOT a sound disproof of the timer.
+     The harness has since been given an EVT: tap (a second control
+     connection that only collects notifications), because
+     `EVT:DISCONNECTED <reason>` names the cause directly and does not
+     depend on poll timing. Run that before theorising again.
 - **Release engineering / 2026-09-07** — Three gate defects found while
   running the v1.1.0 sequence, all of the same shape: a gate that
   reported success without producing evidence.
