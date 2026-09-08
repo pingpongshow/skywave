@@ -1090,7 +1090,32 @@ doc was updated)*
      and the cap also bounds the history. After: backlog 8, the peer
      answers 9 s into the calling attempt, 1.21M samples transmitted.
      DSP.md now documents the ladder, which had no design write-up.
-  2. **HALF-OPEN HANDSHAKE (OPEN)**. With the deafness gone the gate
+  2. **HALF-OPEN HANDSHAKE — ROOT CAUSE FOUND AND FIXED.** It is a
+     protocol violation, not a timing problem. A restarted station
+     cannot honour its peer's resume token and correctly refuses the
+     RESUME_REQ with `StartNak{ResumeInvalid}` — the one refusal
+     frame.hpp and PROTOCOL.md both call "never a session failure; the
+     initiator falls back to a clean START in place". That fallback was
+     gated on `sentResumeReq_`, WHICH THE START RETRY PATH CLEARS, and a
+     control frame can sit 10-20 s in the capture ladder, so the NAK
+     routinely arrived after a retry had moved on: guard false, NAK fell
+     through to `rxStartNak`, caller tore down as a hard refusal. The
+     caller now acts on the reason alone (an unsolicited ResumeInvalid
+     costs one extra START, which the responder de-duplicates).
+     Measured: RECONNECTED after 35 s, both ends CONNECTED at the same
+     moment, where the scenario had never once reconnected.
+     TWO OBSERVABILITY HOLES HID IT and are fixed: (a) the responder's
+     `SendStartNak` hardcoded `StartNakReason::Busy`, discarding what
+     `evaluateStart` computed — six defined reasons, one transmitted, so
+     every refusal looked the same on the wire; (b) `EVT:DISCONNECTED`
+     was gated on having reached Connected, so a FAILED ATTEMPT reported
+     no cause at all. Attempts now report NO_ANSWER / NO_START_ACK /
+     REFUSED / TIMEOUT (INTERFACES.md), and the caller logs the refusal
+     reason. Diagnosis took two wrong turns worth remembering: a
+     peer-decode allowance in the handshake timeout (measured, rejected)
+     and an overstated disproof built on control-port poll timestamps,
+     which are exactly what goes slow under decode load.
+     ORIGINAL SYMPTOM, for the record: With the deafness gone the gate
      still fails, on a different and clearly separate defect. The two
      ends disagree about whether a session exists:
        t+9 s   A CALLING     B CONNECTING
