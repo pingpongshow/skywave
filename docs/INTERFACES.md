@@ -163,6 +163,7 @@ EVT:MODE <Mx> <net_bps>
 EVT:SNR <local_db> <remote_db|->
 EVT:BUSY <0|1>
 EVT:TXCOMPLETE
+EVT:STREAM_REPLAY <bytes>    # re-sent after a peer restart; see below
 EVT:FILE_RX <name> <size> <crc32ok>
 EVT:FILE_ERROR <name> <reason>
 EVT:VOICE <state>
@@ -184,6 +185,14 @@ that its call had failed and with no way to tell "nobody answered" from
 | `NO_START_ACK` | the peer answered the CALL but never acknowledged the START |
 | `REFUSED` | the peer rejected the START (version, family, busy, policy) |
 | `TIMEOUT` | answered a CALL, the peer's START never arrived |
+
+`EVT:STREAM_REPLAY <bytes>` is emitted when the peer restarted and could
+not honour a session-resume token. The sender re-sent that many bytes
+from the last message boundary the dead peer had acknowledged, so
+delivery for those bytes is AT-LEAST-ONCE: discard them from the front
+of what follows if repeats matter to you, or ignore the event if your
+consumer is idempotent. See PROTOCOL.md, "Reconnecting to a Peer That
+Lost Its Session".
 
 ```text
 EVT:BROADCAST <src> <hex_payload>

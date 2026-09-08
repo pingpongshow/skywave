@@ -139,8 +139,36 @@ std::optional<ProtoSegment> ProtoTx::nextSegment(size_t budget, double now) {
   s.bytes.assign(m.bytes.begin() + long(m.off),
                  m.bytes.begin() + long(m.off + n));
   m.off += n;
-  if (last) msgs_.pop_front();
+  if (last) {
+    // Handed out in full, but NOT yet known to have arrived. Hold it,
+    // rewound, until the ARQ confirms it (or a fresh peer needs it
+    // replayed). See the header for why this is message-granular.
+    Msg done = std::move(msgs_.front());
+    msgs_.pop_front();
+    done.off = 0;
+    unconfirmed_.push_back(std::move(done));
+  }
   return s;
+}
+
+void ProtoTx::confirmMessages(size_t n) {
+  while (n-- > 0 && !unconfirmed_.empty()) unconfirmed_.pop_front();
+}
+
+void ProtoTx::replayUnconfirmed() {
+  // The message at the head of msgs_ is part-way out; its earlier
+  // fragments went to a peer that no longer exists, so it restarts too.
+  if (!msgs_.empty()) msgs_.front().off = 0;
+  while (!unconfirmed_.empty()) {
+    msgs_.push_front(std::move(unconfirmed_.back()));
+    unconfirmed_.pop_back();
+  }
+}
+
+size_t ProtoTx::unconfirmedBytes() const {
+  size_t n = 0;
+  for (const auto& m : unconfirmed_) n += m.bytes.size();
+  return n;
 }
 
 size_t ProtoTx::backlogBytes() const {
@@ -152,6 +180,7 @@ size_t ProtoTx::backlogBytes() const {
 void ProtoTx::reset() {
   coalesce_.clear();
   msgs_.clear();
+  unconfirmed_.clear();
   deadline_ = 0.0;
 }
 

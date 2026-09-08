@@ -314,6 +314,45 @@ airtime, and a lost tail-flush ACK would stall the sender for the
 batch-scaled timeout (observed as a 50 s data freeze in the real-device
 endurance soak).
 
+### Reconnecting to a Peer That Lost Its Session
+
+Session resume restores a dropped session in place: the token, the ARQ
+position and any file checkpoint all survive, and the byte stream
+continues exactly. That requires the peer to still hold the session.
+
+A peer that **restarted** holds nothing. It cannot honour the token, so
+it refuses the `RESUME_REQ` with `START_NAK{ResumeInvalid}` and the
+caller falls back to a clean `START` on the same call. `ResumeInvalid`
+is never fatal — treating it as a hard refusal is what used to make
+reconnect-after-peer-death impossible.
+
+What happens to the data already queued matters, and the guarantee
+changes:
+
+- **Nothing is lost.** The sender re-sends from the last coalesced
+  message the dead peer had fully acknowledged. It restarts at a
+  MESSAGE boundary, never at an ARQ sequence boundary — a fresh peer
+  has an empty assembly buffer, so a more-fragments continuation whose
+  head it never saw would be dropped as malformed.
+- **Delivery becomes at-least-once**, bounded by one message. A peer
+  that dies between handing a message to its application and getting
+  its acknowledgement back to us is indistinguishable, from the
+  sender's side, from one that never received it. Replaying is the only
+  choice that cannot lose data, so those bytes go again.
+- **The uncertainty is published, not hidden.** The sender emits
+  `EVT:STREAM_REPLAY <bytes>` naming exactly how many bytes it re-sent.
+  An application that cannot tolerate a repeat discards that many bytes
+  from the front of what follows; one that is idempotent ignores it.
+
+Exactly-once across a peer restart is not achievable by any protocol
+against a peer that keeps no state — it is the two-generals problem.
+The design choice here is to prefer a bounded, reported repeat over
+silent loss.
+
+File transfers are not covered by stream replay: they have their own
+checkpoint/resume keyed to a session the peer no longer has, so an
+active transfer aborts with `EVT:FILE_ERROR <name> peer-restart`.
+
 ### Turn-Taking
 
 Negotiated via `CAP_TURN_SCHED` (both peers must advertise it; a session

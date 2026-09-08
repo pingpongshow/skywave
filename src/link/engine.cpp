@@ -616,6 +616,65 @@ std::array<uint8_t, 8> LinkEngine::mintToken(double now) {
   return t;
 }
 
+void LinkEngine::confirmDeliveredMessages() {
+  static const bool dbg = getenv("SKW_REPLAY_DEBUG") != nullptr;
+  if (dbg && lastNow_ - replayDbgAt_ > 5.0) {
+    replayDbgAt_ = lastNow_;
+    const auto o = arqTx_.oldestInFlight();
+    fprintf(stderr,
+            "%s replay t=%.0f ends=%zu unconf=%zu/%zuB oldest=%d "
+            "inflight=%zu\n",
+            cfg_.policy.ownCall.c_str(), lastNow_, msgEndSeq_.size(),
+            protoTx_.unconfirmedMessages(), protoTx_.unconfirmedBytes(),
+            o ? int(*o) : -1, arqTx_.inFlight());
+  }
+  if (msgEndSeq_.empty()) return;
+
+  // Everything strictly below the oldest still-pending sequence has been
+  // acknowledged contiguously, which is exactly the prefix the peer's
+  // ARQ delivered in order to its proto layer. Nothing pending at all
+  // means everything sent is acknowledged.
+  const auto oldest = arqTx_.oldestInFlight();
+  size_t n = 0;
+  while (!msgEndSeq_.empty()) {
+    if (oldest && int16_t(uint16_t(msgEndSeq_.front() - *oldest)) >= 0) break;
+    msgEndSeq_.pop_front();
+    ++n;
+  }
+  if (n) protoTx_.confirmMessages(n);
+}
+
+void LinkEngine::replayPipelineForFreshPeer() {
+  // The peer restarted: it has no assembly buffer and no delivered
+  // prefix beyond the messages it fully acknowledged before it died.
+  // Rewind to that boundary instead of dropping the pipeline, which is
+  // what used to happen and cost the application every byte it had
+  // handed us but we had not yet got acknowledged.
+  const size_t replayed = protoTx_.unconfirmedBytes();
+  protoTx_.replayUnconfirmed();
+  msgEndSeq_.clear();
+  if (replayed) {
+    // AT-LEAST-ONCE, and the application is told so. A message is
+    // unconfirmed when we have not seen its last frame acknowledged,
+    // which does NOT mean the peer failed to deliver it: a peer that
+    // dies between handing the message to its application and getting
+    // our way is indistinguishable, from here, from one that never
+    // received it. Replaying is the only choice that cannot LOSE data,
+    // so the bytes go again and the size of the uncertainty is
+    // published rather than hidden. An application that cares can
+    // discard this many bytes from the front of what follows.
+    events_.push_back("EVT:STREAM_REPLAY " + std::to_string(replayed));
+  }
+  protoRx_.abortMessage();
+  if (fileTx_.active()) {
+    // File transfer has its own checkpoint/resume mechanism keyed to a
+    // session the peer no longer has; stream replay does not cover it.
+    events_.push_back("EVT:FILE_ERROR " + fileTx_.name() + " peer-restart");
+    fileTx_.abort();
+  }
+  pausedForResume_ = false;
+}
+
 void LinkEngine::discardPausedPipeline() {
   protoTx_.reset();
   protoRx_.abortMessage();
@@ -1191,7 +1250,17 @@ void LinkEngine::drainFsmActions(double now) {
           resuming_ = false;
           pausedForResume_ = false;
         } else {
-          if (pausedForResume_) discardPausedPipeline();
+          if (pausedForResume_) {
+            // Same peer, fresh session: it restarted (or its resume
+            // token expired), so re-send from the last message boundary
+            // it acknowledged. A DIFFERENT peer must never be handed
+            // the old one's queued data.
+            if (remoteCall_ == resumeCtx_.remoteCall) {
+              replayPipelineForFreshPeer();
+            } else {
+              discardPausedPipeline();
+            }
+          }
           resumed_ = false;
           const int w = macWindow(mode_);
           // Deep-tier sessions live at ~50% per-frame FER by design:
@@ -1382,6 +1451,9 @@ void LinkEngine::pumpData(double now) {
     stored.insert(stored.end(), seg->bytes.begin(), seg->bytes.end());
     auto seq = arqTx_.send(std::move(stored), now);
     if (!seq) return;
+    // Last fragment of a message: remember where it ends so the replay
+    // copy can be released once the peer has acknowledged that far.
+    if (!(seg->flags & kFlagMoreFragments)) msgEndSeq_.push_back(*seq);
     static const bool protoDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
       if (protoDbg) {
       fprintf(stderr, "%s txDATA seq=%u flags=%02x len=%zu mode=%d\n",
@@ -1854,6 +1926,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     ctrlWaitStart_ = -1.0;
   }
   arqTx_.setExtraDelay(txQueueSec_);
+  confirmDeliveredMessages();
   fsm_.tick(now);
   drainFsmActions(now);
   arqTx_.tick(now);
@@ -3033,7 +3106,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         // peer kept nothing to continue from.
         sentResumeReq_ = false;
         resumeCtx_.valid = false;
-        discardPausedPipeline();
+        replayPipelineForFreshPeer();
         applyChanMemSeed(remoteCall_, now);
         StartBody s = makeStart(cfg_.policy, lastCallAck_, lastRxQuality_);
         sessionCaps_ = s.caps;

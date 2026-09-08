@@ -91,6 +91,27 @@ class ProtoTx {
   bool idle() const { return coalesce_.empty() && msgs_.empty(); }
   void reset();
 
+  // --- replay across a peer that lost its session state -------------
+  // A message stays here from the moment its last fragment is handed
+  // out until the ARQ confirms every frame of it was acknowledged. The
+  // set is bounded by the ARQ window (the engine only pulls a segment
+  // when the window has room), so this is a handful of KiB.
+  //
+  // It exists because a peer that RESTARTS keeps nothing: it cannot
+  // honour a resume token, and the session that follows is a fresh one
+  // whose receiver has no assembly buffer and no delivered prefix. The
+  // only bytes it can be assumed to have taken are those in messages
+  // FULLY acknowledged before it died - head-of-line assembly means a
+  // partially acknowledged message was never delivered to anyone.
+  // Replay therefore restarts at a MESSAGE boundary, never at an ARQ
+  // sequence boundary: resuming mid-message would hand the fresh peer
+  // a more-fragments continuation whose head it never saw, and the
+  // whole chain would be dropped as malformed.
+  void confirmMessages(size_t n);
+  void replayUnconfirmed();
+  size_t unconfirmedMessages() const { return unconfirmed_.size(); }
+  size_t unconfirmedBytes() const;
+
  private:
   void maybeSeal(double now);
   void seal(uint8_t svcTag, std::span<const uint8_t> raw);
@@ -105,6 +126,7 @@ class ProtoTx {
     size_t off = 0;
   };
   std::deque<Msg> msgs_;
+  std::deque<Msg> unconfirmed_;
 };
 
 // --- RX side ---------------------------------------------------------------

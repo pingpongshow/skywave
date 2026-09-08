@@ -321,6 +321,18 @@ class LinkEngine {
   // the implementation transmitted one, which makes a refused connect
   // undiagnosable from the calling end.
   StartNakReason pendingNakReason_ = StartNakReason::Busy;
+  // ARQ sequence of the LAST fragment of each proto message handed to
+  // the ARQ, oldest first. When the ARQ's contiguous acknowledged point
+  // passes one, that whole message reached the peer and ProtoTx can
+  // drop its replay copy.
+  std::deque<uint16_t> msgEndSeq_;
+  double replayDbgAt_ = 0.0;
+  // Confirm delivered messages and release their replay copies.
+  void confirmDeliveredMessages();
+  // A peer that RESTARTED kept nothing: re-send from the last message
+  // boundary it is known to have taken, rather than discarding the
+  // pipeline (which loses every byte the app had already handed us).
+  void replayPipelineForFreshPeer();
   double deepIdleSec_ = 120.0;  // idle window for CSS-mode sessions
   int dataSinceAck_ = 0;        // ACK batching (M13+)
   double lastDataRxAt_ = 0.0;

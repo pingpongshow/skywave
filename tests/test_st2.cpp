@@ -225,19 +225,34 @@ TEST_CASE(st2_peer_death_then_reconnect) {
   // Get traffic moving so the peer dies mid-transfer, which is what
   // leaves the survivor retransmitting into a station that cannot
   // decode it.
-  std::vector<uint8_t> payload(4096);
-  for (size_t i = 0; i < payload.size(); ++i) {
-    payload[i] = uint8_t((i * 131 + 7) % 251);
+  // Big enough that the kill lands MID-transfer: at 4096 B the whole
+  // payload arrived before the kill and the continuity assertion below
+  // was vacuous.
+  // NON-PERIODIC on purpose. The obvious (i*131+7)%251 pattern repeats
+  // every 251 bytes, so the divergence locator below matched the wrong
+  // offset and reported a replay restart at 0 that never happened.
+  std::vector<uint8_t> payload(32768);
+  {
+    uint64_t st = 0x9E3779B97F4A7C15ull;
+    for (size_t i = 0; i < payload.size(); ++i) {
+      st ^= st << 13;
+      st ^= st >> 7;
+      st ^= st << 17;
+      payload[i] = uint8_t(st >> 32);
+    }
   }
   ::send(w.a.dataFd, payload.data(), payload.size(), 0);
-  for (int i = 0; i < 4000 && w.b.dataAcc.size() < 512; ++i) w.round();
-  CHECK(w.b.dataAcc.size() >= 512);
+  for (int i = 0; i < 8000 && w.b.dataAcc.size() < 4096; ++i) w.round();
+  CHECK(w.b.dataAcc.size() >= 4096);
+  CHECK(w.b.dataAcc.size() < payload.size());  // the kill must interrupt
+  const size_t deliveredBeforeKill = w.b.dataAcc.size();
 
-  // Kill and relaunch B.
+  // Kill and relaunch B. dataAcc is deliberately NOT cleared: the whole
+  // point is that what arrives across BOTH lifetimes concatenates to
+  // the original stream, with nothing lost and nothing repeated.
   w.b.w.reset();
   w.b.w.emplace(w.b.cfg, w.clk, w.b.rxRing, w.b.txRing);
   w.b.ctrlAcc.clear();
-  w.b.dataAcc.clear();
   CHECK(w.cmd(w.b, "LISTEN ON") == "LISTEN ON");
 
   // The survivor must notice the dead peer by itself and stand down.
@@ -255,6 +270,62 @@ TEST_CASE(st2_peer_death_then_reconnect) {
               bUp ? "CONNECTED" : "NOT CONNECTED");
   CHECK(aUp);
   CHECK(bUp);
+
+  // DATA CONTINUITY. The application handed the modem 32768 bytes once.
+  // A peer that restarts keeps nothing, so the sender re-sends from the
+  // last MESSAGE boundary that peer acknowledged - not dropping the
+  // pipeline (which loses every byte not yet acknowledged) and not
+  // resuming mid-message (which would hand the fresh peer a fragment
+  // chain with no head).
+  //
+  // The contract is AT-LEAST-ONCE, and it cannot be better. A peer that
+  // dies between delivering a message to its application and getting
+  // its acknowledgement to us is, from here, indistinguishable from one
+  // that never received it; replaying is the only choice that cannot
+  // LOSE data. So: NO byte may be lost, and any repetition is bounded
+  // by one message and reported in EVT:STREAM_REPLAY.
+  // Run until the payload's own TAIL has arrived. Counting bytes is not
+  // enough: a replayed message means more bytes cross the link than the
+  // application submitted, so a length test stops short of the end.
+  auto tailArrived = [&] {
+    return w.b.dataAcc.size() >= 64 &&
+           std::memcmp(w.b.dataAcc.data() + w.b.dataAcc.size() - 64,
+                       payload.data() + payload.size() - 64, 64) == 0;
+  };
+  for (int i = 0; i < 30000 && !tailArrived(); ++i) w.round();
+
+  // Everything before the reconnect must be an exact prefix.
+  const size_t pre = std::min(deliveredBeforeKill, w.b.dataAcc.size());
+  CHECK(std::memcmp(w.b.dataAcc.data(), payload.data(), pre) == 0);
+
+  // Find where the replayed stream resumed, by matching a 64-byte run
+  // (the payload is non-periodic, so this is unambiguous).
+  size_t resume = payload.size();
+  if (deliveredBeforeKill + 64 <= w.b.dataAcc.size()) {
+    for (size_t j = 0; j + 64 <= payload.size(); ++j) {
+      if (std::memcmp(w.b.dataAcc.data() + deliveredBeforeKill,
+                      payload.data() + j, 64) == 0) {
+        resume = j;
+        break;
+      }
+    }
+  }
+  const size_t repeated =
+      resume <= deliveredBeforeKill ? deliveredBeforeKill - resume : 0;
+  std::printf("peer-death continuity: %zu B in, resumed at %zu (%zu "
+              "delivered before the kill) -> %zu B repeated\n",
+              w.b.dataAcc.size(), resume, deliveredBeforeKill, repeated);
+
+  // NO LOSS: the replay must not skip past what was delivered.
+  CHECK(resume <= deliveredBeforeKill);
+  // BOUNDED REPETITION: at most one coalesced message.
+  CHECK(repeated <= 8192);
+  // And the whole payload must actually arrive: prefix + the replayed
+  // remainder reconstructs it byte for byte.
+  const size_t tail = w.b.dataAcc.size() - deliveredBeforeKill;
+  CHECK_EQ(resume + tail, payload.size());
+  CHECK(std::memcmp(w.b.dataAcc.data() + deliveredBeforeKill,
+                    payload.data() + resume, tail) == 0);
 }
 
 SKYTEST_MAIN

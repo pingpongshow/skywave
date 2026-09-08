@@ -125,12 +125,14 @@ on breaking wire changes, never for releases. Both are 1.
    gate 1, so a floor edit that skips the doc fails the suite. Nothing
    else in the docs is machine-checked, so the rest is a read.
 
-   **BLOCKER (open): the repository has no `LICENSE` file.** Skywave's
-   own terms of use and redistribution are therefore undefined, which
-   blocks any public release regardless of how the other gates read.
-   This is the owner's decision to make, not a technical one, so it is
-   recorded here rather than resolved: pick the license, add `LICENSE`
-   at the repository root, and reference it from README.md.
+   **BLOCKER (open, DELIBERATE HOLD): the repository has no `LICENSE`
+   file.** Skywave's own terms of use and redistribution are therefore
+   undefined, which blocks any PUBLIC release regardless of how the
+   other gates read. This is the owner's decision, and as of
+   2026-09-08 the owner has chosen to hold rather than pick one - it is
+   not an oversight and does not need re-raising. To resolve: add
+   `LICENSE` at the repository root and reference it from README.md.
+   Internal use and tagging are unaffected.
 
    Note also that a default build links Codec2, which is LGPL-2.1.
    Dynamic linking against the system package (what the default build
