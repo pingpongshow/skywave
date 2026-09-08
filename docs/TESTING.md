@@ -12,7 +12,7 @@
 
 ## Test Layers
 
-### 1. Unit (GoogleTest, per module)
+### 1. Unit (`tests/skytest.hpp`, per module)
 
 | Suite | Covers |
 |---|---|

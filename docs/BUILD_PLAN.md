@@ -17,12 +17,12 @@ authority.
 | C++ | C++20 (Clang 14+, GCC 11+, Apple Clang 14+) | no exceptions across the audio callback; RTTI allowed elsewhere |
 | CMake | 3.20+ | single top-level project |
 | PortAudio | required | audio I/O |
-| KissFFT | vendored | mixed-radix FFT (320-point at the 12 kHz domain) |
+| FFT | in-tree | mixed-radix (factors 2/3/5), 320-point at the 12 kHz domain. KissFFT was planned; the in-tree version replaced it (ROADMAP deviation 1.1). |
 | zstd | required | compression |
 | libsodium | optional (`ENABLE_CRYPTO`) | X25519/HKDF/AES-GCM |
 | Codec2 | optional (`ENABLE_VOICE`, default ON) | voice |
 | SDL2 + Dear ImGui | optional (`ENABLE_GUI`, default ON) | ImGui vendored |
-| GoogleTest | vendored, tests only | |
+| Test harness | in-tree, tests only | `tests/skytest.hpp`. GoogleTest was planned and never vendored (ROADMAP deviation 0.1). |
 
 ### Build Options
 
@@ -43,7 +43,8 @@ Output binary: `build/skywave`. Tools: `build/chansim`, `build/bertool`,
 **Goal:** empty-but-running program with the project's bones.
 
 - repo layout per [ARCHITECTURE.md](ARCHITECTURE.md)
-- CMake with all options, vendored KissFFT/ImGui/GoogleTest
+- CMake with all options; Dear ImGui is the only vendored tree (FFT and
+  test harness are in-tree - see the dependency table)
 - `core/`: INI config (full schema from [CONFIGURATION.md](CONFIGURATION.md)),
   leveled logging, monotonic clock abstraction
 - `io/audio`: PortAudio duplex stream, device listing, WAV read/write,

@@ -250,7 +250,11 @@ queue) while the channel is busy.
 
 - internal sample type: `float` (32-bit); accumulators `double` where drift
   matters (NCOs, energy estimators)
-- FFT: KissFFT (vendored, mixed-radix 320 = 2^6·5 at 12 kHz domain)
+- FFT: in-tree mixed-radix (factors 2/3/5), 320 = 2^6·5 at the 12 kHz
+  domain. KissFFT was planned and never vendored - our sizes are smooth
+  and the CPU budget is trivial; verified against a naive
+  double-precision DFT to <2e-6 relative error (ROADMAP deviation 1.1).
+  Skywave vendors no DSP code.
 - all buffers symbol-aligned; symbol hop = 320 + CP/4 samples at 12 kHz
   (CP samples divide by 4 exactly: 96/192/288 → 24/48/72)
 - fixed seeds for all PRN sequences (whitener, spreading phases, pilot

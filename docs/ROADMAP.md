@@ -865,6 +865,13 @@ doc was updated)*
   dependency table note applies.
 - **0.1 / 2026-07-28** — KissFFT and Dear ImGui not yet vendored (not
   needed until steps 1.1 / 5.6); will vendor when their steps start.
+  SETTLED 2026-09-07: Dear ImGui 1.91.5 was vendored at 5.6 and is the
+  only vendored tree in the project; KissFFT never was (see the 1.1
+  deviation below). DSP.md, BUILD_PLAN.md and TESTING.md had gone on
+  claiming both plus GoogleTest as vendored dependencies long after
+  neither was true — corrected, and the whole set is now enumerated in
+  THIRD_PARTY.md, which release gate 7 requires and which did not
+  previously exist.
 - **0.3 / 2026-07-28** — Config::save() bug found by
   `config_unknown_keys_preserved`: unknown keys in unknown sections were
   dropped on save; fixed by appending foreign sections after known ones.
