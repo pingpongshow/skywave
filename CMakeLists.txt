@@ -295,7 +295,7 @@ if(BUILD_TESTS)
                      --binary $<TARGET_FILE:skywave>)
     set_tests_properties(st3_killresume PROPERTIES
       LABELS "hardware"
-      TIMEOUT 1800
+      TIMEOUT 6000
       SKIP_RETURN_CODE 77
       RESOURCE_LOCK "loopback_audio"
       ENVIRONMENT "SKW_HARDWARE_TESTS=1"

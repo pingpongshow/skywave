@@ -63,7 +63,12 @@ def main():
         got = b""
         kills = 0
         t0 = time.time()
-        deadline = t0 + 1800
+        # Budget: each cycle costs the survivor ~110 s to notice the
+        # dead peer (the ARQ retry budget, not slack) plus the reconnect
+        # and the remaining transfer, so five SIGKILLs need well over
+        # half an hour. 1800 s cut the run off mid-cycle and reported a
+        # ctest Timeout that looked like a modem failure.
+        deadline = t0 + 5400
         next_kill_at = len(got) + 2048
         while len(got) < len(payload) and time.time() < deadline:
             try:
