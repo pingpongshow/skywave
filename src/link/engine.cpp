@@ -1104,7 +1104,7 @@ void LinkEngine::drainFsmActions(double now) {
       }
       case FsmAction::SendStartNak:
         queueControl(LinkType::StartNak,
-                     StartNakBody{StartNakReason::Busy}.pack(), hsSig(),
+                     StartNakBody{pendingNakReason_}.pack(), hsSig(),
                      hsMode());
         break;
       case FsmAction::SendDisc:
@@ -2946,6 +2946,8 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       applyChanMemSeed(lastCall_.srcCall, now);
       auto r = evaluateStart(cfg_.policy, lastCall_, *start, q);
       bool ok = std::holds_alternative<StartAckBody>(r);
+      pendingNakReason_ = ok ? StartNakReason::Busy
+                             : std::get<StartNakBody>(r).reason;
 #ifdef SKW_HAVE_CRYPTO
       cryptoOn_ = false;
       pendingKexResponse_.clear();
@@ -3011,8 +3013,21 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     }
     case LinkType::StartNak: {
       auto nak = StartNakBody::parse(f.body);
-      if (nak && nak->reason == StartNakReason::ResumeInvalid &&
-          sentResumeReq_) {
+      // ResumeInvalid is NEVER fatal (frame.hpp, PROTOCOL.md): the peer
+      // kept nothing to continue from, so fall back to a clean START on
+      // this same call. This used to be gated on sentResumeReq_, which
+      // the START RETRY PATH CLEARS - so when the NAK for a RESUME_REQ
+      // arrived after a retry had already moved on (and it does: a
+      // control frame can sit 10-20 s in the capture ladder), the guard
+      // was false, the NAK fell through to rxStartNak, and the caller
+      // tore the attempt down as a hard refusal. That is the whole
+      // reconnect-after-peer-death failure: a station that restarts
+      // cannot honour the token, correctly says so, and the caller
+      // treats "your token is stale" as "go away". Acting on the reason
+      // alone is also the safer rule - an unsolicited ResumeInvalid
+      // costs one extra START, which the responder already de-duplicates
+      // (lastStartAckBody_ re-ack).
+      if (nak && nak->reason == StartNakReason::ResumeInvalid) {
         // Peer rejected the token: fall back to a clean START in place
         // (never a session failure). The paused pipeline is dead - the
         // peer kept nothing to continue from.
@@ -3025,6 +3040,25 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         protoTx_.setZstd((sessionCaps_ & kCapZstd) != 0);
         queueControl(LinkType::Start, s.pack(), hsSig(), hsMode());
         return;  // FSM stays in WaitStartAck for the real START_ACK
+      }
+      // A refused connect is one of the few failures an operator can
+      // actually act on (wrong family, wrong band plan, a peer that
+      // will not talk to us), so name it rather than leaving the
+      // station to fall silently back to LISTENING.
+      if (nak) {
+        const char* why = "unknown";
+        switch (nak->reason) {
+          case StartNakReason::FamilyMismatch: why = "family mismatch"; break;
+          case StartNakReason::VersionMismatch: why = "version mismatch"; break;
+          case StartNakReason::CapabilityConflict:
+            why = "capability conflict";
+            break;
+          case StartNakReason::Busy: why = "peer busy"; break;
+          case StartNakReason::PolicyRefusal: why = "policy refusal"; break;
+          case StartNakReason::ResumeInvalid: why = "resume token invalid"; break;
+        }
+        SKW_WARN("peer refused our START: %s (reason %u)", why,
+                 unsigned(nak->reason));
       }
       fsm_.rxStartNak(now);
       break;

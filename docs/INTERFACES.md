@@ -158,7 +158,7 @@ GUI and companion app consume this form.
 ```text
 EVT:STATE <IDLE|LISTENING|CALLING|CONNECTING|CONNECTED|DISCONNECTING>
 EVT:CONNECTED <remote_call> <family> <initial_mode>
-EVT:DISCONNECTED <reason>
+EVT:DISCONNECTED <reason>   # see the reason table below
 EVT:MODE <Mx> <net_bps>
 EVT:SNR <local_db> <remote_db|->
 EVT:BUSY <0|1>
@@ -167,6 +167,25 @@ EVT:FILE_RX <name> <size> <crc32ok>
 EVT:FILE_ERROR <name> <reason>
 EVT:VOICE <state>
 MON:<src>:<dst|*>:<frame_type>:<family>:<Mx>:<hex_payload>
+```
+
+`EVT:DISCONNECTED` reasons. A session that reached `CONNECTED` reports
+`NORMAL` (either end asked) or `LINK` (anything else), unchanged. A
+FAILED ATTEMPT — one that never reached `CONNECTED` — used to report
+nothing at all, leaving an application to infer from `EVT:STATE` alone
+that its call had failed and with no way to tell "nobody answered" from
+"the peer refused". Those now report as well:
+
+| Reason | Meaning |
+|---|---|
+| `NORMAL` | either end asked to disconnect |
+| `LINK` | an established session dropped (timeout, retries, fault) |
+| `NO_ANSWER` | called, the CALL retry budget ran out unanswered |
+| `NO_START_ACK` | the peer answered the CALL but never acknowledged the START |
+| `REFUSED` | the peer rejected the START (version, family, busy, policy) |
+| `TIMEOUT` | answered a CALL, the peer's START never arrived |
+
+```text
 EVT:BROADCAST <src> <hex_payload>
 EVT:SNR <local_db> <remote_db|->
 EVT:CFO_WARN <tx_align_hz>

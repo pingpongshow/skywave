@@ -314,6 +314,13 @@ class LinkEngine {
   int callTxCount_ = 0;
   bool lastRxWasCss_ = false;
   std::vector<uint8_t> lastStartAckBody_;  // duplicate-START re-ack
+  // Reason evaluateStart() actually computed for the pending refusal.
+  // The SendStartNak action used to hardcode Busy, so every refusal -
+  // family mismatch, version mismatch, capability conflict, policy
+  // block - went out as "Busy". The protocol defines six reasons and
+  // the implementation transmitted one, which makes a refused connect
+  // undiagnosable from the calling end.
+  StartNakReason pendingNakReason_ = StartNakReason::Busy;
   double deepIdleSec_ = 120.0;  // idle window for CSS-mode sessions
   int dataSinceAck_ = 0;        // ACK batching (M13+)
   double lastDataRxAt_ = 0.0;

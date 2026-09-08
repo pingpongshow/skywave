@@ -845,6 +845,11 @@ void ModemWorker::updateStateEventsLocked() {
   const FsmState st = engine_->state();
   if (st != lastState_) {
     const bool wasConnected = lastState_ == FsmState::Connected;
+    // Leaving an in-progress handshake for Idle is a failed ATTEMPT.
+    const bool wasAttempting =
+        st == FsmState::Idle && (lastState_ == FsmState::Calling ||
+                                 lastState_ == FsmState::WaitStartAck ||
+                                 lastState_ == FsmState::CallAnswered);
     lastState_ = st;
     std::lock_guard lock(bridgeMutex_);
     notes_.push_back(evtState(st == FsmState::Idle && listen_
@@ -855,13 +860,38 @@ void ModemWorker::updateStateEventsLocked() {
                                     upperStr(toString(cfg_.family)),
                                     engine_->sessionMode()));
     }
-    if (wasConnected) {
+    // A FAILED CONNECTION ATTEMPT used to report NOTHING. The event was
+    // gated on having reached Connected, so a station that called, was
+    // answered, and then fell back to LISTENING told the application
+    // only that its state had changed - no cause, no distinction
+    // between "nobody answered", "the peer refused" and "the peer never
+    // acknowledged my START". That hole is why the kill/resume
+    // reconnect failure had to be chased through per-frame RX traces.
+    // Attempts now report too, with a cause specific enough to act on.
+    if (wasConnected || wasAttempting) {
       const auto cause = engine_->lastDiscCause();
-      notes_.push_back(evtDisconnected(
-          cause == FsmDiscCause::LocalRequest ||
-                  cause == FsmDiscCause::PeerRequest
-              ? "NORMAL"
-              : "LINK"));
+      const char* reason = "LINK";
+      switch (cause) {
+        case FsmDiscCause::LocalRequest:
+        case FsmDiscCause::PeerRequest:
+          reason = "NORMAL";
+          break;
+        case FsmDiscCause::CallRetriesExhausted:
+          reason = wasConnected ? "LINK" : "NO_ANSWER";
+          break;
+        case FsmDiscCause::StartRetriesExhausted:
+          reason = wasConnected ? "LINK" : "NO_START_ACK";
+          break;
+        case FsmDiscCause::StartNak:
+          reason = wasConnected ? "LINK" : "REFUSED";
+          break;
+        case FsmDiscCause::IdleTimeout:
+          reason = wasConnected ? "LINK" : "TIMEOUT";
+          break;
+        default:
+          break;
+      }
+      notes_.push_back(evtDisconnected(reason));
     }
   }
   // Operator pinned a mode before the session existed: apply it now.
