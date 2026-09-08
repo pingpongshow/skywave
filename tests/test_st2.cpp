@@ -205,14 +205,17 @@ TEST_CASE(st2_oneway_throughput_floor) {
 // relaunch faithfully: all engine state is gone, while the audio rings
 // keep whatever signal was in flight.
 //
-// This guards a bug that SHIPPED. The survivor retransmits for ~110 s
-// after the peer dies; a station that cannot decode any of that opened
-// one capture per detected preamble and retired none (a capture only
-// retires at the end of a ladder whose last rung needs a 90 s window),
-// reaching 33-38 open captures and falling BEHIND REAL TIME. It then
-// heard the peer's CALLs and decoded none of them - deaf, not slow, and
-// the link could never be re-established. See maxPendingRx() in
-// worker.cpp and the ladder section of DSP.md.
+// SCOPE - READ THIS BEFORE TRUSTING IT. This is a SMOKE test for the
+// reconnect path. It does NOT reproduce either of the two real-device
+// defects that the ST3 kill/resume gate found, and it was CHECKED
+// against both: it still passes with the capture-backlog cap disabled
+// (SKW_MAX_PENDING_RX=100000) and with the ResumeInvalid fallback
+// restored to its old buggy guard. Both bugs need the real device
+// path's decode latency - a control frame sitting 10-20 s in the
+// capture ladder - which this world is far too fast to produce. Nothing
+// here would have caught them, and a passing test that cannot fail on
+// the bug it names is worse than no test, so it is labelled rather than
+// advertised. The real guards are st3_hardware and st3_killresume.
 TEST_CASE(st2_peer_death_then_reconnect) {
   World w(24.0, 7);
   CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
