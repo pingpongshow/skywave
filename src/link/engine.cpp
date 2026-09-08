@@ -170,6 +170,21 @@ LinkEngine::LinkEngine(EngineConfig cfg)
 void LinkEngine::adoptSessionFamily(Family f, double now) {
   (void)now;
   if (f == cfg_.policy.family) return;
+  // Worth an operator-visible line: the session just moved to a
+  // different bandwidth family, which changes the whole waveform. It is
+  // also the first thing to check when a handshake half-completes - the
+  // CALL ladder steps this on retries, and the two ends must agree.
+  auto name = [](Family x) {
+    switch (x) {
+      case Family::Wide: return "WIDE";
+      case Family::Mid: return "MID";
+      case Family::Narrow: return "NARROW";
+      case Family::Ultra: return "ULTRA";
+    }
+    return "?";
+  };
+  SKW_INFO("family: session adopts %s (was %s)", name(f),
+           name(cfg_.policy.family));
   cfg_.policy.family = f;
 }
 
