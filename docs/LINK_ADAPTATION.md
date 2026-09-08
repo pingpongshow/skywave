@@ -80,10 +80,19 @@ bounded at 2, only into a rung clearing its floor by an extra 3 dB with
 a clean retry window): M3 ramp 0.87 → 0.89 but the coupled churn
 196,667 → 122,931 B. The ramp is a tracking metric on a monotone sweep,
 where skipping a rung is free; on a fading channel the skipped rung is
-the evidence. Left at 1. The underlying limit — one rung per
-`MODE_CHANGE` round trip, so the climb rate is set by exchange latency
-rather than by the channel — is unaddressed; the AMC trails a genie
-oracle by one to three rungs the whole way up a ramp.
+the evidence. Left at 1.
+
+The underlying limit is one rung per `MODE_CHANGE` round trip, so the
+climb rate is set by exchange latency rather than by the channel.
+`SKW_MODE_DEBUG` prints `MCLAT`, the seconds from decision to the new
+mode carrying data: 17–23 s per up-step at M4–M7, 5–12 s above, and
+0.0 s for every down-step (demotions apply at announce). Applying
+promotions at announce as well, scoped to the HF robust tier, takes
+those up-steps to 0.0 s and improves the static ramp 0.68 → 0.73 — but
+it cancels against robust-tier frame growth, since leaving the tier
+sooner denies the frames the clean deliveries they grow on. Frame growth
+wins the pair, so this is opt-in (`SKW_PROMOTE_AT_ANNOUNCE`); see the
+2×2 in ROADMAP.
 
 The margins are **negative on purpose**: the floors are one-shot 10–15%
 FER points, and with chase/IR HARQ plus selective-repeat ARQ a rung is

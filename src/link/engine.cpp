@@ -1503,6 +1503,15 @@ void LinkEngine::updateArqTimeout() {
 }
 
 void LinkEngine::applyMode(int mode, CpMode cp, double now) {
+  if (modeReqAt_ >= 0.0 && mode != mode_) {
+    static const bool mcDbg = getenv("SKW_MODE_DEBUG") != nullptr;
+    if (mcDbg) {
+      fprintf(stderr, "%s MCLAT t=%.1f M%d->M%d commit=%.1f s (%s)\n",
+              cfg_.policy.ownCall.c_str(), now, modeReqFrom_, mode,
+              now - modeReqAt_, mode > modeReqFrom_ ? "up" : "down");
+    }
+    modeReqAt_ = -1.0;
+  }
   // Entering the deep tier restarts frame-length adaptation at the
   // fade-safe minimum. Without this a session that had grown to 16
   // codewords on a good channel, climbed out to OFDM, and later demoted
@@ -1555,6 +1564,11 @@ void LinkEngine::onCfoReport(double reportedHz) {
 
 void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
   if (pendingMode_ >= 0 || (target == mode_ && cp == cpMode_)) return;
+  // Commit latency instrumentation: a promotion is not worth anything
+  // until the new mode is actually carrying data, and the ladder climbs
+  // one rung per commit (LINK_ADAPTATION.md).
+  modeReqAt_ = now;
+  modeReqFrom_ = mode_;
   pendingMode_ = target;
   pendingCp_ = cp;
   ++modeEpoch_;
@@ -1593,14 +1607,40 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
   // took the VHF sustained gate from 25.5 to 24.0 kbps. The split this
   // exists to fix is the demotion under fading whose MODE_ACK is lost.
   // (SKW_NO_APPLY_AT_ANNOUNCE: diagnostic A/B - always apply on ACK.)
+  //
+  // Upward at the HF robust tier this was tried and MEASURED, and it is
+  // off by default (SKW_PROMOTE_AT_ANNOUNCE opts in). The commit latency
+  // of a promotion is the ladder's climb rate, since it takes one commit
+  // per rung, and MCLAT (SKW_MODE_DEBUG, M3 ramp) put it at a median of
+  // 17-23 s from M4-M7 against 5-12 s from M8+ - the robust tier's own
+  // round trip, spent at the rung the AMC has already judged too slow.
+  // Applying at announce takes it to 0.0 s, as demotions already are.
+  // But it ANTI-SYNERGISES with robust-tier frame growth
+  // (constants.hpp kRobustCw*), churn seeds 11 / 12:
+  //                          growth off        growth on
+  //   promote on ACK       32,336 / 65,662  37,006 / 73,028  <- default
+  //   promote at announce  37,255 / 67,942  33,361 / 65,662
+  // Either lever alone pays ~+14%; together they cancel. Both buy the
+  // same thing - more payload per unit of robust-tier airtime - by
+  // opposite means, one by lengthening the frames while the link is
+  // there, the other by leaving sooner, and leaving sooner denies the
+  // frame growth the clean deliveries it needs. Frame growth wins the
+  // pair (seed 12 by 7%), so the ladder keeps waiting for MODE_ACK.
   static const bool kApplyAtAnnounce =
       getenv("SKW_NO_APPLY_AT_ANNOUNCE") == nullptr;
+  static const bool kPromoteAtAnnounce =
+      getenv("SKW_PROMOTE_AT_ANNOUNCE") != nullptr;
+  const bool robustPromote = kPromoteAtAnnounce && target > mode_ &&
+                             mode_ >= kFirstMode && mode_ <= 7 &&
+                             activeBand() != Band::VhfFm;
   if (getenv("SKW_MODE_DEBUG")) {
     fprintf(stderr, "%s ANNOUNCE t=%.1f M%d->M%d epoch=%u tx@M%d\n",
             cfg_.policy.ownCall.c_str(), now, mode_, target,
             unsigned(modeEpoch_), txMode);
   }
-  if (kApplyAtAnnounce && target < mode_) applyMode(target, cp, now);
+  if (kApplyAtAnnounce && (target < mode_ || robustPromote)) {
+    applyMode(target, cp, now);
+  }
   // Arm the confirmation deadline from the NEW mode's timeout: a
   // demotion into the CSS tier armed it from the old fast-mode timeout
   // (~10 s) and re-announced inside its own first 30 s burst - measured

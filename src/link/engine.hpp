@@ -371,6 +371,10 @@ class LinkEngine {
   Family rxFamily_ = Family::Wide;
   bool wantConstellation_ = false;
   // Deep-tier adaptive frame length, in LDPC codewords per frame.
+  // MODE_CHANGE commit latency (instrumentation, SKW_MODE_DEBUG MCLAT):
+  // when the exchange was requested and from which rung.
+  double modeReqAt_ = -1.0;
+  int modeReqFrom_ = 0;
   int cssCwTarget_ = 2;
   int cssCleanRun_ = 0;
   // OFDM robust tier (M4-M7), same rule as the deep tier above:

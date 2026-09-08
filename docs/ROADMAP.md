@@ -2819,3 +2819,54 @@ MODE_CHANGE round trip. Attacking it by skipping rungs is what failed;
 attacking the round trip (announce latency, or promoting on the
 announce rather than the ACK for upward steps at the robust tier) has
 not been tried.
+
+## MODE_CHANGE commit latency, and an anti-synergy (2026-09-07, later)
+
+Following the open item above: attack the round trip, not the rung count.
+
+### Instrument
+
+`SKW_MODE_DEBUG` now prints `MCLAT` at every commit — seconds from the
+AMC's decision to the new mode actually carrying data, and which
+direction. Commit latency IS the climb rate, since the ladder takes one
+commit per rung.
+
+Measured on the M3 ramp, median seconds per up-step by the rung left:
+
+| from | M4 | M5 | M6 | M7 | M8 | M9 | M10 | M11 | M12 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| commit | 23.2 | 17.1 | 17.1 | 21.1 | 4.8 | 4.8 | 11.4 | 12.2 | 10.2 |
+
+Down-steps: **0.0 s** — demotions already apply at announce. So the
+robust tier spends 17–23 s per rung running at a mode the AMC has
+already judged too slow, and climbing M4 → M8 costs over a minute of it.
+
+### Fix, measured, and left off
+
+Applying promotions at announce too, scoped to the HF robust tier
+(M4–M7), away from the deep-pipe top rungs whose window-16 and batched
+ACKs caused the original VHF regression. It works exactly as intended:
+robust-tier up-steps commit in 0.0 s, the static ramp improves
+0.68 → 0.73, the VHF gate is untouched at 25.5 kbps.
+
+And it loses ~10% on the two churn seeds that use the robust tier. The
+2×2 says why:
+
+| churn seeds 11 / 12 | frame growth off | frame growth on |
+|---|---|---|
+| promote on ACK | 32,336 / 65,662 | **37,006 / 73,028** |
+| promote at announce | 37,255 / 67,942 | 33,361 / 65,662 |
+
+Either lever alone is worth ~+14%; **together they cancel**. Both buy
+the same thing — more payload per unit of robust-tier airtime — by
+opposite means: one lengthens the frames while the link is there, the
+other leaves sooner. Leaving sooner denies the frame growth the clean
+deliveries it needs to grow, so the link gets neither. Frame growth wins
+the pair (seed 12 by 7%), so the ladder keeps waiting for MODE_ACK and
+`SKW_PROMOTE_AT_ANNOUNCE` is opt-in.
+
+The general lesson is worth more than either result: two levers aimed at
+the same bottleneck must be measured as a 2×2, not one after the other.
+Both of these looked like clear wins in isolation, and the second would
+have been committed on a single-cell measurement that showed a
+regression it did not cause.
