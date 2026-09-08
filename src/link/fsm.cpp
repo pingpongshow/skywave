@@ -27,6 +27,23 @@ void SessionFsm::toIdle(FsmDiscCause cause) {
   emit(FsmAction::IndicateDisconnected);
 }
 
+// MEASURED AND REJECTED 2026-09-07. A handshake response costs the peer
+// airtime AND decode latency, and only airtime was counted - the
+// receiver's capture ladder (DSP.md) can leave a control frame undecoded
+// for 5-10 s past its arrival. The kill/resume trace looked like a
+// straightforward case of that: the caller's START_ACK wait clamped to
+// the 12 s floor while the answerer took 17 s to decode the START and
+// reply, so the caller gave up at t+30 s and the answerer completed to
+// CONNECTED at t+36 s - a half-open session against a peer that had gone
+// back to listening.
+//
+// Adding a 15 s peer-decode allowance here moved the caller's give-up
+// from t+30 s to t+33 s and changed nothing else: still half-open. That
+// is 14 s spent in WaitStartAck against a 26 s armed timeout, so the
+// response timeout is NOT what ends the attempt. Whatever tears the
+// caller down at that point is above the FSM. Reverted rather than
+// shipped, because a timing change that does not fix the thing it was
+// aimed at is just a slower handshake.
 void SessionFsm::armResponse(double now, double ownSec, double responseSec) {
   timeoutSec_ = clampResponseTimeout(ownSec + responseSec + 6.0);
   deadline_ = now + timeoutSec_;

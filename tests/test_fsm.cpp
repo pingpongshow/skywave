@@ -100,14 +100,21 @@ TEST_CASE(call_retry_budget_then_teardown) {
   SessionFsm a(quickCfg());
   a.cmdConnect(0);
   int sends = int(drain(a).size());  // initial SendCall
-  // 4 attempts total: initial + 3 retries; each timeout is 12 s (clamped).
-  double t = 12.5;
+  // 4 attempts total: initial + 3 retries. Step by the timeout the FSM
+  // actually armed, not a hard-coded constant - the value is airtime
+  // derived plus a peer-decode allowance and is expected to change.
+  // Step by the timeout the FSM actually armed, scaled past the CALL
+  // retry jitter (deadline = timeout x 0.6..1.4), rather than a
+  // hard-coded constant: the timeout is airtime derived plus a
+  // peer-decode allowance and is expected to change.
+  const double step = a.responseTimeoutSec() * 1.5 + 0.5;
+  double t = step;
   for (int i = 0; i < 3; ++i) {
     a.tick(t);
     auto v = drain(a);
     CHECK(has(v, FsmAction::SendCall));
     sends += int(v.size());
-    t += 12.5;
+    t += step;
   }
   CHECK_EQ(sends, 4);
   a.tick(t);
@@ -123,11 +130,11 @@ TEST_CASE(start_retry_budget) {
   drain(a);
   a.rxCallAck(1);
   drain(a);
-  double t = 13.5;
+  double t = 1.0 + a.responseTimeoutSec() + 0.5;
   for (int i = 0; i < 3; ++i) {
     a.tick(t);
     CHECK(has(drain(a), FsmAction::SendStart));
-    t += 12.5;
+    t += a.responseTimeoutSec() + 0.5;
   }
   a.tick(t);
   CHECK(a.state() == FsmState::Idle);

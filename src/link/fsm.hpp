@@ -85,6 +85,12 @@ class SessionFsm {
   void setIdleDisconnectSec(double s) { cfg_.idleDisconnectSec = s; }
   double idleDisconnectSec() const { return cfg_.idleDisconnectSec; }
   FsmDiscCause lastDiscCause() const { return discCause_; }
+  // Length of the currently armed response timeout. Exposed so tests can
+  // step time by what the FSM actually chose instead of hard-coding a
+  // constant: two retry-budget cases asserted a 12 s step and broke the
+  // moment the timeout gained a peer-decode allowance, even though the
+  // behaviour under test (the retry budget) was unchanged.
+  double responseTimeoutSec() const { return timeoutSec_; }
   std::optional<FsmAction> nextAction();  // drain output queue
 
   // --- operator/API commands -----------------------------------------
