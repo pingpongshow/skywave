@@ -22,7 +22,7 @@ given.
 | `--audio-in / --audio-out <index>` | PortAudio device indices |
 | `--list-audio` | list devices and exit |
 | `--replay <wav>` | feed RX from a WAV file (test/debug) |
-| `--record <wav>` | record RX input to WAV |
+| `--record <wav>` | record **TX** audio to WAV (the file backend drains the TX ring; it does not capture RX) |
 | `--log-level <0-4>` | 0=TRACE .. 4=ERROR |
 | `--log-file <path>` | log to file |
 | `--version` / `--help` | |
@@ -70,7 +70,7 @@ depends on it.)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `band` | `hf` | band profile; `hf` is the only v1 value (`vhf-fm` reserved, [WAVEFORM.md](WAVEFORM.md)) |
+| `band` | `hf` | band profile: `hf` or `vhf-fm`. VHF-FM ships (176-carrier family through a 9 kHz FM channel, modes to M14 256QAM r5/6, measured 25.5 kbps net) and has its own conformance gate; it is a different radio, not a mode of the HF one. See [WAVEFORM.md](WAVEFORM.md). |
 | `family` | `wide` | `wide` / `mid` / `narrow` / `ultra` (`ultra` needs `ultra_enable`) |
 | `ultra_enable` | `false` | permit the opt-in 2.7 kHz ULTRA family (radio must pass ~100–2900 Hz) |
 | `family_fallback` | `true` | unanswered ULTRA calls retry at WIDE |
