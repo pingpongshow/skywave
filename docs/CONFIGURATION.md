@@ -169,6 +169,77 @@ enabled = true
 The Advisor deliberately has no INI/GUI/TCP surface
 ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).
 
+### Diagnostic A/B levers
+
+These exist so a shipped default can be measured against its
+alternative on a live link, not because either setting is a supported
+configuration. Every one of them defaults to the behaviour the modem
+ships with; setting one selects the losing side of an experiment that
+has already been run and recorded in ROADMAP.md. **Do not set these in
+production.** They are listed here because an undocumented environment
+variable that changes MAC behaviour is worse than a documented one.
+
+| Variable | Default | Selects when set |
+|---|---|---|
+| `SKW_NO_TURNSCHED` | (unset) | Drops the turn-scheduling capability from the handshake, so the session falls back to pure CCA/LBT |
+| `SKW_TURN_HOLD_RTTS` | `4.0` | Minimum turn hold in round-trip times |
+| `SKW_TURN_HOLD_MIN_SEC` | `6.0` | Absolute floor on the minimum turn hold, in seconds |
+| `SKW_DRAIN_CAP_MULT` | `2.0` | Cap on drain-before-grant, in handoff intervals |
+| `SKW_HF_WINDOW` | `16` | ARQ window for M10 and above |
+| `SKW_MID_WINDOW` | `4` | ARQ window for M7–M9 |
+| `SKW_ROBUST_FPB` | (per mode) | Frames per burst on the robust tier |
+| `SKW_ROBUST_AIR_CAP` | `10.0` | Airtime clamp, in seconds, on robust-tier codeword growth |
+| `SKW_DELIVER_TARGET_SEC` | `0.0` (off) | Mode-following coalesce bound; measured and left disabled |
+| `SKW_DATA_STARVE_X` | `3.0` | Data-starvation backstop, in ARQ timeouts |
+| `SKW_NO_NAK` | (unset) | Disables negative acknowledgements |
+| `SKW_NO_ACK_PIGGYBACK` | (unset) | Disables ACK piggybacking on data frames |
+| `SKW_NO_LOSSY_CAP` | (unset) | Removes the lossy-channel cap on the seal |
+| `SKW_NO_APPLY_AT_ANNOUNCE` | (unset) | Applies a mode change only on ACK, never at announce |
+| `SKW_PROMOTE_AT_ANNOUNCE` | (unset) | Promotes at announce; measured as anti-synergistic |
+| `SKW_DUP_RETRY` | (unset) | Restores the old duplicate-retry accounting rule |
+| `SKW_RXBAND_MARGIN_HZ` | `50` | RX band-edge margin |
+| `SKW_TXBAND_MARGIN_HZ` | `40` | TX band-edge margin |
+| `SKW_TX_IMPAIR` | (unset) | Injects transmit impairments for testing |
+
+### Debug logging
+
+Each of these enables one category of trace output on stderr when set
+to any value. They are read once and cost nothing when unset.
+
+`SKW_AMC_DEBUG`, `SKW_ARQ_DEBUG`, `SKW_CCA_DEBUG`, `SKW_CHANCLASS_DEBUG`,
+`SKW_CP_DEBUG`, `SKW_CSS_DEBUG`, `SKW_DELIV_DEBUG`, `SKW_EMIT_DEBUG`,
+`SKW_EQ_DEBUG`, `SKW_FRAME_DEBUG`, `SKW_MASK_DEBUG`, `SKW_MODE_DEBUG`,
+`SKW_PROTO_DEBUG`, `SKW_PUMP_DEBUG`, `SKW_RX_DEBUG`, `SKW_RXLADDER_DEBUG`,
+`SKW_TURN_DEBUG`, `SKW_TX_DEBUG`, `SKW_TXA_DEBUG`.
+
+### Test-harness only
+
+Read by the test and soak binaries, never by `skywave` itself.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SKW_SOAK` | (unset) | Enables the long-running soak paths in the ST2 suites |
+| `SKW_SOAK_SCENARIO` | (harness) | Scenario name: churn, floor, blackout |
+| `SKW_SOAK_SEED` | (harness) | Seed; soak results are chaotic, so compare seed spreads, never single runs |
+| `SKW_SOAK_SIMSEC` | (harness) | Simulated seconds per soak run |
+| `SKW_SOAK_SNR` | (harness) | Channel SNR for the soak world |
+| `SKW_SOAK_WINDOW` | `4096` | Offered-load feed window |
+| `SKW_SOAK_COUPLED` | (unset) | Couples the two directions of the ST2 world |
+| `SKW_SOAK_DEBUG` | (unset) | Soak trace output |
+| `SKW_FULL_DUPLEX` | (unset) | Restores the old full-duplex ST2 world; the default is half duplex, which is what turn-taking exists to handle. `SKW_HALF_DUPLEX` is still accepted as a no-op. |
+| `SKW_MONKEY_SIMSEC` | `900` | Phase-1 duration of the monkey soak |
+| `SKW_HARQ_TRIALS` | `12` / `10` | Trial counts in `test_harq` |
+| `SKW_GUI_WINDOW` | (unset) | Runs the real-window GUI test; headless path only when unset |
+| `SKW_VOICE_ARTIFACTS` | (unset) | Directory for decoded voice artifacts from `test_voice` |
+| `SKW_ST3_SOAK` | `60` | ST3 hardware soak duration in seconds |
+| `SKW_ST3_IMPAIR` | (unset) | ST3 impairment string |
+| `SKW_ST3_LOGDIR` | `.` | Where the ST3 scripts write their per-station logs |
+
+`SKW_HARDWARE_TESTS` is **not** an environment variable. The ST3 gate
+is a CMake cache option (`cmake -B build -DSKW_HARDWARE_TESTS=ON`),
+because a test configured `DISABLED` cannot be enabled from the
+environment at ctest time. See RELEASE.md gate 4.
+
 ## Validation Rules
 
 - callsign: 3–12 chars `[A-Z0-9/]`; `N0CALL`/empty blocks TX paths

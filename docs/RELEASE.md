@@ -66,6 +66,19 @@ breaking wire changes, never for releases.
    PROTOCOL / CONFIGURATION match the code; THIRD_PARTY.md covers every
    linked or vendored component.
 
+   **BLOCKER (open): the repository has no `LICENSE` file.** Skywave's
+   own terms of use and redistribution are therefore undefined, which
+   blocks any public release regardless of how the other gates read.
+   This is the owner's decision to make, not a technical one, so it is
+   recorded here rather than resolved: pick the license, add `LICENSE`
+   at the repository root, and reference it from README.md.
+
+   Note also that a default build links Codec2, which is LGPL-2.1.
+   Dynamic linking against the system package (what the default build
+   does) is fine. Static linking or a single-file distribution takes on
+   LGPL obligations; configure `-DENABLE_VOICE=OFF` to avoid them. See
+   THIRD_PARTY.md.
+
 ## Cutting the release
 
 1. Bump `project(skywave VERSION …)`; commit `release: vX.Y.Z`.
