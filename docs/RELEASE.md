@@ -21,6 +21,13 @@ on breaking wire changes, never for releases. Both are 1.
 2. **Sanitizer sweeps** (`build-asan`, `build-ubsan`: same suites green;
    ThreadSanitizer on `test_st2` + `test_tcp` at minimum).
 
+   Give the TSan legs a longer ctest budget — `test_st2` drives two
+   modems through a full audio world and TSan slows it roughly 20x,
+   past ctest's 1500 s default:
+   ```
+   ctest --test-dir build-tsan -R "test_st2$|test_tcp$" --timeout 3600
+   ```
+
    **Configure the sanitizer trees with `-DENABLE_GUI=OFF`:**
    ```
    cmake -B build-asan -DENABLE_ASAN=ON -DENABLE_GUI=OFF \
