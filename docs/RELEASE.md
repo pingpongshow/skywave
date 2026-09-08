@@ -21,6 +21,20 @@ breaking wire changes, never for releases.
    `-DCMAKE_C_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang`
    (+ clang++, + `-DCMAKE_OSX_SYSROOT=.../SDKs/MacOSX.sdk`) if the
    active Xcode still ships the broken runtime.
+
+   **Run the sanitizer suites OUTSIDE any command sandbox.** ASan's
+   startup probes the filesystem, and a sandbox that blocks those
+   probes makes every single test abort:
+   ```
+   ==NNNNN==Checking file existence is not allowed under sandbox.
+   ```
+   ctest reports this as `Subprocess aborted***Exception` on 40 of 40
+   tests, which reads exactly like a catastrophic regression and is
+   not one — the same binaries pass when run normally. If a sanitizer
+   sweep fails *uniformly*, on tests that touch nothing in common,
+   suspect the environment before the code: run one test directly with
+   `ASAN_OPTIONS=verbosity=1` and read the first ten lines. A genuine
+   ASan finding names a file, a line, and a memory operation.
 3. **Conformance sweeps** — archive under `docs/conformance/`. Fading
    sweeps run each tier on its DESIGNATED channel (kFadingFloors
    convention): CCIR Moderate for the robust tier on WIDE/MID/ULTRA,
