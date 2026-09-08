@@ -237,6 +237,11 @@ class ModemWorker : public ControlBackend {
     double airtimeSec = 0.0;
   };
   std::deque<PendingRx> pendingRx_;
+  // Captures dropped because the backlog hit its cap (see maxPendingRx()
+  // in worker.cpp). Nonzero means the receiver was offered more preambles
+  // than it could work through; sustained growth means it is shedding.
+  uint64_t rxCapturesDropped_ = 0;
+  uint64_t lastDroppedDbg_ = 0;
   std::vector<ChirpDetection> dets_;
   // Acquisition for the next-narrower family. A chirp sweep is
   // family-specific, so without this a listener cannot even OPEN a

@@ -36,6 +36,32 @@ constexpr double kRxPreMarginSec = 0.15;
 // capture is finalized (PTT tail, shuttle/driver jitter).
 constexpr double kBurstEndMarginSec = 0.5;
 constexpr double kRxHistorySec = 94.0;
+// Cap on simultaneously open captures. MEASURED 2026-09-07 (kill/resume
+// hammer, first run of a gate that had never been wired up): when a peer
+// dies mid-session the survivor retransmits for ~110 s, and a station
+// that cannot decode any of it - a freshly restarted peer, or any
+// listener - opens one capture per detected preamble and retires none.
+// The backlog reached 33-38 captures, the history buffer pinned at its
+// full 94 s (every capture's start must be kept), and since each capture
+// ends in a 90 s-window HARQ decode the receiver fell BEHIND REAL TIME:
+// the front capture gained ~1 s of audio per 1.2 s of wall clock. The
+// station was then deaf for minutes. The peer's subsequent CALLs were
+// heard (block level showed signal) and never decoded, so the session
+// could not be re-established at all.
+//
+// A newly detected preamble is worth strictly more than a capture that
+// has already failed several rungs, so the oldest is dropped. Eight is
+// far above any legitimate overlap - a real one is 1-3, and the CSS deep
+// tier's 35-55 s frames still only ever have a couple open at once.
+// SKW_MAX_PENDING_RX is the A/B.
+inline size_t maxPendingRx() {
+  static const size_t v = [] {
+    const char* e = std::getenv("SKW_MAX_PENDING_RX");
+    const long n = e ? std::atol(e) : 8;
+    return n > 0 ? size_t(n) : size_t(8);
+  }();
+  return v;
+}
 
 // How long a busy period is presumed to be a station before the chirp
 // detector's silence reclassifies it as noise. Must exceed the detector's
@@ -497,6 +523,13 @@ void ModemWorker::pumpRxLocked(double now) {
   for (const auto& d : dets_) {
     const double margin = kRxPreMarginSec * kFsBaseband;
     const double s = std::max(0.0, d.startSample - margin);
+    // Bounded backlog: see maxPendingRx(). Dropping the OLDEST keeps the
+    // freshest evidence and, because the history trim below must retain
+    // every open capture's start, also bounds hist_.
+    while (pendingRx_.size() >= maxPendingRx()) {
+      pendingRx_.pop_front();
+      ++rxCapturesDropped_;
+    }
     pendingRx_.push_back({uint64_t(s), 0});
     // A chirp preamble proves this busy period is a STATION, not noise.
     // The claim is sticky for the whole busy period and is dropped the
@@ -530,10 +563,17 @@ void ModemWorker::pumpRxLocked(double now) {
       ladderDbgAt_ = now;
       fprintf(stderr,
               "%s ladder t=%.1f busy=%d blk=%.1f floor=%.1f tries=%d "
-              "haveSec=%.1f\n",
+              "haveSec=%.1f pend=%zu histSec=%.1f\n",
               cfg_.callsign.c_str(), now, chanBusy_ ? 1 : 0,
               double(blockDbfs_), double(floorDbfs_), it->tries,
-              double(histEnd - it->start) / kFsBaseband);
+              double(histEnd - it->start) / kFsBaseband, pendingRx_.size(),
+              double(hist_.size()) / kFsBaseband);
+      if (rxCapturesDropped_ != lastDroppedDbg_) {
+        fprintf(stderr, "%s capture-backlog dropped=%llu\n",
+                cfg_.callsign.c_str(),
+                (unsigned long long)rxCapturesDropped_);
+        lastDroppedDbg_ = rxCapturesDropped_;
+      }
     }
     // BURST-END FINALIZATION - runs FIRST, ahead of the quiet-try and the
     // rungs, so a capture whose burst is provably in hand retires before
