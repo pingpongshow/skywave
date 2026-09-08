@@ -1066,6 +1066,30 @@ doc was updated)*
   Command Line Tools 26.6 (clang 21.0.0) fixed both runtimes; the
   deferred sweeps then ran clean — ASan FULL suite 37/37, TSan
   `test_tcp` + `test_st2` pass, zero race reports.
+- **Release engineering / 2026-09-07** — Three gate defects found while
+  running the v1.1.0 sequence, all of the same shape: a gate that
+  reported success without producing evidence.
+  1. The ST3 hardware gate (4) was `DISABLED` through a generator
+     expression over an environment variable, which evaluates at
+     CONFIGURE time. The documented `SKW_HARDWARE_TESTS=1 ctest -L
+     hardware` ran nothing and exited 0. Now a cache option; the gate
+     has now actually executed for the first time.
+  2. Three of the six conformance sweeps in gate 3 had no `--csv`, so
+     `rel_mod.csv` / `rel_good.csv` sat at their v1.0.0 contents while
+     the gate was re-run and reported green. All six archive now.
+  3. The ASan sweep in gate 2 HUNG rather than failing: every test
+     binary links `skywave_core`, which links SDL2 when the GUI is on,
+     so SDL2's library initializer runs at load time in every test.
+     Under ASan it takes its failure path into `error_dialog` and
+     blocks in `-[NSAlert runModal]` forever, with a modal dialog on
+     the operator's screen and no ctest output. TSan hangs the same
+     way; UBSan does not. Sanitizer trees are now configured
+     `-DENABLE_GUI=OFF`.
+  FOLLOW-UP (not done): the underlying smell in (3) is that every test
+  binary links the GUI. `skywave_core` should not carry SDL2 and ImGui;
+  a separate `skywave_gui` target linked only by `skywave` and
+  `test_gui` would make the coupling impossible. Deferred as a
+  build-structure change, not a release fix.
 - **Stress campaign / 2026-07-30 (post-v1.0.0)** — Bidirectional
   saturation over the ST2 audio world (new `soak_st2` harness) exposed
   a LATENT MAC BUG shipped in v1.0.0: the Pre-TX CCA gate specified in
