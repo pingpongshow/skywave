@@ -11,9 +11,13 @@ on breaking wire changes, never for releases. Both are 1.
 
 1. **Full suites, both flavors**
    ```
-   cmake -B build            && cmake --build build -j            && ctest --test-dir build
+   cmake -B build            && cmake --build build -j            && ctest --test-dir build -LE hardware
    cmake -B build-crypto -DENABLE_CRYPTO=ON && cmake --build build-crypto -j && ctest --test-dir build-crypto
    ```
+   `-LE hardware` keeps gate 1 and gate 4 separate on a tree configured
+   with `-DSKW_HARDWARE_TESTS=ON`. Without it the real-device tests join
+   the default run, and anything else touching the loopback devices at
+   that moment makes one of them fail on device-open in a few seconds.
 2. **Sanitizer sweeps** (`build-asan`, `build-ubsan`: same suites green;
    ThreadSanitizer on `test_st2` + `test_tcp` at minimum).
 
