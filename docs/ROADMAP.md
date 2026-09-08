@@ -2965,12 +2965,12 @@ At 64 KiB the link is genuinely loaded (TX backlog ~64 KB) and goodput
 | mean turn | 39.3 s | 16.2 s |
 | **bytes per second of turn** | **89.0** | **89.7** |
 
-The per-turn rate is the same to within 1% — and it is ~1.5% of what
-M11 supports. The shallow window simply produced five times as many
-turns. So the churn soak has never been mode-limited OR window-limited
-in the way the last several rounds assumed: **a turn carries ~89 B/s
-whatever the mode**, and everything else was arithmetic on the number of
-turns.
+The per-turn rate looked the same to within 1%. **That figure was wrong**
+— see the correction in the next entry: `turnBytes_` counted only the
+frame that passed the pick site, not the other frames packed into the
+same burst container, so it undercounted by the container fill. The
+turn-COUNT observation stands (4 vs 21 turns; the shallow window
+produced five times as many), and so does the goodput collapse.
 
 Defaults are unchanged (4 KiB) so every recorded baseline and gate stays
 comparable; `SKW_SOAK_WINDOW` makes the dependence explicit.
@@ -2988,12 +2988,70 @@ not delivery-gated.
 
 ### Two open items, in order
 
-1. **~89 B/s per turn regardless of mode.** At M9, 11.8 frames in 39.3 s
-   is roughly half the turn spent not transmitting — the post-burst
-   listen window and ACK turnaround. This is the real throughput
-   ceiling and nothing measured so far has touched it.
+1. **Per-turn throughput** — restated correctly in the next entry once
+   the container frames were counted.
 2. **Goodput falls 3.3× under a deep offered queue**, with the AMC
    settling two to three rungs lower (M8–M9 vs M11) and turns
    lengthening 2.4×. A file transfer is exactly this load. Whether the
    cause is the AMC, the turn scheduler under an always-full backlog, or
    head-of-line delivery of full 4 KiB messages is not yet separated.
+
+## Per-turn accounting corrected; the mid-tier window (2026-09-07, last)
+
+### A correction first
+
+The previous entry's headline — "a turn carries ~89 B/s whatever the
+mode" — **was wrong, and the error was in the instrument**. `TURNSTAT`
+counted bytes at the emission pick site, but frames 2..N of a burst
+container are pulled straight off the queue and never pass it, so a
+container's turn was credited with one frame's payload. Counting them
+(and using each burst's REAL airtime instead of a nominal full
+container) gives:
+
+| mode | turn | keyed | util | bytes | B/s of turn | B/s keyed |
+|---|---:|---:|---:|---:|---:|---:|
+| M10 | 30.3 s | 22.0 s | 73% | 5,956 | 196.6 | 270.7 |
+| M11 | 14.7 s | 10.9 s | 74% | 4,719 | 321.9 | 434.7 |
+| M12 | 16.1 s | 10.8 s | 67% | 5,472 | 340.3 | 506.6 |
+
+So a turn is ~70% keyed and per-turn throughput does scale with the
+mode. The "flat 89 B/s ceiling" does not exist. What survives from that
+entry is the offered-load finding itself (the feed window is shut
+98–100% of a run) and the goodput collapse under a deep queue.
+
+### What the corrected instrument then found
+
+Under a deep offered queue the mid tier starves its own burst container:
+
+| | mode | util | frames per container (of 2 at M8–M9, 4 at M10+) |
+|---|---|---:|---:|
+| loaded | M8 | 27% | 1.00 |
+| loaded | M9 | 52% | 1.53 |
+| loaded | M10 | 65% | 3.19 |
+| loaded | M11 | 76% | 2.45 |
+
+M8–M9 run a window of 4 against a 2-frame container: with anything in
+flight there is no room to fill the next one, so bursts ship one frame
+and pay a whole preamble for it. M10+ (window 16 since the turn
+utilisation round) fills 2.5–3.2 of 4. Same defect, one tier down.
+
+### Measured, and not adopted
+
+Raising the M7–M9 window to 8:
+
+| | coupled | seed 11 | seed 12 | seed 13 |
+|---|---:|---:|---:|---:|
+| window 4 | 196,667 | 37,006 | 63,344 | 89,473 |
+| window 8 | 196,667 | 37,178 | **87,749** | **FAIL t=741** |
+
+Seed 12 gains 39% and seed 13 turns from a pass into a stall. A default
+that converts a passing seed into a wedge is not shippable however good
+the average looks — a deeper window keeps more unacknowledged frames
+alive across a fade, which is what that seed's tail punishes.
+`SKW_MID_WINDOW` re-enables it. Every gate is green either way (ramp
+0.87/0.67, VHF 25.5 kbps, m2 21/21, deep tier 19%).
+
+The container-fill defect is real and now measured; the fix for it is
+not a bigger window but a way to fill a container without holding more
+frames unacknowledged — e.g. letting a container carry a retransmission
+alongside new segments, which the current pump does not do.

@@ -413,6 +413,8 @@ class LinkEngine {
   int turnFrames_ = 0;
   size_t turnBytes_ = 0;
   int turnBursts_ = 0;
+  double turnAirSec_ = 0.0;   // real DATA airtime keyed this turn
+  int turnContainerFrames_ = 0;  // frames those bursts actually carried
   void setTurnRole(TurnRole r, double now);
   void queueTurnGrant();
   void grantTurn(double now);

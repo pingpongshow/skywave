@@ -61,7 +61,25 @@ int macWindow(int mode) {
   // keyed - the ACK cannot interleave).
   if (mode <= 3) return 1;
   if (mode <= 6) return 2;
-  if (mode <= 9) return 4;
+  // M7-M9 carry TWO frames per burst container, so a window of 4 leaves
+  // at most two frames of headroom - and with any in flight the
+  // container ships short. MEASURED under a loaded queue (TURNSTAT,
+  // real keyed airtime): at M8-M9 the container carried 1.0-1.5 of its
+  // 2 frames and the turn was 27-52% keyed, against 65-76% and 2.5-3.2
+  // of 4 frames at M10+ where the window is 16.
+  //
+  // Raising it to 8 was MEASURED and NOT adopted: churn seed 12
+  // 63,344 -> 87,749 B (+39%) and seed 11 +0.5%, coupled identical -
+  // but seed 13 goes from PASS (89,473 B) to a stall at t=741. Turning
+  // a passing seed into a wedge disqualifies it as a default however
+  // good the average looks; the deeper window keeps more unacknowledged
+  // frames alive across a fade, which is exactly what that seed's tail
+  // punishes. SKW_MID_WINDOW re-enables it for measurement.
+  static const int kMidWindow = [] {
+    const char* e = getenv("SKW_MID_WINDOW");  // diagnostic A/B
+    return e ? atoi(e) : 4;
+  }();
+  if (mode <= 9) return kMidWindow;
   // HF window above M9: 16 (was 8). TURNSTAT at M10-M13 showed ~2.4 KB
   // per round trip against a 3-8 KB RTT x rate product - window-
   // limited. Measured at 16: one-way half-duplex 86,016 -> 106,496 B /
@@ -446,14 +464,19 @@ void LinkEngine::setTurnRole(TurnRole r, double now) {
     // Utilisation of the turn just ended: what the handover cost buys.
     fprintf(stderr,
             "%s TURNSTAT t=%.1f dur=%.1f frames=%d bytes=%zu bursts=%d "
-            "mode=%d srtt=%.1f\n",
+            "air=%.1f util=%.0f%% cfr=%d mode=%d srtt=%.1f\n",
             cfg_.policy.ownCall.c_str(), now, now - roleSince_, turnFrames_,
-            turnBytes_, turnBursts_, mode_,
+            turnBytes_, turnBursts_, turnAirSec_,
+            now - roleSince_ > 0.0 ? 100.0 * turnAirSec_ / (now - roleSince_)
+                                   : 0.0,
+            turnContainerFrames_, mode_,
             arqTx_.haveRtt() ? arqTx_.srttSec() : -1.0);
   }
   turnFrames_ = 0;
   turnBytes_ = 0;
   turnBursts_ = 0;
+  turnAirSec_ = 0.0;
+  turnContainerFrames_ = 0;
   if (dbg) {
     fprintf(stderr, "%s TURN t=%.1f %s->%s dataWait=%d grantAwait=%d "
             "breakReq=%d lastRx=%.1f roleSince=%.1f\n",
@@ -2492,7 +2515,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // this is what the post-drain listen-turn decision sees.
   if (txQueueSec_ <= 0.35) {
     lastBurstHadData_ = pick->env.type == LinkType::Data;
-    if (pick->env.type == LinkType::Data) ++turnBursts_;
+    if (pick->env.type == LinkType::Data) {
+      ++turnBursts_;
+    }
   } else if (pick->env.type == LinkType::Data) {
     lastBurstHadData_ = true;
   }
@@ -2542,6 +2567,12 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
            outQueue_.front().env.type == LinkType::Data &&
            outQueue_.front().mode == group[0].mode &&
            outQueue_.front().sig == group[0].sig) {
+      // Frames 2..N of a container never pass the pick site, so they
+      // must be counted here or a container's turn looks like one
+      // frame's worth of bytes (which is how the "~89 B/s per turn"
+      // figure came about - it undercounted by the container fill).
+      turnBytes_ += outQueue_.front().body.size();
+      ++turnFrames_;
       group.push_back(std::move(outQueue_.front()));
       outQueue_.pop_front();
     }
@@ -2571,11 +2602,21 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
       auto burst = buildFrameBaseband(tp);
       applyTxShift(burst);
+      // Real keyed airtime of the burst actually sent, and the frames
+      // it actually carried - a container is often short of
+      // framesPerBurst when the backlog cannot fill it.
+      turnAirSec_ += double(burst.size()) / kFsBaseband;
+      turnContainerFrames_ += int(group.size());
       return burst;
     }
     f = std::move(group[0]);
   }
-  return buildBurst(f);
+  auto solo = buildBurst(f);
+  if (f.env.type == LinkType::Data) {
+    turnAirSec_ += double(solo.size()) / kFsBaseband;
+    turnContainerFrames_ += 1;
+  }
+  return solo;
 }
 
 bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
