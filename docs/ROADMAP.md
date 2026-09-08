@@ -1115,6 +1115,29 @@ doc was updated)*
      peer-decode allowance in the handshake timeout (measured, rejected)
      and an overstated disproof built on control-port poll timestamps,
      which are exactly what goes slow under decode load.
+     A THIRD: the ST2 peer-death test added alongside the fix does NOT
+     reproduce either defect - verified by re-running it with the
+     backlog cap disabled AND with the old ResumeInvalid guard restored,
+     and it passes both ways. Both bugs need the real device path's
+     decode latency (a control frame sitting 10-20 s in the capture
+     ladder) and the simulated world is far too fast to produce it. The
+     test is kept and LABELLED as a smoke, because a passing test that
+     cannot fail on the bug it names is worse than none.
+  3. **DATA CONTINUITY AFTER A PEER RESTART (OPEN).** With both fixes in
+     place the gate RECONNECTS ("reconnected at 174 s", where it never
+     had) and then fails on a further layer: `8192/24576 B,
+     prefix_exact=True, kills=1`. What arrived is byte-exact - nothing
+     corrupted or duplicated - but the rest never comes. Cause is
+     visible in the code: the ResumeInvalid fallback calls
+     `discardPausedPipeline()`, whose `protoTx_.reset()` throws away the
+     sender's un-transmitted application data. That call PREDATES the
+     fix (before it the caller tore down and lost the data anyway), so
+     this is the next layer of the same defect, not a regression. The
+     correct behaviour is to re-send from the first byte the OLD peer
+     never acknowledged: the restarted peer kept nothing, so there is no
+     duplicate risk, and the sender already knows where the
+     acknowledgements stopped. Needs care around the ARQ sequence space
+     and session id changing with the new session.
      ORIGINAL SYMPTOM, for the record: With the deafness gone the gate
      still fails, on a different and clearly separate defect. The two
      ends disagree about whether a session exists:
