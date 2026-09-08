@@ -1270,6 +1270,15 @@ void LinkEngine::drainFsmActions(double now) {
                                   : cfg_.arqMaxRetries;
           arqTx_ = ArqTx(w, retries);
           arqRx_ = ArqRx(w);
+          // msgEndSeq_ holds ARQ SEQUENCE NUMBERS, so it is only
+          // meaningful within one sequence space. A fresh session
+          // restarts at 0; leaving stale entries would let the next
+          // session's low sequences "pass" them and confirm - and
+          // discard the replay copies of - messages that were never
+          // acknowledged. Cleared exactly where the space is reset.
+          // (The RESUMED branch above deliberately does not reset the
+          // ARQ, and equally must not clear this.)
+          msgEndSeq_.clear();
           // Carry the handshake's measured round trip into the fresh
           // ARQ state. Without it the estimator cannot bootstrap: the
           // first data frames time out before any ACK can return, every
