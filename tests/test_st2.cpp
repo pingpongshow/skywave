@@ -318,7 +318,9 @@ TEST_CASE(st2_peer_death_then_reconnect) {
 
   // NO LOSS: the replay must not skip past what was delivered.
   CHECK(resume <= deliveredBeforeKill);
-  // BOUNDED REPETITION: at most one coalesced message.
+  // BOUNDED REPETITION: at most one coalesced message. HF caps
+  // coalescing at kCoalesceMaxBytes = 4096; 8192 leaves headroom for
+  // the marker framing. (VHF-FM coalesces to 16384 - this world is HF.)
   CHECK(repeated <= 8192);
   // And the whole payload must actually arrive: prefix + the replayed
   // remainder reconstructs it byte for byte.

@@ -22,7 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from st3_hardware import Ctrl, list_devices, find, launch  # noqa: E402
 
 SKIP = 77
-# Upper bound on a replayed run: one coalesced proto message.
+# Upper bound on a replayed run: one coalesced proto message. HF caps
+# coalescing at kCoalesceMaxBytes = 4096 (proto/pipeline.hpp); 8192
+# leaves 2x headroom for the marker/compression framing. VHF-FM coalesces
+# to 16384 and would need this raised - this gate runs HF.
 MAX_MSG_BYTES = 8192
 
 
