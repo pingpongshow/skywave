@@ -64,7 +64,14 @@ breaking wire changes, never for releases.
    The staged binary must run from the prefix with no repo access.
 7. **Docs refresh** — ROADMAP boxes/deviations current; WAVEFORM /
    PROTOCOL / CONFIGURATION match the code; THIRD_PARTY.md covers every
-   linked or vendored component.
+   linked or vendored component (it lives at the REPOSITORY ROOT,
+   not in docs/, and is installed alongside them).
+
+   The floor tables are checked mechanically, not by eye: the
+   `docs_floors` ctest asserts that every OFDM floor published in
+   WAVEFORM.md equals `kFloors` in `core/constants.hpp`. It runs in
+   gate 1, so a floor edit that skips the doc fails the suite. Nothing
+   else in the docs is machine-checked, so the rest is a read.
 
    **BLOCKER (open): the repository has no `LICENSE` file.** Skywave's
    own terms of use and redistribution are therefore undefined, which

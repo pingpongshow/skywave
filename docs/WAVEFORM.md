@@ -182,8 +182,17 @@ per second in the 3 kHz reference bandwidth.)
 ### WIDE Rates and Floors
 
 NET = post-FEC payload rate; GROSS = uncoded rate. Floors are the design
-entry SNR (3 kHz noise reference, CCIR Moderate channel, ≤10% FER target);
-AMC adds hysteresis margins on top ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).
+entry SNR on **AWGN** (3 kHz noise reference, ≤10% FER target) and are
+the `kFloors` table in `core/constants.hpp`. The CCIR fading floors are a
+separate and much higher table (`kFadingFloors`, "Measured FADING floors"
+below) — the AMC keys off those by default. AMC adds hysteresis margins
+on top of whichever table is active
+([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).
+
+Because the conformance sweep tests **floor + 1 dB** against the ≤10%
+spec, a table entry sits about 1 dB below the mode's true 10%-FER point.
+That convention is what makes an entry verifiable; changing an entry
+without re-running `bertool` breaks it.
 
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
@@ -221,8 +230,8 @@ AMC adds hysteresis margins on top ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)).
 | `M5` | 93 | 46 | −12.5 dB * |
 | `M6` | 186 | 93 | −10.0 dB |
 | `M7` | 371 | 186 | −7.5 dB |
-| `M8` | 742 | 371 | −4.5 dB |
-| `M9` | 742 | 557 | −1.5 dB |
+| `M8` | 742 | 371 | −3.5 dB |
+| `M9` | 742 | 557 | +0.5 dB |
 | `M10` | 1484 | 742 | +1.5 dB |
 | `M11` | 1484 | 1113 | +5.5 dB |
 | `M12` | 2226 | 1484 | +9.5 dB |

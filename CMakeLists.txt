@@ -250,6 +250,14 @@ if(BUILD_TESTS)
   option(SKW_HARDWARE_TESTS "Enable the ST3 real-audio-device gate" OFF)
   find_package(Python3 COMPONENTS Interpreter)
   if(Python3_FOUND)
+    # Release gate 7 in prose form: the floor tables published in
+    # WAVEFORM.md must equal kFloors. Three NARROW entries had drifted
+    # without anything noticing, because a stale number in a markdown
+    # table is indistinguishable from a fresh one. Cheap, no build deps.
+    add_test(NAME docs_floors
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_docs_floors.py)
+    set_tests_properties(docs_floors PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME st3_hardware
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/st3_hardware.py

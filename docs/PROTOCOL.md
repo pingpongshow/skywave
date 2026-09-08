@@ -347,7 +347,9 @@ withdraws the request.
 a **minimum hold** of 4 measured round trips (two send-and-acknowledge
 cycles; at 2 the ISS used 7–40% of its own turn — one window, its ACK
 wait, then a handover whose cost is itself ~1 RTT; at 4 the robust tier
-reached ~80%), then stops pulling new
+reached ~80%), **and at least 6 s** — at the fast tier a round trip is
+only ~3 s, so four of them buy one burst and its ACK, which TURNSTAT
+showed as 15 s turns carrying 4.6 frames at M13. Then it stops pulling new
 segments and sends `TURN_GRANT` (u8 epoch, incremented per handover) at
 the **next window boundary** — the moment nothing is in flight and
 nothing already pulled is waiting to air. An ISS with no backlog hands
