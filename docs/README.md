@@ -16,7 +16,7 @@ These decisions were made deliberately and are binding unless revisited:
 |---|---|
 | Language / build | C++20, CMake, minimal dependencies |
 | PHY architecture | **Unified spread-OFDM** — one waveform engine for the whole ladder |
-| Weak-signal floor | ~−8.5 dB SNR (3 kHz ref) in v1; ladder slots `M0–M3` **reserved** for a future non-coherent CSS tier reaching ~−14 dB |
+| Weak-signal floor | ~−8.5 dB SNR (3 kHz ref) on the OFDM ladder. The CSS deep tier at `M0–M3` was planned as future work and **shipped in v1.0.0**: it connects and moves data at −13 dB (MID, CCIR Moderate). |
 | Handshake robustness | Matches the data floor (handshake rides the most robust data mode) |
 | Bandwidth families | Three standard: `WIDE` 2.4 kHz (default), `MID` 1 kHz, `NARROW` 500 Hz — plus opt-in `ULTRA` 2.7 kHz for radios with ~100–2900 Hz passbands; all centered near **1500 Hz** |
 | Voice | Codec2 vocoder, OFDM-mode-mapped, PCM over local TCP voice port |
@@ -40,12 +40,15 @@ These decisions were made deliberately and are binding unless revisited:
 | [BUILD_PLAN.md](BUILD_PLAN.md) | Dependencies, build options, **phased construction plan with milestones** |
 | [ROADMAP.md](ROADMAP.md) | **Execution tracker**: ordered session-sized build steps with per-step test gates and checkboxes |
 | [TESTING.md](TESTING.md) | Test strategy: unit, loopback, channel-simulator, two-modem, conformance |
+| [RELEASE.md](RELEASE.md) | Release gate sequence, how to cut a release, and the open blockers |
+| [../THIRD_PARTY.md](../THIRD_PARTY.md) | Every linked or vendored component, with licenses (repository root) |
+| [releases/](releases/) | Per-release notes and recorded gate results |
 
 ## What Carried Over From the Reference Design, and What Changed
 
 | Reference-design feature | Skywave disposition |
 |---|---|
-| Two waveform engines (CSS + OFDM) | **Replaced** by one spread-OFDM engine; CSS tier reserved as future `M0–M3` |
+| Two waveform engines (CSS + OFDM) | **Evolved** — one spread-OFDM engine carries `M4–M14`, and the CSS deep tier shipped at `M0–M3` (v1.0.0), gated by `CAP_CSS_TIER` |
 | Chirp acquisition preamble | **Retained** — chirp remains the detection/coarse-sync front end; the preamble signature additionally selects the header class |
 | Dual ladder families at 1675 Hz center | **Evolved** — three standard families (`WIDE`/`MID`/`NARROW`) plus opt-in `ULTRA` 2.7 kHz, at the industry-standard 1500 Hz center |
 | `M0–M13` runtime mode ladder + DRC | **Retained in shape** — 14-slot ladder, SNR-driven adaptive mode control with hysteresis; new mode contents |
