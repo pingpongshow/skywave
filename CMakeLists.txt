@@ -272,10 +272,33 @@ if(BUILD_TESTS)
     # The script still exits 77 (SKIP_RETURN_CODE) when the loopback
     # devices are absent, so enabling it on a machine without them
     # SKIPS rather than fails.
+    # RESOURCE_LOCK: both hardware tests drive the SAME pair of loopback
+    # audio devices, so ctest must never schedule them together. Without
+    # it a `ctest -j` (or a stray manual run) makes one of them fail in a
+    # couple of seconds on device-open, which looks like a modem defect
+    # and is not one.
     set_tests_properties(st3_hardware PROPERTIES
       LABELS "hardware"
       TIMEOUT 14400
       SKIP_RETURN_CODE 77
+      RESOURCE_LOCK "loopback_audio"
+      DISABLED $<NOT:$<BOOL:${SKW_HARDWARE_TESTS}>>)
+    # SIGKILL/resume hammer over the same devices. The script existed but
+    # was registered with NOTHING, so no gate ever ran it; it also guards
+    # itself on SKW_HARDWARE_TESTS=1 in the ENVIRONMENT, which the option
+    # above does not set, so even a manual run printed "skip" and exited
+    # 0. Registered here with the label, the option, and the environment
+    # its own guard expects.
+    add_test(NAME st3_killresume
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/st3_killresume.py
+                     --binary $<TARGET_FILE:skywave>)
+    set_tests_properties(st3_killresume PROPERTIES
+      LABELS "hardware"
+      TIMEOUT 1800
+      SKIP_RETURN_CODE 77
+      RESOURCE_LOCK "loopback_audio"
+      ENVIRONMENT "SKW_HARDWARE_TESTS=1"
       DISABLED $<NOT:$<BOOL:${SKW_HARDWARE_TESTS}>>)
   endif()
   skw_test(test_ptt)
