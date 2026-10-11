@@ -1,0 +1,24 @@
+preset   fam    mode  |             base |              fix |            genie   (SNR3k at 10% FER)
+awgn     WIDE   M4    |             -8.6 |             -9.3 |           <=-9.5   hiSNR stages base -6dB nd0/zc0/h0/p0  fix -6dB nd0/zc0/h0/p0
+awgn     WIDE   M6    |             -4.4 |           <=-4.5 |           <=-4.5   hiSNR stages base -2dB nd0/zc0/h0/p0  fix -2dB nd0/zc0/h0/p0
+awgn     WIDE   M8    |              1.6 |              1.8 |            <=1.0   hiSNR stages base 4dB nd0/zc0/h0/p0  fix 4dB nd0/zc0/h0/p0
+awgn     WIDE   M11   |           <=11.0 |           <=11.0 |           <=11.0   hiSNR stages base 14dB nd0/zc0/h0/p0  fix 14dB nd0/zc0/h0/p0
+good     WIDE   M8    |              9.2 |              8.5 |              8.0   hiSNR stages base 16dB nd0/zc0/h0/p0  fix 16dB nd0/zc0/h0/p0
+good     WIDE   M11   |             17.5 |             17.3 |             16.8   hiSNR stages base 23dB nd0/zc0/h0/p1  fix 23dB nd0/zc0/h0/p1
+moderate MID    M4    |             -7.5 |             -8.5 |          <=-10.0   hiSNR stages base 8dB nd0/zc0/h2/p2  fix 8dB nd0/zc0/h0/p0
+moderate MID    M6    |             -3.2 |             -3.9 |             -6.1   hiSNR stages base 9dB nd0/zc0/h1/p1  fix 9dB nd0/zc0/h0/p0
+moderate MID    M8    |    none(min 13%) |              6.5 |              3.8   hiSNR stages base 20dB nd0/zc0/h0/p17  fix 20dB nd0/zc0/h0/p1
+moderate NARROW M4    |             -7.0 |             -7.4 |              5.0   hiSNR stages base 5dB nd0/zc0/h1/p0  fix 5dB nd0/zc0/h0/p0
+moderate NARROW M6    |             -4.5 |             -6.2 |              4.0   hiSNR stages base 7dB nd0/zc0/h2/p1  fix 7dB nd0/zc0/h0/p0
+moderate NARROW M8    |    none(min 21%) |              8.1 |            <=5.5   hiSNR stages base 24dB nd0/zc0/h7/p16  fix 24dB nd0/zc0/h0/p3
+moderate WIDE   M4    |             -0.3 |           <=-4.5 |           <=-4.5   hiSNR stages base 14dB nd0/zc0/h2/p0  fix 14dB nd0/zc0/h0/p0
+moderate WIDE   M6    |              5.9 |              1.0 |             -0.5   hiSNR stages base 16dB nd0/zc0/h2/p2  fix 16dB nd0/zc0/h0/p0
+moderate WIDE   M8    |    none(min 15%) |             10.8 |              7.8   hiSNR stages base 22dB nd0/zc0/h0/p15  fix 22dB nd0/zc0/h0/p0
+moderate WIDE   M11   |    none(min 44%) |             21.7 |             22.2   hiSNR stages base 29dB nd0/zc0/h0/p46  fix 29dB nd0/zc0/h0/p1
+poor     MID    M4    |    none(min 11%) |             -5.6 |          <=-10.0   hiSNR stages base 8dB nd0/zc0/h9/p4  fix 8dB nd0/zc0/h0/p0
+poor     MID    M6    |    none(min 10%) |             -3.6 |             -6.4   hiSNR stages base 9dB nd0/zc0/h16/p4  fix 9dB nd0/zc0/h0/p0
+poor     NARROW M4    |             -6.4 |             -7.3 |    none(min 21%)   hiSNR stages base 5dB nd0/zc0/h2/p1  fix 5dB nd0/zc0/h0/p0
+poor     NARROW M6    |             -2.7 |             -6.1 |    none(min 23%)   hiSNR stages base 7dB nd0/zc0/h5/p3  fix 7dB nd0/zc0/h1/p0
+poor     WIDE   M4    |    none(min 38%) |             -3.3 |           <=-4.5   hiSNR stages base 16dB nd0/zc0/h53/p1  fix 16dB nd0/zc0/h0/p0
+poor     WIDE   M6    |    none(min 45%) |              0.9 |             -0.7   hiSNR stages base 20dB nd0/zc0/h40/p12  fix 20dB nd0/zc0/h0/p1
+poor     WIDE   M8    |    none(min 60%) |             21.2 |    none(min 11%)   hiSNR stages base 25dB nd0/zc0/h5/p57  fix 25dB nd0/zc0/h0/p11

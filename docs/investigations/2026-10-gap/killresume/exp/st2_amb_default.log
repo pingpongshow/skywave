@@ -1,0 +1,11 @@
+st2 session: 1782 B ctrl trace at A
+[PASS] st2_scripted_session_over_tcp
+[PASS] st2_faults_dropout_starvation_reconnect_abort
+st2 collision: settled=1 a=STATE CONNECTED b=STATE CONNECTED
+[PASS] st2_simultaneous_tx_collision
+oneway throughput: 102400 B in 300 sim-s (floor 28672)
+[PASS] st2_oneway_throughput_floor
+peer-death reconnect: A CONNECTED, B CONNECTED
+peer-death continuity: 36864 B in, resumed at 0 (4096 delivered before the kill) -> 4096 B repeated
+[PASS] st2_peer_death_then_reconnect
+5 case(s), 0 failed

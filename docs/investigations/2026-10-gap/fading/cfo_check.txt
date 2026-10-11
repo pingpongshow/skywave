@@ -1,0 +1,108 @@
+== runs/cfo/base_awgn_-4.5.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=4 pay=3 11.7%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=60 pay=0 100.0%
+WIDE M8 8.0 nd=0 zc=0 hdr=60 pay=0 100.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=27 pay=6 55.0%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=60 pay=0 100.0%
+NARROW M8 2.5 nd=0 zc=0 hdr=60 pay=0 100.0%
+== runs/cfo/base_awgn_2.0.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=3 pay=4 11.7%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=0 pay=2 3.3%
+WIDE M8 8.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=28 pay=8 60.0%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=12 pay=6 30.0%
+NARROW M8 2.5 nd=0 zc=0 hdr=0 pay=1 1.7%
+== runs/cfo/base_awgn_4.5.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=3 pay=2 8.3%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=60 pay=0 100.0%
+WIDE M8 8.0 nd=0 zc=0 hdr=60 pay=0 100.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=31 pay=9 66.7%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=60 pay=0 100.0%
+NARROW M8 2.5 nd=0 zc=0 hdr=60 pay=0 100.0%
+== runs/cfo/base_moderate_-4.5.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=1 pay=0 1.7%
+WIDE M4 7.5 nd=0 zc=0 hdr=0 pay=1 1.7%
+WIDE M8 10.0 nd=0 zc=0 hdr=54 pay=2 93.3%
+WIDE M8 16.0 nd=0 zc=0 hdr=54 pay=4 96.7%
+NARROW M4 -7.0 nd=0 zc=1 hdr=5 pay=0 10.0%
+NARROW M4 -1.0 nd=0 zc=0 hdr=3 pay=0 5.0%
+NARROW M8 11.5 nd=0 zc=0 hdr=60 pay=0 100.0%
+NARROW M8 17.5 nd=0 zc=0 hdr=57 pay=3 100.0%
+== runs/cfo/base_moderate_2.0.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=2 pay=2 6.7%
+WIDE M4 7.5 nd=0 zc=0 hdr=2 pay=0 3.3%
+WIDE M8 10.0 nd=0 zc=0 hdr=4 pay=28 53.3%
+WIDE M8 16.0 nd=0 zc=0 hdr=4 pay=8 20.0%
+NARROW M4 -7.0 nd=0 zc=0 hdr=7 pay=0 11.7%
+NARROW M4 -1.0 nd=0 zc=0 hdr=2 pay=0 3.3%
+NARROW M8 11.5 nd=0 zc=0 hdr=2 pay=16 30.0%
+NARROW M8 17.5 nd=0 zc=0 hdr=5 pay=15 33.3%
+== runs/cfo/base_moderate_4.5.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=2 pay=0 3.3%
+WIDE M4 7.5 nd=0 zc=0 hdr=1 pay=1 3.3%
+WIDE M8 10.0 nd=0 zc=0 hdr=58 pay=2 100.0%
+WIDE M8 16.0 nd=0 zc=0 hdr=56 pay=3 98.3%
+NARROW M4 -7.0 nd=3 zc=0 hdr=3 pay=1 11.7%
+NARROW M4 -1.0 nd=0 zc=0 hdr=1 pay=0 1.7%
+NARROW M8 11.5 nd=0 zc=0 hdr=59 pay=0 98.3%
+NARROW M8 17.5 nd=0 zc=0 hdr=57 pay=2 98.3%
+== runs/cfo/fix_awgn_-4.5.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=2 pay=0 3.3%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=1 pay=5 10.0%
+WIDE M8 8.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=11 pay=1 20.0%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=17 pay=0 28.3%
+NARROW M8 2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+== runs/cfo/fix_awgn_2.0.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=2 pay=0 3.3%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=0 pay=2 3.3%
+WIDE M8 8.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=13 pay=0 21.7%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=14 pay=0 23.3%
+NARROW M8 2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+== runs/cfo/fix_awgn_4.5.txt
+WIDE M4 -8.5 nd=0 zc=0 hdr=2 pay=0 3.3%
+WIDE M4 -2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 2.0 nd=0 zc=0 hdr=0 pay=4 6.7%
+WIDE M8 8.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M4 -15.0 nd=0 zc=0 hdr=20 pay=0 33.3%
+NARROW M4 -9.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 -3.5 nd=0 zc=0 hdr=14 pay=0 23.3%
+NARROW M8 2.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+== runs/cfo/fix_moderate_-4.5.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M4 7.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 10.0 nd=0 zc=0 hdr=2 pay=10 20.0%
+WIDE M8 16.0 nd=0 zc=0 hdr=0 pay=1 1.7%
+NARROW M4 -7.0 nd=0 zc=1 hdr=3 pay=1 8.3%
+NARROW M4 -1.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 11.5 nd=0 zc=0 hdr=1 pay=3 6.7%
+NARROW M8 17.5 nd=0 zc=0 hdr=1 pay=2 5.0%
+== runs/cfo/fix_moderate_2.0.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M4 7.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 10.0 nd=0 zc=0 hdr=1 pay=9 16.7%
+WIDE M8 16.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M4 -7.0 nd=0 zc=0 hdr=4 pay=1 8.3%
+NARROW M4 -1.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 11.5 nd=0 zc=0 hdr=0 pay=3 5.0%
+NARROW M8 17.5 nd=0 zc=0 hdr=1 pay=1 3.3%
+== runs/cfo/fix_moderate_4.5.txt
+WIDE M4 1.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M4 7.5 nd=0 zc=0 hdr=0 pay=0 0.0%
+WIDE M8 10.0 nd=0 zc=0 hdr=2 pay=8 16.7%
+WIDE M8 16.0 nd=0 zc=0 hdr=0 pay=1 1.7%
+NARROW M4 -7.0 nd=3 zc=0 hdr=5 pay=0 13.3%
+NARROW M4 -1.0 nd=0 zc=0 hdr=0 pay=0 0.0%
+NARROW M8 11.5 nd=0 zc=0 hdr=1 pay=4 8.3%
+NARROW M8 17.5 nd=0 zc=0 hdr=1 pay=1 3.3%

@@ -1,0 +1,1 @@
+SKW_CHANMEM_PATH=- ../src/build/test_st2 > st2_amb_default.log 2>&1  172.59s user 1.61s system 46% cpu 6:13.40 total

@@ -1,0 +1,340 @@
+diff --git a/src/dsp/chirp.cpp b/src/dsp/chirp.cpp
+index be725a5..588526d 100644
+--- a/src/dsp/chirp.cpp
++++ b/src/dsp/chirp.cpp
+@@ -202,12 +202,28 @@ void ChirpDetector::evaluateGridPoint(int64_t g) {
+   grid_.push_back(v);
+ 
+   // Track the noise NCC floor (clipped so signal peaks cannot poison it).
++  //
++  // DIGITAL SILENCE IS NOT NOISE. A window with no energy has no NCC at
++  // all (both read 0 above), and folding those zeros into the EMA drove
++  // the floor geometrically to 0 - every threshold below is a multiple of
++  // it, so after ~30 s of exact zeros (a virtual audio cable whose writer
++  // is idle or dead, a muted interface) the detector emitted a phantom
++  // q=0.00 detection every ~0.65 s, forever: the clip below caps recovery
++  // at 6x the CURRENT floor, so a collapsed floor cannot climb back. On
++  // the ST3 kill/resume path each phantom opened a capture that climbed
++  // the whole 90 s ladder, the worker fell behind real time, the RX ring
++  // overflowed and handshake frames were lost in the dropped audio.
++  // Skip zero-energy windows, and never let the floor fall below half the
++  // white-noise expectation (E[NCC] = 1/N), which real noise never does.
+   auto emaUpdate = [&](double ncc) {
+     double clipped = std::min(ncc, 6.0 * emaNoiseNcc_);
+     emaNoiseNcc_ += kEmaAlpha * (clipped - emaNoiseNcc_);
+   };
+-  emaUpdate(v.nccUp);
+-  emaUpdate(v.nccDown);
++  if (denom > 1e-12f) {
++    emaUpdate(v.nccUp);
++    emaUpdate(v.nccDown);
++  }
++  emaNoiseNcc_ = std::max(emaNoiseNcc_, 0.5 / double(n));
+ }
+ 
+ ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,
+diff --git a/src/io/ring.hpp b/src/io/ring.hpp
+index 493c049..74faf1b 100644
+--- a/src/io/ring.hpp
++++ b/src/io/ring.hpp
+@@ -38,9 +38,17 @@ class SampleRing {
+     size_t n = in.size() < free ? in.size() : free;
+     for (size_t i = 0; i < n; ++i) buf_[(head + i) & mask_] = in[i];
+     head_.store(head + n, std::memory_order_release);
++    if (n < in.size()) {
++      dropped_.fetch_add(in.size() - n, std::memory_order_relaxed);
++    }
+     return n;
+   }
+ 
++  // Samples the producer could not write because the ring was full - the
++  // consumer fell behind real time. Never silent: an RX overrun destroys
++  // whatever frame was on air.
++  uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
++
+   // Consumer-side LOOKAHEAD: copy up to out.size() samples starting
+   // `offset` past the consumer position WITHOUT consuming them. Used by
+   // the ST2 test world to channel-process a burst the round it is staged
+@@ -74,6 +82,7 @@ class SampleRing {
+   size_t mask_ = 0;
+   std::atomic<size_t> head_{0};  // producer position
+   std::atomic<size_t> tail_{0};  // consumer position
++  std::atomic<uint64_t> dropped_{0};  // producer-side overrun count
+ };
+ 
+ }  // namespace skw
+diff --git a/src/main.cpp b/src/main.cpp
+index 24ffee3..df754f8 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -142,7 +142,9 @@ int main(int argc, char** argv) {
+   }
+ 
+   // Rings sized for ~1 s of audio: deep enough for scheduling hiccups.
+-  skw::SampleRing rxRing(skw::kFsAudio);
++  // RX ring: 8 s (as the ST2 world uses). At 1 s, one long-window decode
++  // under load overran it and the audio callback dropped samples silently.
++  skw::SampleRing rxRing(skw::kFsAudio * 8);
+   skw::SampleRing txRing(skw::kFsAudio);
+ 
+   const bool fileMode = !pre.replayPath.empty() || !pre.recordPath.empty();
+@@ -311,9 +313,10 @@ int main(int argc, char** argv) {
+ 
+   audio->stop();
+   auto t = worker.telemetry();
+-  SKW_INFO("shutdown: rx=%llu tx=%llu samples",
++  SKW_INFO("shutdown: rx=%llu tx=%llu samples, rx overrun=%llu samples",
+            (unsigned long long)t.rxSamplesTotal,
+-           (unsigned long long)t.txSamplesTotal);
++           (unsigned long long)t.txSamplesTotal,
++           (unsigned long long)rxRing.dropped());
+ 
+   if (!pre.configPath.empty()) cfg.save(pre.configPath);
+   return 0;
+diff --git a/src/worker.cpp b/src/worker.cpp
+index 0d2b799..276f970 100644
+--- a/src/worker.cpp
++++ b/src/worker.cpp
+@@ -447,18 +447,45 @@ std::vector<std::vector<uint8_t>> ModemWorker::takeMonitorRecords() {
+ 
+ // --- processing ----------------------------------------------------------------
+ 
++// INGEST BEFORE DECODE. A long-window decode attempt costs seconds of CPU
++// (measured 2-7 s for 20-60 s windows on a loaded host) and the audio
++// callback keeps writing into the RX ring meanwhile. Reading ONE chunk per
++// pass and then decoding again let the ring fill and OVERRUN - the audio
++// callback dropped samples silently and whatever frame was on air was
++// destroyed (the ST3 kill/resume stall: ~100-195 s of audio lost per
++// station). So every pass first drains the ring through the cheap path
++// (downconvert, metering, detector) and only then spends the decode
++// budget. Audio is never shed; under sustained decode overload the
++// capture backlog cap sheds the OLDEST captures instead.
+ void ModemWorker::pumpRxLocked(double now) {
++  if (!ingestChunkLocked(now)) return;
++  for (int k = 0; k < 512 && rx_.readAvailable() >= kChunkSamples; ++k) {
++    if (!ingestChunkLocked(now)) break;
++  }
++  decodePendingLocked(now);
++}
++
++bool ModemWorker::ingestChunkLocked(double now) {
+   // 48 kHz audio -> baseband, metering + channel power on the way.
+   size_t got = rx_.read(chunk_);
+-  if (got == 0) return;
++  if (got == 0) return false;
+   rxTotal_ += got;
++  if (const uint64_t drops = rx_.dropped(); drops != rxDropsReported_ &&
++                                           now - rxDropWarnAt_ >= 5.0) {
++    SKW_WARN("rx audio overrun: %llu samples dropped (%.1f s total) - "
++             "worker behind real time",
++             (unsigned long long)(drops - rxDropsReported_),
++             double(drops) / kFsAudio);
++    rxDropsReported_ = drops;
++    rxDropWarnAt_ = now;
++  }
+   double e = 0.0;
+   for (size_t i = 0; i < got; ++i) e += double(chunk_[i]) * chunk_[i];
+   rxLevel_ = levelDbfs(e, got);
+ 
+   std::vector<cfloat> bb;
+   down_.process({chunk_.data(), got}, bb);
+-  if (bb.empty()) return;
++  if (bb.empty()) return true;
+ 
+   // Noise/CCA blocks (~100 ms of baseband).
+   for (auto& v : bb) {
+@@ -531,6 +558,7 @@ void ModemWorker::pumpRxLocked(double now) {
+       ++rxCapturesDropped_;
+     }
+     pendingRx_.push_back({uint64_t(s), 0});
++    ++rxCapturesOpened_;
+     // A chirp preamble proves this busy period is a STATION, not noise.
+     // The claim is sticky for the whole busy period and is dropped the
+     // moment the channel clears, so one stray classification cannot mark
+@@ -538,6 +566,10 @@ void ModemWorker::pumpRxLocked(double now) {
+     busyIsPeer_ = true;
+   }
+ 
++  return true;
++}
++
++void ModemWorker::decodePendingLocked(double now) {
+   // Grow each pending capture along the retry ladder until the engine
+   // takes the frame (or the ladder ends and the monitor gets one look).
+   const uint64_t histEnd = histBase_ + hist_.size();
+@@ -962,6 +994,8 @@ size_t ModemWorker::processChunk() {
+ 
+   working_.clockUs = clock_.nowUs();
+   working_.rxSamplesTotal = rxTotal_;
++  working_.rxCapturesOpened = rxCapturesOpened_;
++  working_.rxCapturesDropped = rxCapturesDropped_;
+   working_.txSamplesTotal = txTotal_;
+   working_.rxLevelDbfs = rxLevel_;
+   working_.txLevelDbfs = txLevel_;
+diff --git a/src/worker.hpp b/src/worker.hpp
+index 922da3f..3efb0ba 100644
+--- a/src/worker.hpp
++++ b/src/worker.hpp
+@@ -52,6 +52,8 @@ inline constexpr int kConstellationPts = 96;  // most recent data carriers
+ struct Telemetry {
+   int64_t clockUs = 0;
+   uint64_t rxSamplesTotal = 0;
++  uint64_t rxCapturesOpened = 0;   // detections that opened a capture
++  uint64_t rxCapturesDropped = 0;  // captures evicted by the backlog cap
+   uint64_t txSamplesTotal = 0;
+   float rxLevelDbfs = -120.0f;
+   float txLevelDbfs = -120.0f;
+@@ -185,6 +187,8 @@ class ModemWorker : public ControlBackend {
+ #endif
+   void rebuildEngine();          // IDLE-only reconfiguration
+   void pumpRxLocked(double now);
++  bool ingestChunkLocked(double now);   // one chunk: convert, meter, detect
++  void decodePendingLocked(double now);  // capture ladder, bounded budget
+   void pumpTxLocked(double now);
+   void drainEngineOutputsLocked();
+   void updateStateEventsLocked();
+@@ -237,10 +241,13 @@ class ModemWorker : public ControlBackend {
+     double airtimeSec = 0.0;
+   };
+   std::deque<PendingRx> pendingRx_;
++  uint64_t rxDropsReported_ = 0;  // RX ring overrun samples already logged
++  double rxDropWarnAt_ = -1e9;
+   // Captures dropped because the backlog hit its cap (see maxPendingRx()
+   // in worker.cpp). Nonzero means the receiver was offered more preambles
+   // than it could work through; sustained growth means it is shedding.
+   uint64_t rxCapturesDropped_ = 0;
++  uint64_t rxCapturesOpened_ = 0;
+   uint64_t lastDroppedDbg_ = 0;
+   std::vector<ChirpDetection> dets_;
+   // Acquisition for the next-narrower family. A chirp sweep is
+diff --git a/tests/st2_world.hpp b/tests/st2_world.hpp
+index cefeee0..fb0359a 100644
+--- a/tests/st2_world.hpp
++++ b/tests/st2_world.hpp
+@@ -252,6 +252,12 @@ struct World {
+   double jamAmpAB = 0.0, jamToneAB = 0.0;   // into B's receiver
+   double jamAmpBA = 0.0, jamToneBA = 0.0;   // into A's receiver
+   double jamPhase = 0.0;
++  // Ambient floor amplitude added at each receiver. 0 = EXACT digital
++  // silence between bursts, which is what a virtual audio cable delivers
++  // (ST3) and what an SDR/interface with a muted or dead source delivers.
++  float ambientAmp = std::getenv("SKW_ST2_AMBIENT")
++                         ? float(std::atof(std::getenv("SKW_ST2_AMBIENT")))
++                         : 1e-3f;
+ 
+   // HALF-DUPLEX IS THE DEFAULT WORLD: a single SSB transceiver, deaf to
+   // the channel while its own PTT is keyed and for a TX/RX switching
+@@ -328,7 +334,7 @@ struct World {
+       noiseRng ^= noiseRng >> 12;
+       noiseRng ^= noiseRng << 25;
+       noiseRng ^= noiseRng >> 27;
+-      v += 1e-3f * (float(uint32_t(noiseRng * 0x2545F4914F6CDD1Dull >> 40)) /
++      v += ambientAmp * (float(uint32_t(noiseRng * 0x2545F4914F6CDD1Dull >> 40)) /
+                         float(1u << 24) -
+                     0.5f);
+     }
+diff --git a/tests/test_chirp.cpp b/tests/test_chirp.cpp
+index bafe269..c195ed1 100644
+--- a/tests/test_chirp.cpp
++++ b/tests/test_chirp.cpp
+@@ -1,3 +1,4 @@
++#include <cstdio>
+ #include <cmath>
+ #include <random>
+ #include <vector>
+@@ -182,6 +183,42 @@ TEST_CASE(chirp_no_false_alarms_in_noise) {
+   }
+ }
+ 
++// Regression (ST3 kill/resume stall, 2026-10): EXACT digital silence - a
++// virtual audio cable whose writer is idle or dead, a muted interface -
++// collapsed the noise-NCC floor to 0 and the detector then emitted a
++// phantom q=0.00 detection every ~0.65 s, indefinitely. Each phantom costs
++// the worker a capture climbing the full 90 s ladder; on the real device
++// path that put the receiver behind real time and lost handshake frames.
++// Silence must produce nothing, and a preamble after long silence (and
++// after an unrelated burst) must still be detected exactly once.
++TEST_CASE(chirp_no_phantoms_in_digital_silence) {
++  std::mt19937 rng(7001);
++  for (Family fam : {Family::Wide, Family::Narrow}) {
++    const size_t fs = size_t(kFsBaseband);
++    std::vector<cfloat> x(120 * fs, cfloat(0, 0));       // 120 s of zeros
++    auto burst = noiseOnly(4 * fs, 1.0, rng);             // non-preamble burst
++    x.insert(x.end(), burst.begin(), burst.end());
++    x.insert(x.end(), 40 * fs, cfloat(0, 0));             // 40 s of zeros
++    const size_t at = x.size();
++    auto pre = makeChirpPreamble(fam, ChirpSig::Calling);
++    x.insert(x.end(), pre.begin(), pre.end());
++    x.insert(x.end(), 5 * fs, cfloat(0, 0));
++    ChirpDetector det(fam);
++    std::vector<ChirpDetection> out;
++    const size_t chunk = 368;
++    for (size_t i = 0; i < x.size(); i += chunk) {
++      det.process({x.data() + i, std::min(chunk, x.size() - i)}, out);
++    }
++    std::printf("digital silence %s: %zu detection(s)\n",
++                fam == Family::Wide ? "wide" : "narrow", out.size());
++    CHECK_EQ(out.size(), 1u);
++    if (out.size() == 1) {
++      CHECK(out[0].sig == ChirpSig::Calling);
++      CHECK_NEAR(out[0].startSample, double(at), 12.0);
++    }
++  }
++}
++
+ TEST_CASE(chirp_timing_accuracy_with_noise) {
+   for (int t = 0; t < 6; ++t) {
+     auto out = runOne(Family::Wide, ChirpSig::Calling, -6.0, 0.0, false,
+diff --git a/tests/test_st2.cpp b/tests/test_st2.cpp
+index c45f2fb..fb1dda9 100644
+--- a/tests/test_st2.cpp
++++ b/tests/test_st2.cpp
+@@ -330,4 +330,48 @@ TEST_CASE(st2_peer_death_then_reconnect) {
+                     payload.data() + resume, tail) == 0);
+ }
+ 
++
++// Peer death over a DIGITALLY SILENT channel (2026-10, ST3 kill/resume
++// stall). The ST2 world's -60 dBFS ambient floor hid this: on the real
++// virtual-cable path an idle or dead peer is exact zeros, the chirp
++// detector's noise floor collapsed, and it emitted a phantom detection
++// every ~0.65 s. Each phantom opened a capture that climbed the 90 s
++// ladder; on real audio the worker fell behind real time, the RX ring
++// overran and handshake frames were lost. FakeClock hides the CPU cost,
++// so this test pins the CAUSE instead: captures opened while the peer is
++// dead must track real bursts, not the silence (measured before the fix:
++// hundreds; after: a few dozen at most).
++TEST_CASE(st2_peer_death_digital_silence) {
++  World w(24.0, 7);
++  w.ambientAmp = 0.0f;
++  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
++  CHECK(w.waitState(w.a, "CONNECTED", 3000));
++  std::vector<uint8_t> payload(32768);
++  for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 7 + 3);
++  ::send(w.a.dataFd, payload.data(), payload.size(), 0);
++  for (int i = 0; i < 8000 && w.b.dataAcc.size() < 4096; ++i) w.round();
++  w.b.w.reset();
++  w.b.w.emplace(w.b.cfg, w.clk, w.b.rxRing, w.b.txRing);
++  w.b.ctrlAcc.clear();
++  CHECK(w.cmd(w.b, "LISTEN ON") == "LISTEN ON");
++  const auto a0 = w.a.w->telemetry();
++  CHECK(w.waitState(w.a, "LISTENING", 12000));
++  const auto a1 = w.a.w->telemetry();
++  const auto b1 = w.b.w->telemetry();
++  const uint64_t aOpened = a1.rxCapturesOpened - a0.rxCapturesOpened;
++  std::printf("digital-silence peer death: A opened %llu captures "
++              "(%llu evicted), restarted B opened %llu (%llu evicted)\n",
++              (unsigned long long)aOpened,
++              (unsigned long long)(a1.rxCapturesDropped - a0.rxCapturesDropped),
++              (unsigned long long)b1.rxCapturesOpened,
++              (unsigned long long)b1.rxCapturesDropped);
++  // The dead peer transmits NOTHING: the survivor has nothing to capture.
++  CHECK(aOpened <= 4);
++  CHECK_EQ(a1.rxCapturesDropped - a0.rxCapturesDropped, 0u);
++  CHECK_EQ(b1.rxCapturesDropped, 0u);
++  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
++  CHECK(w.waitState(w.a, "CONNECTED", 8000));
++  CHECK(w.waitState(w.b, "CONNECTED", 1000));
++}
++
+ SKYTEST_MAIN

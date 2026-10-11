@@ -1,0 +1,1 @@
+SKW_CHANMEM_PATH=- ../src/build5/test_st2 > st2_revert_suite.log 2>&1  328.34s user 0.76s system 34% cpu 15:59.68 total

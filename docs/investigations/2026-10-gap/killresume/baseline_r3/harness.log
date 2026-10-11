@@ -1,0 +1,7 @@
+killresume: SIGKILL B at 8192 B (kill 1/5, 8s)
+killresume: A dropped at 126s; reconnecting
+killresume: reconnected at 169s
+killresume: SIGKILL B at 12288 B (kill 2/5, 181s)
+killresume: A dropped at 289s; reconnecting
+killresume FAIL: no reconnect after SIGKILL
+rc=1

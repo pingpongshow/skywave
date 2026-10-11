@@ -843,6 +843,53 @@ chains has no realistic SNR margin. Sub-steps:
   it never used). (9) proto coalesce cap is TX-local band policy
   (16 KiB on vhf-fm - tail segments were eating container slots).
 
+## Phase 8 — Gap closure (fading, CFO, kill/resume)
+
+*Goal: close the three measured gaps before any on-air comparison with
+VARA. Root causes, evidence, prototypes and exact gate command lines are
+in [GAP_CLOSURE_PLAN.md](GAP_CLOSURE_PLAN.md) (read it before starting a
+step); archived investigation data in
+[investigations/2026-10-gap/](investigations/2026-10-gap/). All steps are
+receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
+*Exit gate: RELEASE.md gates 1–7 green on the 8.9 tree, with
+`st3_killresume` passing 2 consecutive runs; release v1.2.0.*
+
+- [ ] **8.0 Instruments + baseline** — chansim drift, bertool
+  `--cfo/--drift` + CFO-error column, `cfo_st2` scenarios, ST2
+  `ambientAmp`; archive baseline sweeps as `conformance/gap_base_*.csv`.
+  *Gate: baseline reproduces the investigation (fast cliff at 3.5 Hz,
+  WIDE Poor M4 hdrFail ≥35%).*
+- [ ] **8.1 Kill/resume (R7)** — detector floor only from energetic
+  windows + clamp; ingest-before-decode (never drop audio); 8 s RX ring,
+  overrun counter/WARN, capture telemetry; numbered harness logs.
+  *Gate: new phantom/peer-death tests fail-before/pass-after;
+  `st3_killresume` 2 consecutive runs (10/10), `rx overrun=0`.*
+- [ ] **8.2 Unified CFO ambiguity resolution (R1)** — branch search over
+  ±55 Hz for every chirp signature, scored by local ZC fit; wider ZC fit
+  with prior gating. *Gate: CFO_SWEEP ≤5% at ±50 Hz; WIDE Poor M4
+  hdrFail ≤2% @≥6 dB, ≤10% FER @≤0 dB; AWGN no regression.*
+- [ ] **8.3 Window backoff + tap grid (R4)** — profile-dependent backoff
+  (HF 16, VHF unchanged), grid k0=5. *Gate: Moderate WIDE M8 ≤15% @22 dB;
+  two-path estimation error <0 dB; test_vhf green.*
+- [ ] **8.4 Q normalised to frame-mean power (R5)** — *Gate: Moderate
+  WIDE M8 ≤5% @25 dB, M11 ≤10% @32 dB.*
+- [ ] **8.5 RTS smoother (R6)** — *Gate: Moderate WIDE M8 ≤10% @≤11.5 dB,
+  M11 ≤10% @≤23 dB; Poor WIDE M6 ≤10% @≤1 dB; CPU ≤2× per frame.*
+- [ ] **8.6 In-frame FLL (R2)** — class-dependent gain, measured on top of
+  8.5. *Gate: drift 1 Hz/s AWGN ≤5% all families; no fading regression.*
+- [ ] **8.7 TX alignment hygiene (R3)** — slew max(2,|r|/2), clamp ±50,
+  CFO_WARN on measured offset, one-way reciprocity, PROTOCOL.md text.
+  *Gate: `cfo_st2` 40 Hz step re-aligns <30 s; 45 Hz connect residual
+  <2 Hz.*
+- [ ] **8.8 CSS AFC** — *Gate: CSS M0–M3 at 0.1 Hz/s drift within
+  floor+3 spec.*
+- [ ] **8.9 Re-measure + recalibrate** — AWGN/fading floors + new Poor
+  rows, chanclass thresholds, `kOfdmSnrCalDb`, `severeMaxMode`; correct
+  poor_findings.md, WAVEFORM/DSP CFO text; delete dead `kCfoCapture*`.
+  *Gate: all conformance sweeps pass; M3 ramp; soak not worse than
+  v1.1.0.*
+- [ ] **8.10 Release gates + v1.2.0 notes** — RELEASE.md 1–7.
+
 ---
 
 ## Standing Gates (every phase)

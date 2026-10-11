@@ -1,0 +1,240 @@
+diff -ru a/src/dsp/zc.cpp src/src/dsp/zc.cpp
+--- a/src/dsp/zc.cpp	2026-07-30 02:29:59
++++ src/src/dsp/zc.cpp	2026-10-11 10:35:08
+@@ -80,7 +80,7 @@
+ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
+                       double coarseStart, double priorCfoHz,
+                       double priorCfoSigmaHz, int nSymbols,
+-                      int searchRadius) {
++                      int searchRadius, double fitRangeHz) {
+   ZcSyncResult res;
+   const int symLen = zcSymbolSamples();
+   const int core = kFftBaseband;
+@@ -154,7 +154,7 @@
+   // range (prior error is bounded by the chirp handoff, so +-3 Hz), then
+   // parabolic-refine. This uses all symbol pairs at all lags optimally.
+   const double stepHz = 0.05;
+-  const double rangeHz = 3.0;
++  const double rangeHz = fitRangeHz;
+   auto combinedMag2 = [&](double fHz) {
+     cfloat cacc(0, 0);
+     for (int s = 0; s < nSymbols; ++s) {
+@@ -180,6 +180,7 @@
+     }
+   }
+   const double residual = bestF;
++  res.fitPower = bestM;
+ 
+   // Measurement sigma from per-symbol SNR around the fit (frequency CRLB
+   // over mCount uniformly spaced symbols), then variance-weighted fusion
+diff -ru a/src/dsp/zc.hpp src/src/dsp/zc.hpp
+--- a/src/dsp/zc.hpp	2026-07-30 02:29:33
++++ src/src/dsp/zc.hpp	2026-10-11 10:35:08
+@@ -43,6 +43,7 @@
+   double cfoHz = 0.0;       // fused CFO (prior x measurement, by variance)
+   double cfoSigmaHz = 0.0;  // estimated std dev of cfoHz
+   float quality = 0.0f;     // coherent-combining quality in [0, 1]
++  double fitPower = 0.0;    // PROTOTYPE: coherent ML-fit power (hypothesis metric)
+   // Per-carrier noise variance estimated from the spread of the block's
+   // per-symbol channel estimates (same normalization as `channel`).
+   // Seeds the tracker so SHORT frames (ACKs, keepalives) report honest
+@@ -64,6 +65,6 @@
+ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
+                       double coarseStart, double priorCfoHz,
+                       double priorCfoSigmaHz, int nSymbols,
+-                      int searchRadius = 24);
++                      int searchRadius = 24, double fitRangeHz = 3.0);
+ 
+ }  // namespace skw
+diff -ru a/src/phy/receiver.cpp src/src/phy/receiver.cpp
+--- a/src/phy/receiver.cpp	2026-09-06 14:25:48
++++ src/src/phy/receiver.cpp	2026-10-11 10:44:32
+@@ -7,6 +7,7 @@
+ #include "dsp/css.hpp"
+ #include "dsp/fft.hpp"
+ #include "dsp/zc.hpp"
++#include <cstdlib>
+ #include "fec/crc.hpp"
+ #include "fec/interleave.hpp"
+ #include "fec/ldpc.hpp"
+@@ -52,6 +53,12 @@
+   // is the per-carrier noise divided by a). For the data-aided SNR.
+   std::vector<float>* gainOut = nullptr;
+   Fft fft{kFftBaseband};
++  // PROTOTYPE FLL (CFO investigation): residual-frequency state fed from
++  // the tracker's per-symbol channel rotation, phase-continuous.
++  double dF = 0.0;
++  double extraPhase = 0.0;
++  std::vector<cfloat> hPrev;
++  int fllSyms = 0;
+ 
+   // Collect exactly `bits` LLRs coded at the given parameters. Returns
+   // false on running out of samples.
+@@ -75,7 +82,7 @@
+         }
+         std::vector<cfloat> in(static_cast<size_t>(kFftBaseband));
+         for (int i = 0; i < kFftBaseband; ++i) {
+-          double ph = -2.0 * M_PI * cfoHz * double(start + i) / kFsBaseband;
++          double ph = -2.0 * M_PI * (cfoHz + dF) * double(start + i) / kFsBaseband + extraPhase;
+           in[size_t(i)] = rx[size_t(start + i)] *
+                           cfloat(float(std::cos(ph)), float(std::sin(ph)));
+         }
+@@ -86,6 +93,25 @@
+         const float invTs = 1.0f / ofdmTimeScale(family);
+         for (auto& b : out) b *= invTs;
+         tracker->processSymbol(out, symIdx + g);
++        {
++          static const double fllGain = getenv("SKW_FLL") ? atof(getenv("SKW_FLL")) : 0.0;
++          if (fllGain > 0.0) {
++            const auto& hh = tracker->h();
++            if (hPrev.size() == hh.size()) {
++              cfloat r(0, 0);
++              for (size_t c = 0; c < hh.size(); ++c) r += hh[c] * std::conj(hPrev[c]);
++              const double dphi = std::atan2(r.imag(), r.real());
++              const double ferr = dphi * kFsBaseband / (2.0 * M_PI * symLen);
++              const double delta = fllGain * ferr;
++              // Phase continuity at the next symbol's first sample.
++              const int64_t s1 = start + kFftBaseband;
++              extraPhase += 2.0 * M_PI * delta * double(s1) / kFsBaseband;
++              dF += delta;
++              ++fllSyms;
++            }
++            hPrev.assign(hh.begin(), hh.end());
++          }
++        }
+         auto lay = symbolLayout(family, symIdx + g, mask);
+         for (int c : lay.dataCarriers) pool.push_back({g, c});
+         bins.push_back(std::move(out));
+@@ -623,7 +649,41 @@
+   const int reps = int(chirpPattern(hit.sig).size());
+   const double zcCoarse =
+       hit.startSample + double(reps) * chirpRepSamples();
+-  auto zc = zcRefine(family, sig, zcCoarse, cfoSign, 0.7, zcCount);
++  // PROTOTYPE (CFO investigation): resolve the fast signature's
++  // inter-rep-phase ambiguity (1/T = 6.25 Hz) by ZC hypothesis test.
++  double cfoUse = cfoSign;
++  double coarseUse = zcCoarse;
++  static const int hypMode = getenv("SKW_CFO_HYP") ? atoi(getenv("SKW_CFO_HYP")) : 0;
++  static const double tSign = getenv("SKW_CFO_TSIGN") ? atof(getenv("SKW_CFO_TSIGN")) : 1.0;
++  static const double hypMax = getenv("SKW_CFO_HYPMAX") ? atof(getenv("SKW_CFO_HYPMAX")) : 55.0;
++  static const double hypPen = getenv("SKW_CFO_HYPPEN") ? atof(getenv("SKW_CFO_HYPPEN")) : 0.0;
++  if (hypMode > 0 && hit.sig == ChirpSig::Fast) {
++    const auto& fp = plan(family);
++    const double T = activeProfile().chirpRepSec;
++    const double amb = 1.0 / T;
++    const double sens = tSign * T / (fp.chirpEndHz - fp.chirpStartHz) * kFsBaseband;
++    const int kLo = int(std::ceil((-hypMax - cfoSign) / amb));
++    const int kHi = int(std::floor((hypMax - cfoSign) / amb));
++    double bestM = -1.0;
++    for (int k = kLo; k <= kHi; ++k) {
++      const double c = cfoSign + k * amb;
++      const double st = zcCoarse + sens * c;
++      const int64_t lo = std::max<int64_t>(0, int64_t(st) - 64);
++      const int64_t hi = std::min<int64_t>(int64_t(sig.size()),
++                                           int64_t(st) + zcCount * zcSymbolSamples() + 64);
++      if (hi - lo < zcSymbolSamples()) continue;
++      auto z = zcRefine(family, sig.subspan(size_t(lo), size_t(hi - lo)),
++                        st - double(lo), c, 0.7, zcCount, hypMode, 1.0);
++      double m = z.fitPower * std::pow(10.0, -hypPen * std::abs(k) / 10.0);
++      if (z.ok && m > bestM) {
++        bestM = m;
++        cfoUse = c;
++        coarseUse = st;
++      }
++    }
++  }
++  if (getenv("SKW_CFO_DBG")) fprintf(stderr, "rxf sig=%d inv=%d cfoChirp=%.2f cfoUse=%.2f hyp=%d\n", int(hit.sig), int(hit.inverted), cfoSign, cfoUse, hypMode);
++  auto zc = zcRefine(family, sig, coarseUse, cfoUse, 0.7, zcCount);
+   if (!zc.ok) return std::nullopt;
+   stage(RxStage::HeaderFail);
+ 
+diff -ru a/src/sim/chansim.cpp src/src/sim/chansim.cpp
+--- a/src/sim/chansim.cpp	2026-07-30 01:40:35
++++ src/src/sim/chansim.cpp	2026-10-11 10:27:45
+@@ -136,8 +136,10 @@
+     }
+ 
+     // CFO.
+-    if (p_.cfoHz != 0.0) {
+-      cfoPhase_ += 2.0 * M_PI * p_.cfoHz / kFsBaseband;
++    if (p_.cfoHz != 0.0 || p_.cfoDriftHzPerSec != 0.0) {
++      const double fNow = p_.cfoHz + p_.cfoDriftHzPerSec * double(cfoN_++) / kFsBaseband;
++      cfoPhase_ += 2.0 * M_PI * fNow / kFsBaseband;
++      if (cfoPhase_ < 0.0) cfoPhase_ += 2.0 * M_PI;
+       if (cfoPhase_ > 2.0 * M_PI) cfoPhase_ -= 2.0 * M_PI;
+       y *= cfloat(float(std::cos(cfoPhase_)), float(std::sin(cfoPhase_)));
+     }
+diff -ru a/src/sim/chansim.hpp src/src/sim/chansim.hpp
+--- a/src/sim/chansim.hpp	2026-07-30 01:27:47
++++ src/src/sim/chansim.hpp	2026-10-11 10:27:45
+@@ -27,6 +27,7 @@
+   double snr3kDb = 99.0;        // AWGN, referenced to 3 kHz noise bandwidth
+   double refSignalPower = 1.0;  // signal power the SNR refers to
+   double cfoHz = 0.0;
++  double cfoDriftHzPerSec = 0.0;  // linear drift (CFO prototype)
+   double clockPpm = 0.0;        // sample-clock offset
+   double toneHz = 0.0;          // narrowband interferer (baseband offset)
+   double toneAmp = 0.0;         // 0 = off
+@@ -83,6 +84,7 @@
+   double noiseStd_ = 0.0;
+   uint64_t noiseRng_;
+   double cfoPhase_ = 0.0;
++  uint64_t cfoN_ = 0;
+   double tonePhase_ = 0.0;
+   uint64_t samplesOut_ = 0;
+ };
+--- a/tools/bertool.cpp	2026-09-07 09:51:59
++++ src/tools/bertool.cpp	2026-10-11 10:27:45
+@@ -53,6 +53,8 @@
+   // fading floor, the input to any frame-length adaptation policy.
+   int payloadLen = 0;
+   Band band = Band::Hf;
++  double cfo = 0.0;
++  double drift = 0.0;
+ };
+ 
+ std::vector<std::string> split(const std::string& s, char d) {
+@@ -206,6 +208,8 @@
+     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
+     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
+     else if (!strcmp(argv[i], "--css")) a.css = true;
++    else if (!strcmp(argv[i], "--cfo")) a.cfo = atof(need("--cfo").c_str());
++    else if (!strcmp(argv[i], "--drift")) a.drift = atof(need("--drift").c_str());
+     else if (!strcmp(argv[i], "--css-frames")) a.cssFrames = true;
+     else if (!strcmp(argv[i], "--css-hdr")) a.cssHdrCopies = atoi(need("--css-hdr").c_str());
+     else if (!strcmp(argv[i], "--payload")) a.payloadLen = atoi(need("--payload").c_str());
+@@ -311,6 +315,7 @@
+         // reads as -6 dB in the soak).
+         double estSum = 0.0;
+         int estN = 0;
++        double cfoErrSum = 0.0, cfoErrAbs = 0.0; int cfoN = 0;
+         // Data-aided (post-decode EVM) SNR and the pilot-stability
+         // indicator, over frames whose payload decoded: the estimator
+         // comparison under fading, and the classifier's per-mode
+@@ -320,6 +325,8 @@
+         for (int t = 0; t < a.trials; ++t) {
+           ChansimParams cp = presetParams(a.preset);
+           cp.snr3kDb = r.snrDb;
++          cp.cfoHz = a.cfo;
++          cp.cfoDriftHzPerSec = a.drift;
+           // Seed must vary with the SNR point too: reusing realizations
+           // across offsets pins any unlucky deep-fade-over-preamble seed
+           // as a false FER floor across the whole ladder.
+@@ -330,6 +337,7 @@
+           RxStage st = RxStage::NoDetect;
+           auto res = receiveFrame(fam, y, &st);
+           if (res) {
++            cfoErrSum += res->cfoHz - a.cfo; cfoErrAbs = std::max(cfoErrAbs, std::abs(res->cfoHz - a.cfo)); ++cfoN;
+             estSum += res->snrDb;
+             ++estN;
+             if (res->payloadOk && res->evmSnrDb > -90.0) {
+@@ -369,6 +377,9 @@
+                r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est, evm, pilot,
+                payloadLen, airSec, 100.0 * ovhFrac, good);
+         fflush(stdout);
++        printf("CFOROW %s,%d,%.1f,%.2f,%.2f,%d,%d,%d,%d,%d,%.4f,%.3f,%.3f\n", plan(fam).name,
++                  mode, r.snrDb, a.cfo, a.drift, r.trials, r.noDetect, r.zcFail, r.hdrFail,
++                  r.payFail, r.fer(), cfoN ? cfoErrSum / cfoN : 0.0, cfoErrAbs);
+         if (csv) {
+           fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,
+                   mode, r.snrDb, r.trials, r.noDetect, r.zcFail, r.hdrFail,

@@ -1,0 +1,736 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e90348f..d8eea39 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -316,3 +316,5 @@ if(BUILD_TESTS)
+   skw_test(test_chanmem)
+   skw_test(test_probe)
+ endif()
++add_executable(geom tools/geom.cpp)
++target_link_libraries(geom PRIVATE skywave_core)
+diff --git a/src/dsp/zc.cpp b/src/dsp/zc.cpp
+index 7f2a100..e43725f 100644
+--- a/src/dsp/zc.cpp
++++ b/src/dsp/zc.cpp
+@@ -1,3 +1,5 @@
++#include <cstdlib>
++#include <cstdio>
+ #include "dsp/zc.hpp"
+ 
+ #include <algorithm>
+@@ -154,7 +156,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
+   // range (prior error is bounded by the chirp handoff, so +-3 Hz), then
+   // parabolic-refine. This uses all symbol pairs at all lags optimally.
+   const double stepHz = 0.05;
+-  const double rangeHz = 3.0;
++  static const double rangeHz = getenv("SKW_ZC_RANGE") ? atof(getenv("SKW_ZC_RANGE")) : 3.0;
+   auto combinedMag2 = [&](double fHz) {
+     cfloat cacc(0, 0);
+     for (int s = 0; s < nSymbols; ++s) {
+@@ -201,7 +203,12 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
+       std::max(slopeSigma * kFsBaseband / (2.0 * M_PI * symLen), 1e-3);
+ 
+   const double wm = 1.0 / (measSigma * measSigma);
+-  const double wp = 1.0 / (priorCfoSigmaHz * priorCfoSigmaHz);
++  static const double kGate = getenv("SKW_ZC_GATE") ? atof(getenv("SKW_ZC_GATE")) : 0.0;
++  double wp = 1.0 / (priorCfoSigmaHz * priorCfoSigmaHz);
++  // EXPERIMENT: a residual far outside prior+measurement uncertainty
++  // means the chirp handoff is wrong (multipath up/down mismatch).
++  if (kGate > 0 && std::abs(residual) >
++      kGate * std::sqrt(priorCfoSigmaHz * priorCfoSigmaHz + measSigma * measSigma)) wp = 0.0;
+   const double fusedResidual = residual * wm / (wm + wp);
+   res.cfoHz = priorCfoHz + fusedResidual;
+   res.cfoSigmaHz = 1.0 / std::sqrt(wm + wp);
+@@ -295,13 +302,16 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
+     // resulting large apparent delay is both off the tracker's
+     // well-conditioned grid region and eats CP margin for nothing.
+     int firstLag = bestLag;
++    static const double kThr = getenv("SKW_ZC_THR") ? atof(getenv("SKW_ZC_THR")) : 0.5;
+     for (int lag = bestLag - 1; lag >= bestLag - 28 && lag >= -31; --lag) {
+-      if (magAt(lag) >= 0.5 * best && magAt(lag) >= magAt(lag - 1) &&
++      if (magAt(lag) >= kThr * best && magAt(lag) >= magAt(lag - 1) &&
+           magAt(lag) >= magAt(lag + 1)) {
+         firstLag = lag;
+       }
+     }
+-    const double tau = double(firstLag) - 2.0;
++    if (getenv("SKW_ZC_DBG")) fprintf(stderr, "zc: best=%d first=%d\n", bestLag, firstLag);
++    static const double kBack = getenv("SKW_ZC_BACKOFF") ? atof(getenv("SKW_ZC_BACKOFF")) : 2.0;
++    const double tau = double(firstLag) - kBack;
+     res.blockStart += tau;
+     for (int i = 0; i < n; ++i) {
+       int bin = plan(family).firstBin + i - centerBin();
+diff --git a/src/phy/equalizer.cpp b/src/phy/equalizer.cpp
+index 610a9e6..17d27ea 100644
+--- a/src/phy/equalizer.cpp
++++ b/src/phy/equalizer.cpp
+@@ -7,7 +7,8 @@
+ namespace skw {
+ 
+ ChannelTracker::ChannelTracker(Family family, bool robustClass,
+-                               std::vector<cfloat> h0, double noiseVar0)
++                               std::vector<cfloat> h0, double noiseVar0,
++                               double meanChanPow)
+     : family_(family), robust_(robustClass), h_(std::move(h0)),
+       noiseVar_(std::max(noiseVar0, 1e-6)) {
+   // Tap grid at HALF the segment's natural resolution (N/2n): a grid at
+@@ -18,12 +19,15 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
+   // Kalman prior handles the resulting near-collinearity.
+   const int n = plan(family_).carriers();
+   const double spacing = double(kFftBaseband) / (2.0 * n);
+-  numTaps_ = 3 + int(56.0 / spacing);
++  static const int kK0 = getenv("SKW_TAP_K0") ? atoi(getenv("SKW_TAP_K0")) : 2;
++  static const double kSpan = getenv("SKW_TAP_SPAN") ? atof(getenv("SKW_TAP_SPAN")) : 56.0;
++  numTaps_ = 1 + kK0 + int(kSpan / spacing);
++  k0_ = kK0;
+   const int T = numTaps_;
+   basis_.resize(size_t(n) * T);
+   for (int c = 0; c < n; ++c) {
+     for (int t = 0; t < T; ++t) {
+-      double d = (t - 2) * spacing;
++      double d = (t - k0_) * spacing;
+       double ph = -2.0 * M_PI * double(c) * d / kFftBaseband;
+       basis_[size_t(c) * T + t] =
+           cfloat(float(std::cos(ph)), float(std::sin(ph)));
+@@ -70,7 +74,11 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
+   // tap that happened to be mid-fade at ZC time must not be starved
+   // forever (that starved taps was the failure of the per-tap-
+   // proportional first cut), so take the neighborhood max plus a floor.
+-  const double fd = robust_ ? 1.0 : 0.5;
++  static const double kFdR = getenv("SKW_FD_ROBUST") ? atof(getenv("SKW_FD_ROBUST")) : 1.0;
++  static const double kFdF = getenv("SKW_FD_FAST") ? atof(getenv("SKW_FD_FAST")) : 0.5;
++  static const double kQFloor = getenv("SKW_Q_FLOOR") ? atof(getenv("SKW_Q_FLOOR")) : 0.1;
++  static const double kQScale = getenv("SKW_Q_SCALE") ? atof(getenv("SKW_Q_SCALE")) : 1.2;
++  const double fd = robust_ ? kFdR : kFdF;
+   const double Ts =
+       double(kFftBaseband + cpSamplesAudio(CpMode(1)) / kDecimation) / kFsBaseband;
+   const double arg = 2.0 * std::pow(M_PI * fd * Ts, 2.0);
+@@ -78,6 +86,10 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
+   double seedPow = 0.0;
+   for (const auto& v : g_) seedPow += std::norm(v);
+   seedPow = std::max(seedPow, 1e-6);
++  // EXPERIMENT: process noise scaled to the frame-average channel power,
++  // not the instantaneous power at ZC time (a frame that starts in a fade
++  // otherwise gets Q 10-20 dB too small and cannot follow the recovery).
++  const double qPow = meanChanPow > 0 ? meanChanPow : seedPow;
+   qDiag_.assign(size_t(T), 0.0);
+   const double qScale = 1.0 - rho_ * rho_;
+   {
+@@ -93,10 +105,10 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
+       for (int u = std::max(0, t - 2); u <= std::min(T - 1, t + 2); ++u) {
+         prof = std::max(prof, std::norm(g_[size_t(u)]));
+       }
+-      qDiag_[size_t(t)] = prof + 0.1 * seedPow / T;
++      qDiag_[size_t(t)] = prof + kQFloor * seedPow / T;  // shape only
+       sum += qDiag_[size_t(t)];
+     }
+-    const double norm = qScale * 1.2 * seedPow / std::max(sum, 1e-12);
++    const double norm = qScale * kQScale * qPow / std::max(sum, 1e-12);
+     for (auto& q : qDiag_) q *= norm;
+   }
+ 
+@@ -140,13 +152,17 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
+   const int T = numTaps_;
+   auto lay = symbolLayout(family_, symIdx, mask_);
+   const int np = int(lay.pilotCarriers.size());
+-  if (np == 0) return;
++  if (np == 0) {
++    if (hist_) { gp_.push_back(g_); Pp_.push_back(P_); gf_.push_back(g_); Pf_.push_back(P_); rHist_.push_back(noiseVar_); }
++    return;
++  }
+ 
+   // Predict: g <- rho g, P <- rho^2 P + Q.
+   for (auto& v : g_) v *= rho_;
+   const double r2 = rho_ * rho_;
+   for (auto& v : P_) v *= r2;
+   for (int t = 0; t < T; ++t) P_[size_t(t) * T + t] += qDiag_[size_t(t)];
++  if (hist_) { gp_.push_back(g_); Pp_.push_back(P_); }
+ 
+   // Pilot measurements m = A g + noise, A rows = basis rows of the pilot
+   // carriers (divided by the known pilot value happens on capture).
+@@ -244,6 +260,7 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
+     noiseVar_ += (nvarUpdates_ < 8 ? 0.4 : 0.1) * (nvarTarget - noiseVar_);
+     ++nvarUpdates_;
+     noiseVar_ = std::max(noiseVar_, 1e-9);
++    if (rOverride > 0) noiseVar_ = rOverride;
+ 
+     // SEQUENTIAL scalar measurement updates (one pilot at a time). With
+     // diagonal R this is algebraically the joint update, but each
+@@ -319,6 +336,76 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
+     hv += std::max(v, 0.0);
+   }
+   hVar_ = hv / std::max(n, 1);
++  if (hist_) { gf_.push_back(g_); Pf_.push_back(P_); rHist_.push_back(noiseVar_); }
++}
++
++void ChannelTracker::smooth(std::vector<std::vector<cfloat>>& hOut,
++                            std::vector<double>& nvOut) const {
++  using cd = std::complex<double>;
++  const int T = numTaps_;
++  const int n = plan(family_).carriers();
++  const size_t K = gf_.size();
++  hOut.assign(K, std::vector<cfloat>(size_t(n)));
++  nvOut.assign(K, 0.0);
++  if (K == 0) return;
++  std::vector<cd> gs = gf_[K - 1], Ps = Pf_[K - 1];
++  auto emit = [&](size_t k, const std::vector<cd>& g, const std::vector<cd>& P) {
++    double hv = 0.0;
++    for (int c = 0; c < n; ++c) {
++      const cfloat* row = &basis_[size_t(c) * T];
++      cd acc(0, 0);
++      double v = 0.0;
++      for (int t = 0; t < T; ++t) {
++        cd rt(row[t].real(), row[t].imag());
++        acc += rt * g[size_t(t)];
++        cd pa(0, 0);
++        for (int u = 0; u < T; ++u) pa += P[size_t(t) * T + u] * std::conj(cd(row[u].real(), row[u].imag()));
++        v += (rt * pa).real();
++      }
++      hOut[k][size_t(c)] = cfloat(float(acc.real()), float(acc.imag()));
++      hv += std::max(v, 0.0);
++    }
++    nvOut[k] = rHist_[k] + hv / std::max(n, 1);
++  };
++  emit(K - 1, gs, Ps);
++  for (size_t kk = K - 1; kk-- > 0;) {
++    // G = rho Pf_k Pp_{k+1}^{-1}; solve Pp X = Pf_k  => G = rho X^H.
++    std::vector<cd> M = Pp_[kk + 1], X = Pf_[kk];
++    // Gaussian elimination with T right-hand sides (columns of X).
++    for (int col = 0; col < T; ++col) {
++      int piv = col;
++      for (int r = col + 1; r < T; ++r)
++        if (std::abs(M[size_t(r) * T + col]) > std::abs(M[size_t(piv) * T + col])) piv = r;
++      if (piv != col) for (int c2 = 0; c2 < T; ++c2) {
++        std::swap(M[size_t(col) * T + c2], M[size_t(piv) * T + c2]);
++        std::swap(X[size_t(col) * T + c2], X[size_t(piv) * T + c2]);
++      }
++      cd d = M[size_t(col) * T + col];
++      if (std::abs(d) < 1e-15) continue;
++      for (int c2 = 0; c2 < T; ++c2) { M[size_t(col) * T + c2] /= d; X[size_t(col) * T + c2] /= d; }
++      for (int r = 0; r < T; ++r) {
++        if (r == col) continue;
++        cd f = M[size_t(r) * T + col];
++        if (std::abs(f) == 0.0) continue;
++        for (int c2 = 0; c2 < T; ++c2) { M[size_t(r) * T + c2] -= f * M[size_t(col) * T + c2]; X[size_t(r) * T + c2] -= f * X[size_t(col) * T + c2]; }
++      }
++    }
++    std::vector<cd> G(size_t(T) * T);
++    for (int i = 0; i < T; ++i) for (int j = 0; j < T; ++j) G[size_t(i) * T + j] = rho_ * std::conj(X[size_t(j) * T + i]);
++    // gs_k = gf_k + G (gs_{k+1} - gp_{k+1})
++    std::vector<cd> dg(static_cast<size_t>(T));
++    for (int t = 0; t < T; ++t) dg[size_t(t)] = gs[size_t(t)] - gp_[kk + 1][size_t(t)];
++    std::vector<cd> gnew = gf_[kk];
++    for (int i = 0; i < T; ++i) { cd a(0, 0); for (int j = 0; j < T; ++j) a += G[size_t(i) * T + j] * dg[size_t(j)]; gnew[size_t(i)] += a; }
++    // Ps_k = Pf_k + G (Ps_{k+1} - Pp_{k+1}) G^H
++    std::vector<cd> D(size_t(T) * T), GD(size_t(T) * T);
++    for (size_t i = 0; i < D.size(); ++i) D[i] = Ps[i] - Pp_[kk + 1][i];
++    for (int i = 0; i < T; ++i) for (int j = 0; j < T; ++j) { cd a(0, 0); for (int u = 0; u < T; ++u) a += G[size_t(i) * T + u] * D[size_t(u) * T + j]; GD[size_t(i) * T + j] = a; }
++    std::vector<cd> Pnew = Pf_[kk];
++    for (int i = 0; i < T; ++i) for (int j = 0; j < T; ++j) { cd a(0, 0); for (int u = 0; u < T; ++u) a += GD[size_t(i) * T + u] * std::conj(G[size_t(j) * T + u]); Pnew[size_t(i) * T + j] += a; }
++    gs = std::move(gnew); Ps = std::move(Pnew);
++    emit(kk, gs, Ps);
++  }
+ }
+ 
+ // In-place Gaussian elimination with partial pivoting; solution in b.
+diff --git a/src/phy/equalizer.hpp b/src/phy/equalizer.hpp
+index 0fc2607..e03c913 100644
+--- a/src/phy/equalizer.hpp
++++ b/src/phy/equalizer.hpp
+@@ -26,7 +26,7 @@ class ChannelTracker {
+   // robustClass selects slow/deep smoothing (spread modes M4-M7 + robust
+   // headers) vs fast tracking (M8+).
+   ChannelTracker(Family family, bool robustClass, std::vector<cfloat> h0,
+-                 double noiseVar0);
++                 double noiseVar0, double meanChanPow = -1.0);
+ 
+   // Derotate the symbol's bins by the tracked CPE, then update H and the
+   // noise estimate from this symbol's pilots. Call once per symbol in
+@@ -38,6 +38,14 @@ class ChannelTracker {
+   void setMask(const CarrierMask* mask) { mask_ = mask; }
+ 
+   const std::vector<cfloat>& h() const { return h_; }
++  double rOverride = -1.0;  // EXPERIMENT: fixed measurement noise
++  // EXPERIMENT: fixed-interval RTS smoothing over the symbols processed
++  // since startHistory().
++  void startHistory() {
++    hist_ = true; gp_.clear(); gf_.clear(); Pp_.clear(); Pf_.clear(); rHist_.clear();
++  }
++  void stopHistory() { hist_ = false; }
++  void smooth(std::vector<std::vector<cfloat>>& hOut, std::vector<double>& nvOut) const;
+   // Effective noise for LLR scaling: measurement noise plus the filter's
+   // mean per-carrier posterior variance. When the estimate is genuinely
+   // uncertain (mid-fade, sparse pilots) the demapper must not emit
+@@ -77,6 +85,10 @@ class ChannelTracker {
+   const CarrierMask* mask_ = nullptr;
+   std::vector<double> residEma_;    // per carrier; <0 = never visited
+   int numTaps_ = 0;
++  int k0_ = 2;
++  bool hist_ = false;
++  std::vector<std::vector<std::complex<double>>> gp_, gf_, Pp_, Pf_;
++  std::vector<double> rHist_;
+   double rho_ = 0.999;              // per-symbol tap correlation
+   std::vector<std::complex<double>> g_;      // tap state (T)
+   std::vector<std::complex<double>> P_;      // state covariance (T x T)
+diff --git a/src/phy/receiver.cpp b/src/phy/receiver.cpp
+index ae6dc54..2e10735 100644
+--- a/src/phy/receiver.cpp
++++ b/src/phy/receiver.cpp
+@@ -15,7 +15,32 @@
+ #include "phy/layout.hpp"
+ 
+ namespace skw {
++GenieHook* g_genie = nullptr;
+ namespace {
++// BPSK-input MI (bits) at per-dimension SNR gamma = A^2/sigma^2, table.
++double bpskMi(double gamma) {
++  static std::vector<double> tab;
++  if (tab.empty()) {
++    for (int i = 0; i <= 600; ++i) {
++      double gdb = -30.0 + 0.1 * i, g = std::pow(10.0, gdb / 10.0);
++      // E over y~N(A, s^2), A=1, s^2 = 1/g of log2(1+exp(-2y/s^2))
++      double s2 = 1.0 / g, s = std::sqrt(s2), acc = 0, wsum = 0;
++      for (int k = -400; k <= 400; ++k) {
++        double z = k * 0.02, w = std::exp(-0.5 * z * z);
++        double y = 1.0 + s * z, t = -2.0 * y / s2;
++        double l = t > 30 ? t / std::log(2.0) : std::log2(1.0 + std::exp(t));
++        acc += w * l; wsum += w;
++      }
++      tab.push_back(1.0 - acc / wsum);
++    }
++  }
++  double gdb = 10.0 * std::log10(std::max(gamma, 1e-12));
++  double fi = (gdb + 30.0) / 0.1;
++  if (fi <= 0) return tab.front();
++  if (fi >= 600) return tab.back();
++  int i = int(fi); double fr = fi - i;
++  return tab[size_t(i)] * (1 - fr) + tab[size_t(i + 1)] * fr;
++}
+ 
+ // Symbols the tracker must have folded into its noise estimate before
+ // snrDb() is reported as a measurement (ChannelTracker::noiseUpdates:
+@@ -64,10 +89,44 @@ struct SymbolWalker {
+     const int n = plan(family).carriers();
+ 
+     int got = 0;
++    static const bool rts = getenv("SKW_RTS") != nullptr;
++    std::vector<std::vector<cfloat>> hS;
++    std::vector<double> nvS;
++    size_t kIdx = 0;
++    if (rts) {
++      // Pre-pass: forward Kalman over every symbol this call will walk,
++      // then fixed-interval RTS smoothing.
++      int need = 0, sIdx = symIdx;
++      int64_t ns = nextSampleStart;
++      tracker->startHistory();
++      while (need < bits) {
++        need += sourceSymbolsPerGroup(family, sIdx, spread, mask) * bps;
++        for (int g = 0; g < G; ++g) {
++          int64_t start = ns + int64_t(g) * symLen + cpLen;
++          if (start < 0 || start + kFftBaseband > int64_t(rx.size())) { tracker->stopHistory(); return false; }
++          std::vector<cfloat> in(static_cast<size_t>(kFftBaseband));
++          for (int i = 0; i < kFftBaseband; ++i) {
++            double ph = -2.0 * M_PI * cfoHz * double(start + i) / kFsBaseband;
++            in[size_t(i)] = rx[size_t(start + i)] * cfloat(float(std::cos(ph)), float(std::sin(ph)));
++          }
++          std::vector<cfloat> out(static_cast<size_t>(kFftBaseband));
++          fft.forward(in.data(), out.data());
++          const float invTs = 1.0f / ofdmTimeScale(family);
++          for (auto& b : out) b *= invTs;
++          tracker->processSymbol(out, sIdx + g);
++        }
++        ns += int64_t(G) * symLen;
++        sIdx += G;
++      }
++      tracker->stopHistory();
++      tracker->smooth(hS, nvS);
++    }
+     while (got < bits) {
+       // FFT the group's symbols.
+       std::vector<std::vector<cfloat>> bins;
+       std::vector<std::pair<int, int>> pool;
++      std::vector<std::vector<cfloat>> hPer, hTrue;
++      std::vector<double> nvPer, nvTrueV;
+       for (int g = 0; g < G; ++g) {
+         int64_t start = nextSampleStart + int64_t(g) * symLen + cpLen;
+         if (start < 0 || start + kFftBaseband > int64_t(rx.size())) {
+@@ -85,14 +144,128 @@ struct SymbolWalker {
+         // ZC-seeded estimate (see ofdmTimeScale).
+         const float invTs = 1.0f / ofdmTimeScale(family);
+         for (auto& b : out) b *= invTs;
+-        tracker->processSymbol(out, symIdx + g);
++        if (!rts) tracker->processSymbol(out, symIdx + g);
+         auto lay = symbolLayout(family, symIdx + g, mask);
+         for (int c : lay.dataCarriers) pool.push_back({g, c});
++        if (rts && kIdx < hS.size()) {
++          hPer.push_back(hS[kIdx]);
++          nvPer.push_back(nvS[kIdx]);
++          ++kIdx;
++        } else {
++          hPer.push_back(tracker->h());
++          nvPer.push_back(tracker->noiseVar());
++        }
++        if (g_genie && !g_genie->x.empty()) {
++          std::vector<cfloat> ic(static_cast<size_t>(kFftBaseband)), ix(ic.size());
++          for (int i = 0; i < kFftBaseband; ++i) {
++            double ph = -2.0 * M_PI * cfoHz * double(start + i) / kFsBaseband;
++            ic[size_t(i)] = g_genie->yc[size_t(start + i)] *
++                            cfloat(float(std::cos(ph)), float(std::sin(ph)));
++            ix[size_t(i)] = g_genie->x[size_t(start + i)];
++          }
++          std::vector<cfloat> Yc(ic.size()), X(ic.size());
++          fft.forward(ic.data(), Yc.data());
++          fft.forward(ix.data(), X.data());
++          for (auto& b : Yc) b *= invTs;
++          for (auto& b : X) b *= invTs;
++          if (g_genie->Rc.empty()) {
++            // Per-frame: window-relative TX transfer at every carrier
++            // from 8 consecutive symbols' pilots (window offset is the
++            // same for every symbol of the frame).
++            g_genie->Rc.assign(size_t(n), cfloat(0, 0));
++            for (int k = 0; k < kPilotSpacing; ++k) {
++              int64_t st = nextSampleStart + int64_t(g + k) * symLen + cpLen;
++              if (st + kFftBaseband > int64_t(g_genie->x.size())) break;
++              std::vector<cfloat> xx(static_cast<size_t>(kFftBaseband)), XX(xx.size());
++              for (int i = 0; i < kFftBaseband; ++i) xx[size_t(i)] = g_genie->x[size_t(st + i)];
++              fft.forward(xx.data(), XX.data());
++              auto ly = symbolLayout(family, symIdx + g + k);
++              for (int c : ly.pilotCarriers) {
++                int b = carrierToBasebandBin(family, c);
++                g_genie->Rc[size_t(c)] = XX[size_t(b)] * invTs / pilotValue(c, symIdx + g + k);
++              }
++            }
++            // smooth to a pure ramp: fit slope from adjacent carriers
++            std::complex<double> ac(0, 0);
++            for (int c = 1; c < n; ++c) ac += std::complex<double>(g_genie->Rc[size_t(c)] * std::conj(g_genie->Rc[size_t(c - 1)]));
++            const double sl = std::arg(ac);
++            std::complex<double> a0(0, 0); double mg = 0;
++            for (int c = 0; c < n; ++c) { a0 += std::complex<double>(g_genie->Rc[size_t(c)]) * std::polar(1.0, -sl * c); mg += std::abs(g_genie->Rc[size_t(c)]); }
++            mg /= n;
++            for (int c = 0; c < n; ++c) { auto v = std::polar(mg, std::arg(a0) + sl * c); g_genie->Rc[size_t(c)] = cfloat(float(v.real()), float(v.imag())); }
++          }
++          // Window-relative TX transfer: X_window/X_orig at pilots is a
++          // pure timing-phase ramp times a scalar; fit it.
++          std::vector<std::pair<int, cfloat>> rp;
++          for (int c : lay.pilotCarriers) {
++            int b = carrierToBasebandBin(family, c);
++            rp.push_back({c, X[size_t(b)] / pilotValue(c, symIdx + g)});
++          }
++          std::complex<double> acc(0, 0);
++          double dc = 0;
++          for (size_t k = 1; k < rp.size(); ++k) {
++            acc += std::complex<double>(rp[k].second * std::conj(rp[k - 1].second));
++            dc = rp[k].first - rp[k - 1].first;
++          }
++          const double slope = rp.size() > 1 ? std::arg(acc) / dc : 0.0;
++          std::complex<double> a0(0, 0); double mag = 0;
++          for (auto& [c, r] : rp) {
++            a0 += std::complex<double>(r) * std::polar(1.0, -slope * c);
++            mag += std::abs(r);
++          }
++          const double ph0 = std::arg(a0);
++          mag /= std::max<size_t>(rp.size(), 1);
++          auto Gc = [&](int c) { auto v = std::polar(mag, ph0 + slope * c); return cfloat(float(v.real()), float(v.imag())); };
++          cfloat G = Gc(0);
++          std::vector<cfloat> hg(static_cast<size_t>(n));
++          double nv = 0, mn = 0, md = 0;
++          for (int c = 0; c < n; ++c) {
++            int b = carrierToBasebandBin(family, c);
++            cfloat hp = std::abs(X[size_t(b)]) > 1e-6f ? Yc[size_t(b)] / X[size_t(b)] : cfloat(0, 0);
++            hg[size_t(c)] = hp * g_genie->Rc[size_t(c)];
++            nv += std::norm(out[size_t(b)] - Yc[size_t(b)]);
++            if (std::abs(X[size_t(b)]) > 0.3f) {  // skip empty carriers
++              mn += std::norm(hPer.back()[size_t(c)] - hg[size_t(c)]);
++              md += std::norm(hg[size_t(c)]);
++            }
++          }
++          nv /= n;
++          if (getenv("SKW_GDBG2")) {
++            std::complex<double> num(0, 0); double den = 0, e0 = 0, e1 = 0, pw = 0;
++            for (int c = 0; c < n; ++c) {
++              std::complex<double> he(hPer.back()[size_t(c)]), ht(hg[size_t(c)]);
++              num += std::conj(he) * ht; den += std::norm(he);
++            }
++            std::complex<double> al = den > 0 ? num / den : 1.0;
++            for (int c = 0; c < n; ++c) {
++              std::complex<double> he(hPer.back()[size_t(c)]), ht(hg[size_t(c)]);
++              e0 += std::norm(ht - he); e1 += std::norm(ht - al * he); pw += std::norm(ht);
++            }
++            fprintf(stderr, "G2 %d %.2f %.2f %.3f %.1f\n", symIdx + g, 10 * std::log10(e0 / pw + 1e-9), 10 * std::log10(e1 / pw + 1e-9), std::arg(al), 20 * std::log10(std::abs(al)));
++          }
++          if (getenv("SKW_GDBG") && (symIdx + g) % 20 == 0) {
++            for (int c = 0; c < n; c += 9)
++              fprintf(stderr, "sym %d c %d est (%.3f,%.3f) gen (%.3f,%.3f) G (%.3f,%.3f)\n", symIdx + g, c,
++                      hPer.back()[size_t(c)].real(), hPer.back()[size_t(c)].imag(), hg[size_t(c)].real(), hg[size_t(c)].imag(), G.real(), G.imag());
++          }
++          const size_t si = size_t(symIdx + g);
++          auto& G2 = *g_genie;
++          if (G2.mseNum.size() <= si) {
++            G2.mseNum.resize(si + 1); G2.mseDen.resize(si + 1);
++            G2.nvTrue.resize(si + 1); G2.nvEst.resize(si + 1); G2.cnt.resize(si + 1);
++          }
++          G2.mseNum[si] += mn; G2.mseDen[si] += md; G2.nvTrue[si] += nv;
++          G2.nvEst[si] += nvPer.back(); G2.cnt[si]++;
++          hTrue.push_back(hg); nvTrueV.push_back(nv);
++          if (getenv("SKW_GENIE_R")) tracker->rOverride = nv * atof(getenv("SKW_GENIE_R"));
++          if (G2.useH) hPer.back() = hg;
++          if (G2.useN) nvPer.back() = nv;
++        }
+         bins.push_back(std::move(out));
+       }
+       const int nSrc = int(pool.size()) / spread;
+-      const auto& h = tracker->h();
+-      const float nvar = float(tracker->noiseVar());
++      const auto& h = hPer.back();
++      const float nvar = float(nvPer.back());
+       for (int i = 0; i < nSrc && got < bits; ++i) {
+         cfloat z(0, 0);
+         float a = 0;
+@@ -108,6 +281,16 @@ struct SymbolWalker {
+           if (gainOut) gainOut->push_back(a);
+         }
+         demapLlr(cst, z, a, nvar, llr);
++        if (g_genie && !hTrue.empty()) {
++          float at = 0;
++          for (int k = 0; k < spread; ++k) {
++            auto [g, c] = pool[size_t(i + k * nSrc)];
++            at += std::norm(hTrue[size_t(g)][size_t(c)]);
++          }
++          // QPSK unit energy: per-dim SNR = a / nvar
++          double mi = bpskMi(double(at) / std::max(nvTrueV.back(), 1e-12));
++          for (int b = 0; b < bps; ++b) g_genie->miBits.push_back(float(mi));
++        }
+         got += bps;
+       }
+       (void)n;
+@@ -619,6 +802,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
+ 
+   // 2) ZC refinement.
+   const bool robust = robustHeaderForSig(hit.sig);
++  if (getenv("SKW_SIG_DBG")) fprintf(stderr, "hit: sig=%d inv=%d start=%.1f cfo=%.2f\n", int(hit.sig), int(hit.inverted), hit.startSample, hit.cfoHz);
+   const int zcCount = zcSymbols(robust);
+   const int reps = int(chirpPattern(hit.sig).size());
+   const double zcCoarse =
+@@ -631,6 +815,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
+   const double firstSym = zc.blockStart + double(zcCount) * zcSymbolSamples();
+   const int64_t t0 = int64_t(std::llround(firstSym));
+   const double delta = double(t0) - firstSym;
++  if (g_genie) g_genie->zcFirst = int(t0);
+   std::vector<cfloat> h0 = zc.channel;
+   const int n = plan(family).carriers();
+   for (int c = 0; c < n; ++c) {
+@@ -654,7 +839,38 @@ std::optional<RxFrameResult> receiveFrame(Family family,
+   const double nv0 = zc.noiseVar > 0.0
+                          ? std::min(zc.noiseVar, h0pow * 0.1)
+                          : h0pow * 0.1;
+-  ChannelTracker tracker(family, robust, std::move(h0), nv0);
++  double meanChanPow = -1.0;
++  if (getenv("SKW_QNORM")) {
++    // Frame-average in-band power minus the out-of-band noise floor, in
++    // tracker H units, over up to K symbols from t0.
++    static const int K = getenv("SKW_QNORM_K") ? atoi(getenv("SKW_QNORM_K")) : 96;
++    Fft f2(kFftBaseband);
++    const int symLen = kFftBaseband + cpSamplesAudio(CpMode::Medium) / kDecimation;
++    const float invTs = 1.0f / ofdmTimeScale(family);
++    double pin = 0, pout = 0; int nin = 0, nout = 0;
++    std::vector<char> active(size_t(kFftBaseband), 0);
++    for (int c = -6; c < n + 6; ++c) {
++      int b = plan(family).firstBin + c - centerBin();
++      active[size_t(b >= 0 ? b : kFftBaseband + b)] = (c >= 0 && c < n) ? 1 : 2;
++    }
++    for (int k = 0; k < K; ++k) {
++      int64_t st = t0 + int64_t(k) * symLen + (symLen - kFftBaseband);
++      if (st + kFftBaseband > int64_t(sig.size())) break;
++      std::vector<cfloat> in(sig.begin() + st, sig.begin() + st + kFftBaseband); std::vector<cfloat> out(static_cast<size_t>(kFftBaseband));
++      f2.forward(in.data(), out.data());
++      for (int b = 0; b < kFftBaseband; ++b) {
++        double v = std::norm(out[size_t(b)] * invTs);
++        if (active[size_t(b)] == 1) { pin += v; ++nin; }
++        else if (active[size_t(b)] == 0) { pout += v; ++nout; }
++      }
++    }
++    if (nin > 0 && nout > 0) {
++      const double pilotGain = 1.0;  // average over data+pilots ~ unit
++      meanChanPow = std::max(pin / nin - pout / nout, 0.05 * pin / nin) / pilotGain;
++      if (getenv("SKW_QNORM_DBG")) fprintf(stderr, "qnorm: in=%.3g out=%.3g mean=%.3g h0pow=%.3g\n", pin / nin, pout / nout, meanChanPow, h0pow);
++    }
++  }
++  ChannelTracker tracker(family, robust, std::move(h0), nv0, meanChanPow);
+ 
+   SymbolWalker walker{family, sig, zc.cfoHz, t0, 0, &tracker};
+ 
+@@ -665,6 +881,14 @@ std::optional<RxFrameResult> receiveFrame(Family family,
+                       CpMode::Medium, hcode.n(), hLlr)) {
+     return std::nullopt;
+   }
++  if (g_genie) {
++    g_genie->zcCfo = zc.cfoHz; g_genie->chirpCfo = cfoSign;
++    if (g_genie->hdrBits.size() == hLlr.size()) {
++      int e = 0;
++      for (size_t i = 0; i < hLlr.size(); ++i) e += (hLlr[i] < 0) != (g_genie->hdrBits[i] != 0);
++      g_genie->hdrErr = e;
++    }
++  }
+   std::vector<uint8_t> hInfo;
+   if (!decodeCodeword(hcode, hLlr, hInfo)) return std::nullopt;
+   auto hdrBytes = bitsToBytes({hInfo.data(), size_t(kPhyHeaderBytes) * 8});
+diff --git a/src/phy/receiver.hpp b/src/phy/receiver.hpp
+index 35be050..6523ab0 100644
+--- a/src/phy/receiver.hpp
++++ b/src/phy/receiver.hpp
+@@ -119,6 +119,22 @@ struct RxFrameResult {
+ // payload symbols for the GUI instrument. Off by default - it costs a
+ // divide per symbol and an allocation, neither of which the modem path
+ // should pay.
++// EXPERIMENT (fade investigation): genie channel hook.
++struct GenieHook {
++  std::span<const cfloat> x;   // clean TX, sample-aligned with rx
++  std::span<const cfloat> yc;  // noiseless channel output, aligned
++  bool useH = false, useN = false;
++  // accumulators indexed by OFDM symbol index (header starts at 0)
++  std::vector<double> mseNum, mseDen, nvTrue, nvEst;
++  std::vector<int> cnt;
++  // per collected bit: QPSK per-bit MI using TRUE CSI (despread)
++  std::vector<float> miBits;
++  bool qpsk = true;
++  std::vector<uint8_t> hdrBits;
++  std::vector<cfloat> Rc;  // per-carrier X_window/X_orig (per frame)
++  int hdrErr = -1; double zcCfo = 0, chirpCfo = 0; int zcFirst = 0;
++};
++extern GenieHook* g_genie;
+ std::optional<RxFrameResult> receiveFrame(Family family,
+                                           std::span<const cfloat> rx,
+                                           RxStage* stageOut = nullptr,
+diff --git a/tools/bertool.cpp b/tools/bertool.cpp
+index e0dd8c6..a561f6e 100644
+--- a/tools/bertool.cpp
++++ b/tools/bertool.cpp
+@@ -13,6 +13,9 @@
+ // aligned modem-level FER (no PHY sync - that is ROADMAP 6.2), offsets
+ // relative to the per-family cssFloorDb table.
+ #include <cstdio>
++#include <cmath>
++#include <cstdlib>
++#include <algorithm>
+ #include <cstring>
+ #include <string>
+ #include <vector>
+@@ -67,7 +70,15 @@ std::vector<std::string> split(const std::string& s, char d) {
+   return out;
+ }
+ 
++ChansimParams presetParams0(const std::string& name);
+ ChansimParams presetParams(const std::string& name) {
++  ChansimParams p = presetParams0(name);
++  if (getenv("SKW_CH_DELAY")) p.delaySpreadMs = atof(getenv("SKW_CH_DELAY"));
++  if (getenv("SKW_CH_DOPPLER")) p.dopplerSpreadHz = atof(getenv("SKW_CH_DOPPLER"));
++  if (getenv("SKW_CH_CFO")) p.cfoHz = atof(getenv("SKW_CH_CFO"));
++  return p;
++}
++ChansimParams presetParams0(const std::string& name) {
+   if (name == "good") return ccirGood();
+   if (name == "poor") return ccirPoor();
+   if (name == "vhf") return vhfFlat();
+@@ -228,6 +239,16 @@ int main(int argc, char** argv) {
+   }
+ 
+   FILE* csv = a.csv.empty() ? nullptr : fopen(a.csv.c_str(), "w");
++  const char* gmode = getenv("SKW_GENIE");
++  const bool genie = gmode != nullptr;
++  GenieHook gh;
++  if (genie) {
++    gh.useH = strchr(gmode, 'H') != nullptr;
++    gh.useN = strchr(gmode, 'N') != nullptr;
++    g_genie = &gh;
++  }
++  FILE* gcsv = getenv("SKW_GENIE_CSV") ? fopen(getenv("SKW_GENIE_CSV"), "a") : nullptr;
++  FILE* gmse = getenv("SKW_GENIE_MSE") ? fopen(getenv("SKW_GENIE_MSE"), "a") : nullptr;
+ 
+   // The OFDM mode list default does not apply to the CSS tier.
+   const std::vector<int> ofdmDefault = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+@@ -275,6 +296,7 @@ int main(int argc, char** argv) {
+       tp.sig = cssMode ? ChirpSig::Css
+                        : (robust ? ChirpSig::Robust : ChirpSig::Fast);
+       tp.mode = mode;
++      if (getenv("SKW_CP")) tp.cpMode = CpMode(atoi(getenv("SKW_CP")));
+       tp.cssHeaderCopies = uint8_t(a.cssHdrCopies == 1 ? 1 : 2);
+       tp.payload = payload;
+       auto frame = buildFrameBaseband(tp);
+@@ -327,8 +349,37 @@ int main(int argc, char** argv) {
+                     uint64_t(mode) * 131 + uint64_t(fam) * 100003 +
+                     uint64_t(std::llround(off * 2.0 + 64.0)) * 15485863ull;
+           auto y = Chansim::run(cp, x);
++          std::vector<cfloat> yc;
++          if (genie) {
++            ChansimParams cc = cp; cc.snr3kDb = 100.0;
++            yc = Chansim::run(cc, x);
++            gh.x = x; gh.yc = yc; gh.miBits.clear(); gh.hdrErr = -1; gh.Rc.clear();
++            gh.hdrBits = buildFrameBits(tp).headerCoded;
++          }
+           RxStage st = RxStage::NoDetect;
+           auto res = receiveFrame(fam, y, &st);
++          if (genie && gcsv) {
++            int stg = !res ? (st == RxStage::NoDetect ? 0 : st == RxStage::ZcFail ? 1 : 2)
++                      : (res->payloadOk && res->payload == payload ? 4 : 3);
++            double hmi = -1, pmin = -1;
++            if (gh.miBits.size() >= 648) {
++              double a = 0; for (size_t i = 0; i < 648; ++i) a += gh.miBits[i];
++              hmi = a / 648;
++              // payload codewords
++              size_t off = 648; size_t rem = (payloadLen - std::min<size_t>(payloadLen, 30)) * 8;
++              const ModeDef& mdd = kModes[size_t(mode)];
++              while (rem > 0 && off < gh.miBits.size()) {
++                int N = payloadCodewordN(rem, mdd.rate);
++                double b = 0; size_t k = 0;
++                for (; k < size_t(N) && off + k < gh.miBits.size(); ++k) b += gh.miBits[off + k];
++                double m = k ? b / k : 0; pmin = pmin < 0 ? m : std::min(pmin, m);
++                off += size_t(N);
++                rem -= std::min(rem, size_t(N) * mdd.rate.num / mdd.rate.den);
++              }
++            }
++            fprintf(gcsv, "%s,%d,%.1f,%s,%d,%d,%.4f,%.4f,%d,%.2f,%.2f\n", plan(fam).name, mode, r.snrDb,
++                    a.preset.c_str(), t, stg, hmi, pmin, gh.hdrErr, gh.zcCfo, gh.chirpCfo); fprintf(gcsv, "#t0=%d\n", gh.zcFirst);
++          }
+           if (res) {
+             estSum += res->snrDb;
+             ++estN;
+@@ -349,6 +400,16 @@ int main(int argc, char** argv) {
+             ++r.payFail;
+           }
+         }
++        if (genie && gmse) {
++          for (size_t i = 0; i < gh.cnt.size(); ++i) {
++            if (!gh.cnt[i]) continue;
++            fprintf(gmse, "%s,%d,%.1f,%s,%zu,%d,%.2f,%.4g,%.4g,%.4g\n", plan(fam).name, mode, r.snrDb,
++                    a.preset.c_str(), i, gh.cnt[i],
++                    10 * std::log10(std::max(gh.mseNum[i] / std::max(gh.mseDen[i], 1e-12), 1e-9)),
++                    gh.mseDen[i] / gh.cnt[i] / plan(fam).carriers(), gh.nvTrue[i] / gh.cnt[i], gh.nvEst[i] / gh.cnt[i]);
++          }
++          gh.mseNum.clear(); gh.mseDen.clear(); gh.nvTrue.clear(); gh.nvEst.clear(); gh.cnt.clear();
++        }
+         const double est = estN > 0 ? estSum / estN : -99.0;
+         const double evm = evmN > 0 ? evmSum / evmN : -99.0;
+         const double pilot = evmN > 0 ? pilotSum / evmN : -1.0;
+diff --git a/tools/geom.cpp b/tools/geom.cpp
+new file mode 100644
+index 0000000..459c7f2
+--- /dev/null
++++ b/tools/geom.cpp
+@@ -0,0 +1,17 @@
++#include <cstdio>
++#include "core/constants.hpp"
++#include "phy/framer.hpp"
++#include "dsp/zc.hpp"
++using namespace skw;
++int main(){
++  for (int f=0;f<3;++f) for (int m : {4,6,8,11}) {
++    bool robust = m<=7; size_t len = robust?60:300;
++    std::vector<uint8_t> pl(len,1);
++    TxFrameParams tp; tp.family=Family(f); tp.mode=m; tp.sig = robust?ChirpSig::Robust:ChirpSig::Fast; tp.payload=pl;
++    auto g = computeGeometry(tp);
++    double hs = (kFftBaseband+cpSamplesAudio(CpMode::Medium)/kDecimation)/double(kFsBaseband);
++    printf("%-6s M%-2d pre=%.2fs zc=%d(%.2fs) hdrSym=%d (%.2fs) paySym=%d (%.2fs) cw=%d total=%.2fs\n",
++      plan(Family(f)).name,m,g.preambleSamples/12000.0,g.zcSymbols,g.zcSymbols*zcSymbolSamples()/12000.0,
++      g.headerSymbols,g.headerSymbols*hs,g.payloadSymbols,g.payloadSymbols*hs,g.payloadCodewords,g.totalSamples/12000.0);
++  }
++}

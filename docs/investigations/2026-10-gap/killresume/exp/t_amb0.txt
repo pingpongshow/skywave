@@ -1,0 +1,1 @@
+SKW_CHANMEM_PATH=- SKW_ST2_AMBIENT=0 SKW_KR_DEBUG=1 ../src/build/test_st2 >    512.68s user 3.92s system 58% cpu 14:50.56 total

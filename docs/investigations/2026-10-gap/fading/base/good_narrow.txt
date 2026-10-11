@@ -1,0 +1,22 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M4      -7.0    -7.0 |     3     0     4     0    7.0% |      12 | est   -8.6 evm   -4.8 pilot  0.000 |    60B air  40.6 ovh  51% good    1.4
+NARROW  M4      -7.0    -4.0 |     0     0     4     1    5.0% |      12 | est   -5.5 evm   -1.7 pilot  0.000 |    60B air  40.6 ovh  51% good    1.4
+NARROW  M4      -7.0    -1.0 |     0     0     0     1    1.0% |      12 | est   -2.5 evm    0.2 pilot  0.000 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4      -7.0     3.0 |     0     0     1     0    1.0% |      12 | est    1.7 evm    3.2 pilot  0.000 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4      -7.0     8.0 |     0     0     0     0    0.0% |      12 | est    6.2 evm    6.4 pilot  0.000 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M6      -5.0    -5.0 |     0     0     4    13   17.0% |      57 | est   -5.4 evm    1.2 pilot  0.021 |    60B air  24.9 ovh  83% good    2.0
+NARROW  M6      -5.0    -2.0 |     0     0     2     3    5.0% |      57 | est   -3.0 evm    2.8 pilot  0.011 |    60B air  24.9 ovh  83% good    2.3
+NARROW  M6      -5.0     1.0 |     0     0     0     2    2.0% |      57 | est    0.2 evm    5.6 pilot  0.018 |    60B air  24.9 ovh  83% good    2.4
+NARROW  M6      -5.0     5.0 |     0     0     0     1    1.0% |      57 | est    4.2 evm    9.0 pilot  0.009 |    60B air  24.9 ovh  83% good    2.4
+NARROW  M6      -5.0    10.0 |     0     0     0     0    0.0% |      57 | est    8.5 evm   12.2 pilot  0.008 |    60B air  24.9 ovh  83% good    2.4
+NARROW  M8      11.5    11.5 |     0     0     1    10   11.0% |     352 | est    6.4 evm   14.8 pilot  0.015 |   300B air   8.4 ovh  27% good   31.7
+NARROW  M8      11.5    14.5 |     0     0     0    12   12.0% |     352 | est    8.1 evm   16.9 pilot  0.014 |   300B air   8.4 ovh  27% good   31.4
+NARROW  M8      11.5    17.5 |     0     0     0     5    5.0% |     352 | est   12.2 evm   19.0 pilot  0.015 |   300B air   8.4 ovh  27% good   33.9
+NARROW  M8      11.5    21.5 |     0     0     0     5    5.0% |     352 | est   15.0 evm   22.3 pilot  0.017 |   300B air   8.4 ovh  27% good   33.9
+NARROW  M8      11.5    26.5 |     0     0     0    10   10.0% |     352 | est   15.6 evm   23.8 pilot  0.003 |   300B air   8.4 ovh  27% good   32.1
+NARROW  M11     19.5    19.5 |     0     0     0     9    9.0% |     819 | est   14.2 evm   20.5 pilot  0.005 |   300B air   4.9 ovh  46% good   55.5
+NARROW  M11     19.5    22.5 |     0     0     1     6    7.0% |     819 | est   14.9 evm   21.8 pilot  0.004 |   300B air   4.9 ovh  46% good   56.7
+NARROW  M11     19.5    25.5 |     0     0     0     2    2.0% |     819 | est   19.0 evm   24.1 pilot  0.003 |   300B air   4.9 ovh  46% good   59.8
+NARROW  M11     19.5    29.5 |     0     0     0     3    3.0% |     819 | est   17.5 evm   23.4 pilot  0.009 |   300B air   4.9 ovh  46% good   59.1
+NARROW  M11     19.5    34.5 |     0     0     0     2    2.0% |     819 | est   19.8 evm   25.3 pilot  0.004 |   300B air   4.9 ovh  46% good   59.8
+== all points pass ==

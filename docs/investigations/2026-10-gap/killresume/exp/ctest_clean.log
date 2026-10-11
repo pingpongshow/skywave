@@ -1,0 +1,59 @@
+Test project /private/tmp/claude-501/kr/clean/build
+      Start  1: test_core
+      Start  2: test_config
+ 1/39 Test  #1: test_core ........................   Passed    0.21 sec
+      Start  3: test_audio_rings
+ 2/39 Test  #2: test_config ......................   Passed    0.42 sec
+      Start  4: test_wav
+ 3/39 Test  #3: test_audio_rings .................   Passed    0.58 sec
+      Start  5: test_dsp
+ 4/39 Test  #4: test_wav .........................   Passed    0.42 sec
+      Start  6: test_css
+ 5/39 Test  #5: test_dsp .........................   Passed    0.32 sec
+      Start  7: test_css_phy
+ 6/39 Test  #6: test_css .........................   Passed   10.24 sec
+      Start  8: test_css_link
+ 7/39 Test  #7: test_css_phy .....................   Passed   21.22 sec
+      Start  9: test_vhf
+ 8/39 Test  #9: test_vhf .........................   Passed   11.72 sec
+      Start 10: test_crc_whiten
+ 9/39 Test #10: test_crc_whiten ..................   Passed    0.23 sec
+      Start 11: test_ldpc
+10/39 Test #11: test_ldpc ........................   Passed    0.34 sec
+      Start 12: test_chirp
+11/39 Test  #8: test_css_link ....................   Passed   70.65 sec
+      Start 13: test_zc
+12/39 Test #13: test_zc ..........................   Passed    0.33 sec
+      Start 14: test_phy_tx
+13/39 Test #14: test_phy_tx ......................   Passed    0.26 sec
+      Start 15: test_chansim
+14/39 Test #15: test_chansim .....................   Passed    0.35 sec
+      Start 16: test_phy_rx
+15/39 Test #12: test_chirp .......................   Passed   50.06 sec
+      Start 17: test_conformance
+16/39 Test #16: test_phy_rx ......................   Passed    2.03 sec
+      Start 18: test_frame
+17/39 Test #18: test_frame .......................   Passed    0.44 sec
+      Start 19: test_fsm
+18/39 Test #19: test_fsm .........................   Passed    0.22 sec
+      Start 20: test_handshake
+19/39 Test #20: test_handshake ...................   Passed    0.22 sec
+      Start 21: test_arq
+20/39 Test #21: test_arq .........................   Passed    0.23 sec
+      Start 22: test_tcp
+21/39 Test #22: test_tcp .........................   Passed    0.34 sec
+      Start 23: test_m2
+22/39 Test #17: test_conformance .................   Passed    3.86 sec
+      Start 24: test_m3_ramp
+23/39 Test #24: test_m3_ramp .....................   Passed  102.35 sec
+      Start 25: test_system
+24/39 Test #25: test_system ......................   Passed   22.52 sec
+      Start 26: test_proto
+25/39 Test #26: test_proto .......................   Passed    2.56 sec
+      Start 27: test_file
+26/39 Test #27: test_file ........................   Passed   26.11 sec
+      Start 28: test_bcast
+27/39 Test #28: test_bcast .......................   Passed    8.76 sec
+      Start 29: test_st2
+28/39 Test #23: test_m2 ..........................   Passed  269.79 sec
+      Start 30: test_st2_fullduplex

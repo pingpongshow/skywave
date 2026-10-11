@@ -1,0 +1,1 @@
+SKW_CHANMEM_PATH=- ../src/build4/test_st2 > st2_fixed_suite.log 2>&1  171.84s user 0.50s system 32% cpu 8:43.08 total
