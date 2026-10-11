@@ -1,0 +1,5 @@
+family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer,cfo,drift,cfoErrMean,cfoErrMaxAbs
+WIDE,4,-2.5,30,0,0,0,0,0.0000,0.00,2.000,1.793,2.035
+WIDE,7,5.0,30,0,0,0,0,0.0000,0.00,2.000,1.805,1.966
+WIDE,8,8.0,30,0,0,0,0,0.0000,0.00,2.000,1.061,1.306
+WIDE,11,18.0,30,0,0,0,0,0.0000,0.00,2.000,1.072,1.138

@@ -35,6 +35,26 @@ inline int chirpRepSamples() {
   return int(activeProfile().chirpRepSec * kFsBaseband);
 }
 
+// CFO capture range of the detector's matched filter (+-Hz). Every
+// signature's ridge integrates this whole range.
+double chirpCfoCaptureMaxHz();
+
+// Ambiguity spacing of the detector's FINE CFO estimate for a signature:
+// same-slope inter-rep phase is ambiguous modulo 1/(gap*T) for the
+// smallest same-slope rep gap (fast/calling/css: 1/T = 6.25 Hz on HF,
+// robust: 1/(2T) = 3.125 Hz). The detector unwraps it against a COARSE
+// estimate from up/down peak timing, which a slope-less pattern (fast)
+// does not have and which two-path multipath can bias by several
+// branches (GAP_CLOSURE_PLAN.md R1) - receiveFrame resolves the branch.
+double chirpCfoAmbiguityHz(ChirpSig sig);
+
+// Delay-Doppler bias of the detector's start estimate, in samples per Hz
+// of CFO: under +cfo an up-rep's peak arrives early by cfo*T/B*fs and a
+// down-rep's late, so the slot-mean start is biased by that times
+// (nDown - nUp)/n. Zero for balanced patterns; the returned value is the
+// correction to ADD per Hz (positive for fast U-U).
+double chirpStartCfoSensitivity(Family family, ChirpSig sig);
+
 // Baseband preamble for a family/signature: reps back-to-back, raised-cosine
 // edges (2 ms) per rep, unit RMS per rep.
 std::vector<cfloat> makeChirpPreamble(Family family, ChirpSig sig);

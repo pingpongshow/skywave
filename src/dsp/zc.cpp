@@ -1,6 +1,7 @@
 #include "dsp/zc.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 
 #include "dsp/fft.hpp"
@@ -77,10 +78,18 @@ std::vector<cfloat> makeZcBlock(Family family, int nSymbols) {
   return block;
 }
 
+bool cfoBranchSearchEnabled() {
+  static const bool on = [] {
+    const char* e = std::getenv("SKW_CFO_BRANCH");
+    return !(e && std::atoi(e) == 0);
+  }();
+  return on;
+}
+
 ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                       double coarseStart, double priorCfoHz,
                       double priorCfoSigmaHz, int nSymbols,
-                      int searchRadius) {
+                      int searchRadius, double fitRangeHz) {
   ZcSyncResult res;
   const int symLen = zcSymbolSamples();
   const int core = kFftBaseband;
@@ -151,10 +160,11 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
     ++mCount;
   }
   // ML frequency fit: maximize |sum_s m_s e^{-j w s}| over the residual
-  // range (prior error is bounded by the chirp handoff, so +-3 Hz), then
+  // range (the caller bounds it: +-3 Hz around a resolved chirp branch,
+  // or half a branch spacing when scoring branch hypotheses), then
   // parabolic-refine. This uses all symbol pairs at all lags optimally.
   const double stepHz = 0.05;
-  const double rangeHz = 3.0;
+  const double rangeHz = fitRangeHz;
   auto combinedMag2 = [&](double fHz) {
     cfloat cacc(0, 0);
     for (int s = 0; s < nSymbols; ++s) {
@@ -180,6 +190,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
     }
   }
   const double residual = bestF;
+  res.fitPower = bestM;
 
   // Measurement sigma from per-symbol SNR around the fit (frequency CRLB
   // over mCount uniformly spaced symbols), then variance-weighted fusion
@@ -201,7 +212,16 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
       std::max(slopeSigma * kFsBaseband / (2.0 * M_PI * symLen), 1e-3);
 
   const double wm = 1.0 / (measSigma * measSigma);
-  const double wp = 1.0 / (priorCfoSigmaHz * priorCfoSigmaHz);
+  double wp = 1.0 / (priorCfoSigmaHz * priorCfoSigmaHz);
+  // A residual far outside the joint uncertainty means the prior sits on
+  // a wrong ambiguity branch (two-path up/down dominance swap biasing the
+  // chirp's coarse CFO): fusing would pull the estimate back toward it.
+  if (cfoBranchSearchEnabled() &&
+      std::abs(residual) >
+      3.0 * std::sqrt(priorCfoSigmaHz * priorCfoSigmaHz +
+                      measSigma * measSigma)) {
+    wp = 0.0;
+  }
   const double fusedResidual = residual * wm / (wm + wp);
   res.cfoHz = priorCfoHz + fusedResidual;
   res.cfoSigmaHz = 1.0 / std::sqrt(wm + wp);
@@ -301,7 +321,23 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
         firstLag = lag;
       }
     }
-    const double tau = double(firstLag) - 2.0;
+    // Multipath margin (GAP_CLOSURE_PLAN.md R4): back the window off ahead
+    // of the anchor so a fading early path that is weak at ZC time stays
+    // inside it - but only as far as the CP has room left after the
+    // MEASURED spread. A fixed 16-sample backoff pushed the late path of a
+    // 4.5 ms channel past the CP (m3_cp_auto_steps_under_multipath). The
+    // reference is the Medium CP every header walks with.
+    int lastLag = firstLag;
+    for (int lag = firstLag + 1; lag <= firstLag + 96; ++lag) {
+      if (magAt(lag) >= 0.1 * best && magAt(lag) >= magAt(lag - 1) &&
+          magAt(lag) >= magAt(lag + 1)) {
+        lastLag = lag;
+      }
+    }
+    const int cpRef = cpSamplesAudio(CpMode::Medium) / kDecimation;
+    const int backoff = std::clamp(cpRef - (lastLag - firstLag) - 4, 2,
+                                   std::max(2, zcWindowBackoff()));
+    const double tau = double(firstLag) - double(backoff);
     res.blockStart += tau;
     for (int i = 0; i < n; ++i) {
       int bin = plan(family).firstBin + i - centerBin();

@@ -1,0 +1,5 @@
+family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer,cfo,drift,cfoErrMean,cfoErrMaxAbs
+NARROW,4,-9.0,30,0,0,0,0,0.0000,20.00,0.000,-0.023,0.590
+NARROW,7,-1.5,30,0,0,0,0,0.0000,20.00,0.000,0.005,0.296
+NARROW,8,2.5,30,0,0,0,0,0.0000,20.00,0.000,-0.024,0.535
+NARROW,11,11.5,30,0,0,0,0,0.0000,20.00,0.000,-0.010,0.118

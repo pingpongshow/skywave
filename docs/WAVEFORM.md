@@ -289,15 +289,19 @@ normalized by local energy; threshold set for < 1 false alarm / 10 min in
 noise. 4-rep acquisition floors (3 kHz ref): `ULTRA`/`WIDE` ~−12 dB,
 `MID` ~−14 dB, `NARROW` ~−15 dB (narrow families concentrate preamble power exactly as they
 do payload power). The correlation peak gives coarse timing (±1 ms) and the
-inter-rep phase slope gives coarse CFO. CFO capture: ±5 Hz for connected
-preambles; **±50 Hz for calling preambles** (real SSB stations mistune by
-tens of Hz). CFO is measured from slope diversity — up-rep and down-rep
-correlation peaks shift oppositely under CFO (Δt = ±Δf·T/B), so their
-difference yields coarse CFO and their mean yields true timing; inter-rep
-correlation phase then refines to <1 Hz within its ±3.1 Hz ambiguity. The
-up–up fast signature has no slope diversity and relies on inter-rep phase
-plus small peak-shift disambiguation, sufficient for its ±5 Hz
-frequency-locked regime.
+inter-rep phase slope gives coarse CFO. CFO capture: **±50 Hz for every
+signature** (since v1.2.0; real SSB stations mistune by tens of Hz and
+drift mid-session). CFO is measured from slope diversity — up-rep and
+down-rep correlation peaks shift oppositely under CFO (Δt = ±Δf·T/B), so
+their difference yields coarse CFO and their mean yields true timing;
+inter-rep correlation phase then refines to <1 Hz within its ambiguity
+(1/(gap·T)). The up–up fast signature has no slope diversity, and
+multipath biases the coarse estimate of the others, so the receiver
+resolves the ambiguity branch by ZC-scored, header-verified search over
+the whole ±55 Hz ridge (DSP.md `BRANCH`). (Before v1.2.0 the fast
+signature captured only ±3.1 Hz - the documented ±5 Hz and its "peak-shift
+disambiguation" never existed - and any retune or 0.02 Hz/s of drift
+killed a session.)
 
 ### Fine Sync Symbols
 

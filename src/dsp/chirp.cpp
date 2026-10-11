@@ -72,6 +72,32 @@ std::vector<bool> chirpPattern(ChirpSig sig) {
   return {};
 }
 
+double chirpCfoCaptureMaxHz() { return kCfoCaptureMaxHz; }
+
+double chirpCfoAmbiguityHz(ChirpSig sig) {
+  const auto pat = chirpPattern(sig);
+  int bestGap = 0;
+  for (size_t i = 0; i < pat.size(); ++i) {
+    for (size_t j = i + 1; j < pat.size(); ++j) {
+      if (pat[i] != pat[j]) continue;
+      const int gap = int(j - i);
+      if (bestGap == 0 || gap < bestGap) bestGap = gap;
+    }
+  }
+  return bestGap > 0 ? 1.0 / (bestGap * activeProfile().chirpRepSec) : 0.0;
+}
+
+double chirpStartCfoSensitivity(Family family, ChirpSig sig) {
+  const auto pat = chirpPattern(sig);
+  int nUp = 0;
+  for (bool u : pat) nUp += u ? 1 : 0;
+  const int nDown = int(pat.size()) - nUp;
+  const auto& p = plan(family);
+  const double bw = p.chirpEndHz - p.chirpStartHz;
+  return activeProfile().chirpRepSec / bw * kFsBaseband *
+         double(nUp - nDown) / double(pat.size());
+}
+
 std::vector<cfloat> makeChirpPreamble(Family family, ChirpSig sig) {
   auto up = makeRep(family, true);
   auto down = makeRep(family, false);

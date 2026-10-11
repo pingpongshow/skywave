@@ -81,7 +81,10 @@ TEST_CASE(zc_refine_clean) {
     CHECK(r.ok);
     // First-tap anchoring backs off the correlation lobe's half-power
     // edge, which scales with 1/bandwidth (widest for NARROW).
-    double early = kFftBaseband / double(plan(f).carriers()) * 1.5 + 3.0;
+    // The window then backs off a further zcWindowBackoff() samples of
+    // multipath margin (v1.1.0: 2; HF since 8.3: 16).
+    double early = kFftBaseband / double(plan(f).carriers()) * 1.5 + 3.0 +
+                   double(zcWindowBackoff() - 2);
     CHECK(r.blockStart > 500.0 - early);
     CHECK(r.blockStart < 500.0 + 3.0);
     CHECK_NEAR(r.cfoHz, 0.7, 0.1);
@@ -103,7 +106,9 @@ TEST_CASE(zc_refine_robust_at_floor) {
     double ferr = std::fabs(r.cfoHz - 1.9);
     worstT = std::max(worstT, std::fabs(r.blockStart - 500.0));
     worstF = std::max(worstF, ferr);
-    bool tOk = r.blockStart > 500.0 - 12.0 && r.blockStart < 500.0 + 3.0;
+    const double margin = double(zcWindowBackoff() - 2);  // see above
+    bool tOk = r.blockStart > 500.0 - 12.0 - margin &&
+               r.blockStart < 500.0 + 3.0;
     if (tOk && ferr < 0.5) ++okCount;
   }
   CHECK(okCount >= 18);
@@ -118,7 +123,8 @@ TEST_CASE(zc_refine_fast_header_floor) {
     auto rx = makeRx(Family::Wide, kZcSymbolsFast, -1.0, -0.8, 300 + t);
     auto r = zcRefine(Family::Wide, rx, 500.0 + 5.0, -1.5, 1.0, kZcSymbolsFast);
     if (!r.ok) continue;
-    if (r.blockStart > 500.0 - 12.0 && r.blockStart < 500.0 + 3.0 &&
+    const double margin = double(zcWindowBackoff() - 2);
+    if (r.blockStart > 500.0 - 12.0 - margin && r.blockStart < 500.0 + 3.0 &&
         std::fabs(r.cfoHz + 0.8) < 0.5) {
       ++okCount;
     }

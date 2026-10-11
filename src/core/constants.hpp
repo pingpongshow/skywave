@@ -325,15 +325,26 @@ struct BandProfile {
   // Fast-header spreading: HF needs x2 (decode to ~-1 dB); the VHF fast
   // tier starts at +6.5 dB, so x1 halves the header airtime safely.
   int headerSpreadFast;
+  // Multipath margin before the earliest significant ZC tap (baseband
+  // samples), and the tracker's delay-grid taps ahead of the FFT window.
+  // HF: an early path that is weak at ZC time (fading) re-emerges up to
+  // the full delay spread early; 16 samples (2/3 of the 2 ms Short CP)
+  // and 5 grid taps keep it inside the window and on the grid
+  // (GAP_CLOSURE_PLAN.md R4). VHF's microsecond spreads keep the old 2/2
+  // (its 0.67 ms Short CP is 8 samples).
+  int zcWindowBackoff;
+  int trackerPreTaps;
 };
 inline constexpr BandProfile kHfProfile = {
     "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
     true,     true,          0.160,           CpMode::Medium,
-    &kHfCpSamplesAudio,      3,               6,             8.0,  2};
+    &kHfCpSamplesAudio,      3,               6,             8.0,  2,
+    16,       5};
 inline constexpr BandProfile kVhfFmProfile = {
     "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
     false,    false,         0.040,           CpMode::Short,
-    &kVhfCpSamplesAudio,     2,               4,             11.0, 1};
+    &kVhfCpSamplesAudio,     2,               4,             11.0, 1,
+    2,        2};
 
 inline const BandProfile*& activeProfileSlot() {
   static const BandProfile* p = &kHfProfile;
@@ -345,6 +356,22 @@ inline void setActiveBand(Band b) {
 }
 inline Band activeBand() {
   return activeProfileSlot() == &kVhfFmProfile ? Band::VhfFm : Band::Hf;
+}
+
+// R4 multipath margins (zcWindowBackoff / trackerPreTaps), or the v1.1.0
+// values 2/2 with SKW_MULTIPATH_MARGIN=0 for A/B measurement.
+inline bool multipathMarginEnabled() {
+  static const bool on = [] {
+    const char* e = std::getenv("SKW_MULTIPATH_MARGIN");
+    return !(e && std::atoi(e) == 0);
+  }();
+  return on;
+}
+inline int zcWindowBackoff() {
+  return multipathMarginEnabled() ? activeProfile().zcWindowBackoff : 2;
+}
+inline int trackerPreTaps() {
+  return multipathMarginEnabled() ? activeProfile().trackerPreTaps : 2;
 }
 
 inline const FamilyPlan& plan(Family f) {

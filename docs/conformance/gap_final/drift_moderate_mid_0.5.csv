@@ -1,0 +1,4 @@
+family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer,cfo,drift,cfoErrMean,cfoErrMaxAbs
+MID,4,2.0,30,0,0,0,0,0.0000,0.00,0.500,0.467,1.213
+MID,7,5.5,30,0,0,0,0,0.0000,0.00,0.500,0.517,1.279
+MID,8,14.5,30,0,0,0,0,0.0000,0.00,0.500,0.188,1.325

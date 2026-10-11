@@ -119,6 +119,20 @@ struct RxFrameResult {
 // payload symbols for the GUI instrument. Off by default - it costs a
 // divide per symbol and an allocation, neither of which the modem path
 // should pay.
+// CFO branch candidates between the chirp and ZC stages (see
+// receiver.cpp): each a CFO hypothesis, its delay-Doppler-corrected ZC
+// block start, and the residual fit range for the full ZC refinement,
+// in the order receiveFrame tries them against the header decode.
+struct CfoBranch {
+  double cfoHz;
+  double start;
+  double fitRangeHz;
+};
+std::vector<CfoBranch> resolveCfoBranches(Family family,
+                                          std::span<const cfloat> sig,
+                                          ChirpSig chirpSig, double cfoHz,
+                                          double zcCoarse, int zcCount);
+
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut = nullptr,

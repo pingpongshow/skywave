@@ -7,7 +7,8 @@
 namespace skw {
 
 ChannelTracker::ChannelTracker(Family family, bool robustClass,
-                               std::vector<cfloat> h0, double noiseVar0)
+                               std::vector<cfloat> h0, double noiseVar0,
+                               double meanChanPow)
     : family_(family), robust_(robustClass), h_(std::move(h0)),
       noiseVar_(std::max(noiseVar0, 1e-6)) {
   // Tap grid at HALF the segment's natural resolution (N/2n): a grid at
@@ -18,12 +19,13 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
   // Kalman prior handles the resulting near-collinearity.
   const int n = plan(family_).carriers();
   const double spacing = double(kFftBaseband) / (2.0 * n);
-  numTaps_ = 3 + int(56.0 / spacing);
+  k0_ = trackerPreTaps();
+  numTaps_ = 1 + k0_ + int(56.0 / spacing);
   const int T = numTaps_;
   basis_.resize(size_t(n) * T);
   for (int c = 0; c < n; ++c) {
     for (int t = 0; t < T; ++t) {
-      double d = (t - 2) * spacing;
+      double d = (t - k0_) * spacing;
       double ph = -2.0 * M_PI * double(c) * d / kFftBaseband;
       basis_[size_t(c) * T + t] =
           cfloat(float(std::cos(ph)), float(std::sin(ph)));
@@ -78,6 +80,10 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
   double seedPow = 0.0;
   for (const auto& v : g_) seedPow += std::norm(v);
   seedPow = std::max(seedPow, 1e-6);
+  // Total process-noise power: the frame-average channel power when the
+  // caller measured it (R5), else the ZC-time seed power. The profile
+  // SHAPE below still comes from the seed taps.
+  const double qPow = meanChanPow > 0.0 ? meanChanPow : seedPow;
   qDiag_.assign(size_t(T), 0.0);
   const double qScale = 1.0 - rho_ * rho_;
   {
@@ -96,7 +102,7 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
       qDiag_[size_t(t)] = prof + 0.1 * seedPow / T;
       sum += qDiag_[size_t(t)];
     }
-    const double norm = qScale * 1.2 * seedPow / std::max(sum, 1e-12);
+    const double norm = qScale * 1.2 * qPow / std::max(sum, 1e-12);
     for (auto& q : qDiag_) q *= norm;
   }
 
@@ -140,7 +146,10 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
   const int T = numTaps_;
   auto lay = symbolLayout(family_, symIdx, mask_);
   const int np = int(lay.pilotCarriers.size());
-  if (np == 0) return;
+  if (np == 0) {
+    if (recording_) hist_.push_back({g_, P_, false, noiseVar_});
+    return;
+  }
 
   // Predict: g <- rho g, P <- rho^2 P + Q.
   for (auto& v : g_) v *= rho_;
@@ -319,6 +328,148 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
     hv += std::max(v, 0.0);
   }
   hVar_ = hv / std::max(n, 1);
+  if (recording_) hist_.push_back({g_, P_, true, noiseVar_});
+}
+
+void ChannelTracker::projectH(const std::vector<std::complex<double>>& g,
+                              const std::vector<std::complex<double>>& P,
+                              std::vector<cfloat>& h, double& hv) const {
+  const int T = numTaps_;
+  const int n = plan(family_).carriers();
+  h.resize(size_t(n));
+  double sum = 0.0;
+  for (int c = 0; c < n; ++c) {
+    const cfloat* row = &basis_[size_t(c) * T];
+    std::complex<double> acc(0, 0);
+    double v = 0.0;
+    for (int t = 0; t < T; ++t) {
+      std::complex<double> rt(row[t].real(), row[t].imag());
+      acc += rt * g[size_t(t)];
+      std::complex<double> pa(0, 0);
+      for (int u = 0; u < T; ++u) {
+        pa += P[size_t(t) * T + u] *
+              std::conj(std::complex<double>(row[u].real(), row[u].imag()));
+      }
+      v += (rt * pa).real();
+    }
+    h[size_t(c)] = cfloat(float(acc.real()), float(acc.imag()));
+    sum += std::max(v, 0.0);
+  }
+  hv = sum / std::max(n, 1);
+}
+
+void ChannelTracker::beginHistory() {
+  recording_ = true;
+  hist_.clear();
+}
+
+// Rauch-Tung-Striebel backward pass over the recorded span. With
+// transition g' = rho g + w (w ~ Q), for a step that ran the predict:
+//   Pp_{k+1} = rho^2 Pf_k + Q,  gp_{k+1} = rho gf_k
+//   G_k = rho Pf_k Pp_{k+1}^-1
+//   gs_k = gf_k + G_k (gs_{k+1} - gp_{k+1})
+//   Ps_k = Pf_k + G_k (Ps_{k+1} - Pp_{k+1}) G_k^H
+// A pilot-less symbol ran no predict (state unchanged), so across it the
+// smoothed state simply carries over.
+void ChannelTracker::smoothHistory(std::vector<std::vector<cfloat>>& hOut,
+                                   std::vector<double>& nvOut) {
+  using cd = std::complex<double>;
+  recording_ = false;
+  const int T = numTaps_;
+  const size_t K = hist_.size();
+  hOut.assign(K, {});
+  nvOut.assign(K, 0.0);
+  if (K == 0) return;
+  std::vector<cd> gs = hist_[K - 1].g, Ps = hist_[K - 1].P;
+  double hv = 0.0;
+  projectH(gs, Ps, hOut[K - 1], hv);
+  nvOut[K - 1] = hist_[K - 1].r + hv;
+  const size_t TT = size_t(T) * size_t(T);
+  std::vector<cd> Pp(TT), X(TT), G(TT), GD(TT), dg(static_cast<size_t>(T));
+  for (size_t k = K - 1; k-- > 0;) {
+    const HistEntry& f = hist_[k];
+    if (!hist_[k + 1].predicted) {
+      // No predict between k and k+1: smoothed state carries over.
+      projectH(gs, Ps, hOut[k], hv);
+      nvOut[k] = f.r + hv;
+      continue;
+    }
+    const double r2 = rho_ * rho_;
+    for (size_t i = 0; i < Pp.size(); ++i) Pp[i] = r2 * f.P[i];
+    for (int t = 0; t < T; ++t) Pp[size_t(t) * T + t] += qDiag_[size_t(t)];
+    // Solve Pp X = Pf (Gauss-Jordan, partial pivoting); G = rho X^H since
+    // Pf and Pp are Hermitian: G = rho Pf Pp^-1 = rho (Pp^-1 Pf)^H.
+    std::vector<cd> M = Pp;
+    X = f.P;
+    for (int col = 0; col < T; ++col) {
+      int piv = col;
+      for (int r = col + 1; r < T; ++r) {
+        if (std::abs(M[size_t(r) * T + col]) >
+            std::abs(M[size_t(piv) * T + col])) {
+          piv = r;
+        }
+      }
+      if (piv != col) {
+        for (int c2 = 0; c2 < T; ++c2) {
+          std::swap(M[size_t(col) * T + c2], M[size_t(piv) * T + c2]);
+          std::swap(X[size_t(col) * T + c2], X[size_t(piv) * T + c2]);
+        }
+      }
+      const cd d = M[size_t(col) * T + col];
+      if (std::abs(d) < 1e-15) continue;
+      for (int c2 = 0; c2 < T; ++c2) {
+        M[size_t(col) * T + c2] /= d;
+        X[size_t(col) * T + c2] /= d;
+      }
+      for (int r = 0; r < T; ++r) {
+        if (r == col) continue;
+        const cd fr = M[size_t(r) * T + col];
+        if (fr == cd(0, 0)) continue;
+        for (int c2 = 0; c2 < T; ++c2) {
+          M[size_t(r) * T + c2] -= fr * M[size_t(col) * T + c2];
+          X[size_t(r) * T + c2] -= fr * X[size_t(col) * T + c2];
+        }
+      }
+    }
+    for (int i = 0; i < T; ++i) {
+      for (int j = 0; j < T; ++j) {
+        G[size_t(i) * T + j] = rho_ * std::conj(X[size_t(j) * T + i]);
+      }
+    }
+    for (int t = 0; t < T; ++t) dg[size_t(t)] = gs[size_t(t)] - rho_ * f.g[size_t(t)];
+    std::vector<cd> gNew = f.g;
+    for (int i = 0; i < T; ++i) {
+      cd a(0, 0);
+      for (int j = 0; j < T; ++j) a += G[size_t(i) * T + j] * dg[size_t(j)];
+      gNew[size_t(i)] += a;
+    }
+    // GD = G (Ps - Pp);  Ps_k = Pf + GD G^H.
+    for (int i = 0; i < T; ++i) {
+      for (int j = 0; j < T; ++j) {
+        cd a(0, 0);
+        for (int u = 0; u < T; ++u) {
+          a += G[size_t(i) * T + u] *
+               (Ps[size_t(u) * T + j] - Pp[size_t(u) * T + j]);
+        }
+        GD[size_t(i) * T + j] = a;
+      }
+    }
+    std::vector<cd> PNew = f.P;
+    for (int i = 0; i < T; ++i) {
+      for (int j = 0; j < T; ++j) {
+        cd a(0, 0);
+        for (int u = 0; u < T; ++u) {
+          a += GD[size_t(i) * T + u] * std::conj(G[size_t(j) * T + u]);
+        }
+        PNew[size_t(i) * T + j] += a;
+      }
+    }
+    gs = std::move(gNew);
+    Ps = std::move(PNew);
+    projectH(gs, Ps, hOut[k], hv);
+    nvOut[k] = f.r + hv;
+  }
+  hist_.clear();
 }
 
 // In-place Gaussian elimination with partial pivoting; solution in b.

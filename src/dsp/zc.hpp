@@ -43,6 +43,9 @@ struct ZcSyncResult {
   double cfoHz = 0.0;       // fused CFO (prior x measurement, by variance)
   double cfoSigmaHz = 0.0;  // estimated std dev of cfoHz
   float quality = 0.0f;     // coherent-combining quality in [0, 1]
+  // Coherent ML-fit power |sum_s m_s e^{-jws}|^2 at the fitted residual:
+  // the metric receiveFrame compares across CFO branch hypotheses.
+  double fitPower = 0.0;
   // Per-carrier noise variance estimated from the spread of the block's
   // per-symbol channel estimates (same normalization as `channel`).
   // Seeds the tracker so SHORT frames (ACKs, keepalives) report honest
@@ -60,10 +63,20 @@ struct ZcSyncResult {
 // carriers cannot deliver < 0.5 Hz alone at deep SNR), while the chirp
 // stage integrates its full band over 0.64 s and is often the better
 // estimator. The result is the variance-weighted fusion of both; pass a
-// large priorCfoSigmaHz to get the ZC-only measurement.
+// large priorCfoSigmaHz to get the ZC-only measurement. A residual far
+// outside the joint prior/measurement uncertainty (> 3 sigma) means the
+// prior is on a wrong branch, and the prior is then dropped rather than
+// fused (GAP_CLOSURE_PLAN.md R1).
+//
+// fitRangeHz bounds the residual frequency search around the prior.
 ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                       double coarseStart, double priorCfoHz,
                       double priorCfoSigmaHz, int nSymbols,
-                      int searchRadius = 24);
+                      int searchRadius = 24, double fitRangeHz = 3.0);
+
+// CFO branch resolution (receiveFrame) and the wrong-branch prior gate
+// above. On by default; SKW_CFO_BRANCH=0 restores the v1.1.0 handoff for
+// A/B measurement.
+bool cfoBranchSearchEnabled();
 
 }  // namespace skw

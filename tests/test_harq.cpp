@@ -62,23 +62,28 @@ TEST_CASE(chase_combining_gain) {
   // below the single-tx point, combined decode must beat what a single
   // transmission achieves AT the point.
   const double base = floorDb(Family::Wide, 8) + 1.0;  // single-tx ~ok
+  // The deep point sits below the single-shot knee. The v1.2.0 receiver
+  // (RTS smoothing, multipath margin) moved that knee ~1.5 dB down on
+  // AWGN: at base-2.5 single shots went from 1/12 to 8/12, so the point
+  // moved to base-4 to keep measuring combining, not the knee.
+  const double deep = base - 4.0;
   const int trials = getenv("SKW_HARQ_TRIALS") ? atoi(getenv("SKW_HARQ_TRIALS")) : 12;
   int single = successes(base, 1, false, trials, 500);
-  int combinedDeep = successes(base - 2.5, 2, true, trials, 900);
-  int singleDeep = successes(base - 2.5, 1, false, trials, 900);
+  int combinedDeep = successes(deep, 2, true, trials, 900);
+  int singleDeep = successes(deep, 1, false, trials, 900);
   std::printf("harq: single@%.1f=%d/%d single@%.1f=%d/%d "
               "combined@%.1f=%d/%d\n",
-              base, single, trials, base - 2.5, singleDeep, trials,
-              base - 2.5, combinedDeep, trials);
+              base, single, trials, deep, singleDeep, trials, deep,
+              combinedDeep, trials);
   CHECK(single >= trials - 2);          // sanity: knee placement
   CHECK(singleDeep <= trials / 2 + 1);  // deep point mostly fails alone
-  CHECK(combinedDeep >= trials - 2);    // >= 2.5 dB combining gain
+  CHECK(combinedDeep >= trials - 2);    // >= 4 dB below the base point
 }
 
 TEST_CASE(chase_two_receptions_without_retx_flag) {
   // Two receptions of the SAME transmission (no rv bump needed at the
   // PHY): identity key matches, LLRs add.
-  const double snr = floorDb(Family::Wide, 8) - 1.5;
+  const double snr = floorDb(Family::Wide, 8) - 3.0;  // see deep point above
   int ok = successes(snr, 2, true, 10, 1300);
   int okNoHarq = successes(snr, 2, false, 10, 1300);
   std::printf("harq: 2rx combined=%d/10 no-harq=%d/10 at %.1f dB\n", ok,

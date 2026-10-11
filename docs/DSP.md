@@ -62,22 +62,36 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   baseband, re-runs the match, and proceeds normally with an
   `inverted-spectrum` telemetry flag set
 - `COARSE`: correlation peak → timing ±1 ms; CFO from slope diversity plus
-  inter-rep phase → <1 Hz. Capture range: ±5 Hz for connected preambles;
-  **±50 Hz for calling preambles** — real SSB stations mistune by tens of
-  Hz. An LFM frequency offset masquerades as a timing shift (Δt = Δf·T/B);
-  up-reps and down-reps shift in opposite directions, so the peak-time
-  difference between slopes yields coarse CFO and the mean yields true
-  timing (this is why the robust and calling signatures both contain both
-  slopes); inter-rep correlation phase refines within its ±3.1 Hz ambiguity
-- `FINE`: ZC autocorrelation (Schmidl–Cox metric) refines timing to
-  ±2 samples @ 12 k and CFO residual < 0.5 Hz. Fast header class: one ZC
-  pair, second symbol seeds the channel estimate. Robust class: two ZC
-  pairs; the two independent channel estimates are averaged (+3 dB) —
-  single-shot estimation is too noisy at the robust floor and directly
-  erodes MRC despreading gain
-- `TRACK`: per-symbol pilot phase innovations drive a 2nd-order PLL for
-  residual CFO/sampling-clock drift; timing drift corrected by ±1 sample
-  slips at symbol boundaries
+  inter-rep phase → <1 Hz. The matched filter integrates ±55 Hz for every
+  signature. An LFM frequency offset masquerades as a timing shift
+  (Δt = Δf·T/B); up-reps and down-reps shift in opposite directions, so
+  the peak-time difference between slopes yields coarse CFO and the mean
+  yields true timing; inter-rep correlation phase refines within its
+  ambiguity (1/(gap·T): 6.25 Hz fast/calling/CSS, 3.125 Hz robust)
+- `BRANCH` (since v1.2.0, GAP_CLOSURE_PLAN.md R1): the fine estimate's
+  branch is NOT trusted. The up–up fast signature has no coarse estimate
+  (any |CFO| > 3.1 Hz aliased), and two-path multipath biases the coarse
+  estimate of the others by several branches (~15 Hz on WIDE at 2 ms - the
+  whole WIDE/CCIR-Poor header outage). Every branch within ±55 Hz is
+  scored by a local ZC fit (start corrected for the pattern's
+  delay-Doppler bias), and the header decode arbitrates: best-scoring
+  branch, then the detector's own, then the runner-up. (The ZC fit alone
+  picks a wrong neighbour on ~25% of fast frames under CCIR Poor fading.)
+- `FINE`: matched-filter ZC correlation (3 symbols fast, 6 robust; see
+  WAVEFORM.md "Fine Sync Symbols") refines timing to ±2 samples @ 12 k and
+  CFO via an ML fit over the per-symbol correlation phases. A fit residual
+  > 3σ from the chirp prior drops the prior (wrong branch). The FFT window
+  anchors on the earliest tap ≥ ½ peak power, backed off by the profile's
+  multipath margin (HF 16 samples, VHF 2): a fading early path that is
+  weak at ZC time re-emerges inside the window (R4)
+- `TRACK`: a per-tap Gauss–Markov Kalman filter on a delay grid starting
+  5 taps (HF) ahead of the window, process noise scaled to the frame-mean
+  channel power (R5); the frame is buffered, so a fixed-interval RTS
+  smoother runs over each walk and every symbol is equalized with
+  past AND future pilots (R6). A first-order FLL on the symbol-to-symbol
+  channel rotation (gain 0.2) re-derotates phase-continuously, tracking
+  in-frame LO drift ≥ 1 Hz/s (R2). (Documentation before v1.2.0 described
+  a 2nd-order PLL here; it was never implemented.)
 - `FLYWHEEL`: on lost pilots mid-frame, hold last CFO/timing for up to 8
   symbols before declaring frame loss (rides through short fades/impulses)
 

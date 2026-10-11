@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 #include "core/constants.hpp"
@@ -131,6 +132,92 @@ TEST_CASE(rx_loopback_ccir_moderate) {
     ok += runOne(Family::Wide, ChirpSig::Fast, 8, 150, c, uint8_t(t)) ? 1 : 0;
   }
   CHECK(ok >= 4);
+}
+
+// CFO branch resolution (GAP_CLOSURE_PLAN.md 8.2). Fast frames (U-U
+// preamble, no slope diversity) used to alias any |CFO| > 3.125 Hz onto a
+// wrong 6.25 Hz branch: 100% header loss from 3.5 Hz on every family.
+TEST_CASE(rx_cfo_branch_fast_all_families) {
+  for (Family fam :
+       {Family::Wide, Family::Mid, Family::Narrow, Family::Ultra}) {
+    for (double cfo : {3.5, -3.5, 20.0, -20.0, 45.0, -45.0}) {
+      ChansimParams c = cleanChannel(25.0);
+      c.cfoHz = cfo;
+      c.seed = 41;
+      const bool ok8 = runOne(fam, ChirpSig::Fast, 8, 150, c);
+      const bool ok11 = runOne(fam, ChirpSig::Fast, 11, 300, c);
+      if (!ok8 || !ok11) {
+        std::printf("fast %s cfo %+.1f: M8 %d M11 %d\n", plan(fam).name,
+                    cfo, int(ok8), int(ok11));
+      }
+      CHECK(ok8);
+      CHECK(ok11);
+    }
+  }
+}
+
+TEST_CASE(rx_cfo_branch_robust_offsets) {
+  for (Family fam : {Family::Wide, Family::Narrow}) {
+    for (double cfo : {20.0, -45.0}) {
+      ChansimParams c = cleanChannel(15.0);
+      c.cfoHz = cfo;
+      c.seed = 43;
+      CHECK(runOne(fam, ChirpSig::Robust, 4, 40, c));
+    }
+  }
+}
+
+// Two-path 2 ms, 1 Hz Doppler (CCIR Poor): when the paths swap dominance
+// between up and down reps the chirp's coarse CFO is off by ~15 Hz on
+// WIDE's sweep and the robust header failed ~45% at ANY SNR (an outage
+// floor, previously misread as in-frame decorrelation). With the branch
+// search it is a noise-limited link again.
+TEST_CASE(rx_poor_wide_robust_header) {
+  int ok = 0;
+  const int n = 20;
+  for (int t = 0; t < n; ++t) {
+    ChansimParams c = ccirPoor();
+    c.snr3kDb = 12.0;
+    c.seed = 500 + uint64_t(t);
+    ok += runOne(Family::Wide, ChirpSig::Robust, 4, 40, c, uint8_t(t)) ? 1 : 0;
+  }
+  std::printf("WIDE robust M4 on CCIR Poor @12 dB: %d/%d\n", ok, n);
+  CHECK(ok >= 17);
+}
+
+// Weak EARLY path (GAP_CLOSURE_PLAN.md 8.3, R4): the FFT window anchors
+// on the earliest tap with >= half the peak power, so a 2 ms-early path
+// at -9 dB is not anchored on and sat ahead of the window and off the
+// tracker's delay grid - an SNR-independent error floor on fading
+// channels whenever the early path faded up after ZC time. Static
+// version: early path at -9 dB, 24 samples (2 ms) ahead of the main one.
+TEST_CASE(rx_weak_early_path_fast) {
+  int ok = 0, total = 0;
+  for (Family fam : {Family::Wide, Family::Mid}) {
+    for (int mode : {8, 11}) {
+      auto payload = testPayload(300, uint8_t(mode));
+      TxFrameParams p;
+      p.family = fam;
+      p.sig = ChirpSig::Fast;
+      p.mode = mode;
+      p.frameType = 9;
+      p.payload = payload;
+      auto x = withPadding(buildFrameBaseband(p), 3000, 6000);
+      const int d = 24;
+      std::vector<cfloat> y(x.size(), cfloat(0, 0));
+      for (size_t i = 0; i < x.size(); ++i) {
+        y[i] = 0.35f * x[i] + (i >= size_t(d) ? x[i - size_t(d)] : cfloat(0, 0));
+      }
+      ChansimParams c = cleanChannel(30.0);
+      auto z = Chansim::run(c, y);
+      auto r = receiveFrame(fam, z);
+      const bool good = r && r->payloadOk && r->payload == payload;
+      if (!good) std::printf("weak early path: %s M%d failed\n", plan(fam).name, mode);
+      ok += good ? 1 : 0;
+      ++total;
+    }
+  }
+  CHECK_EQ(ok, total);
 }
 
 SKYTEST_MAIN

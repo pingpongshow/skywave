@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 
 #include "dsp/css.hpp"
@@ -21,6 +23,86 @@ namespace {
 // snrDb() is reported as a measurement (ChannelTracker::noiseUpdates:
 // the EMA runs fast for the first 8 symbols, then settles).
 constexpr int kSnrConvergedSymbols = 8;
+
+// Phase 8 receiver knobs (GAP_CLOSURE_PLAN.md): on by default; "=0"
+// restores the v1.1.0 behaviour for A/B measurement.
+bool envKnobOn(const char* name) {
+  const char* e = std::getenv(name);
+  return !(e && std::atoi(e) == 0);
+}
+bool rtsSmoothingEnabled() {  // R6
+  static const bool on = envKnobOn("SKW_RTS");
+  return on;
+}
+bool qNormEnabled() {  // R5
+  static const bool on = envKnobOn("SKW_QNORM");
+  return on;
+}
+// In-frame FLL loop gain (R2), per tracker class. Robust gain measured
+// on the full 8.2-8.5 stack (100 trials; ladders on CCIR Poor and
+// Moderate, AWGN floor+6 at 1 Hz/s drift), gains 0/0.05/0.1/0.2:
+//   0    - no drift tolerance (100% FER at 1 Hz/s)
+//   0.05 - best fading, but NARROW M4 47% / MID M4 25% under drift
+//   0.1  - fading within 0.5 dB of the best everywhere, better than the
+//          loop off on Moderate; drift: all robust modes 0% except
+//          NARROW M4 10% (a 40 s frame - 40 Hz of in-frame drift)
+//   0.2  - feeds Poor's 1 Hz Doppler back: Poor NARROW M4 -7.7 -> -3.2 dB
+// Fast class 0.2 (short frames, high SNR). SKW_FLL=0 disables;
+// SKW_FLL_GAIN_FAST / _ROBUST override.
+double fllGain(bool robustClass) {
+  static const bool on = envKnobOn("SKW_FLL");
+  static const double fast = [] {
+    const char* e = std::getenv("SKW_FLL_GAIN_FAST");
+    return e ? std::atof(e) : 0.2;
+  }();
+  static const double robust = [] {
+    const char* e = std::getenv("SKW_FLL_GAIN_ROBUST");
+    return e ? std::atof(e) : 0.1;
+  }();
+  return on ? (robustClass ? robust : fast) : 0.0;
+}
+
+// Frame-average channel power in tracker H units (R5): mean in-band FFT
+// power minus the out-of-band noise floor over up to `maxSyms` symbols
+// from the first post-ZC symbol. Guard bins (6 carriers each side) cover
+// the +-55 Hz CFO capture so signal leakage is not counted as noise.
+// Returns <= 0 when it cannot be measured.
+double frameMeanChannelPower(Family family, std::span<const cfloat> sig,
+                             int64_t t0, int maxSyms) {
+  const int n = plan(family).carriers();
+  const int symLen =
+      kFftBaseband + cpSamplesAudio(CpMode::Medium) / kDecimation;
+  const float invTs = 1.0f / ofdmTimeScale(family);
+  std::vector<char> cls(size_t(kFftBaseband), 0);  // 0 noise, 1 in, 2 guard
+  for (int c = -6; c < n + 6; ++c) {
+    const int b = plan(family).firstBin + c - centerBin();
+    cls[size_t(b >= 0 ? b : kFftBaseband + b)] = (c >= 0 && c < n) ? 1 : 2;
+  }
+  Fft f(kFftBaseband);
+  std::vector<cfloat> in(static_cast<size_t>(kFftBaseband)),
+      out(static_cast<size_t>(kFftBaseband));
+  double pin = 0, pout = 0;
+  int nin = 0, nout = 0;
+  for (int k = 0; k < maxSyms; ++k) {
+    const int64_t st = t0 + int64_t(k) * symLen + (symLen - kFftBaseband);
+    if (st < 0 || st + kFftBaseband > int64_t(sig.size())) break;
+    std::copy(sig.begin() + st, sig.begin() + st + kFftBaseband, in.begin());
+    f.forward(in.data(), out.data());
+    for (int b = 0; b < kFftBaseband; ++b) {
+      const double v = std::norm(out[size_t(b)] * invTs);
+      if (cls[size_t(b)] == 1) {
+        pin += v;
+        ++nin;
+      } else if (cls[size_t(b)] == 0) {
+        pout += v;
+        ++nout;
+      }
+    }
+  }
+  if (nin == 0 || nout == 0) return -1.0;
+  const double in_ = pin / nin;
+  return std::max(in_ - pout / nout, 0.05 * in_);
+}
 // Pilot-residual energy per unit of data-aided (EVM) noise variance on
 // AWGN: the residual of a Kalman-predicted pilot is measurement noise
 // plus the filter's own uncertainty share. Fitted from bertool's `pilot`
@@ -52,54 +134,117 @@ struct SymbolWalker {
   // is the per-carrier noise divided by a). For the data-aided SNR.
   std::vector<float>* gainOut = nullptr;
   Fft fft{kFftBaseband};
+  // In-frame FLL state (GAP_CLOSURE_PLAN.md R2): the residual frequency
+  // the frame-constant derotation (cfoHz) misses - LO drift accumulates
+  // ~1 Hz over a multi-second frame, and a one-shot derotation let NARROW
+  // die at 0.1 Hz/s. Fed each symbol from the tracker's channel rotation
+  // sum h conj(h_prev); applied phase-continuously.
+  double fllHz = 0.0;
+  double fllPhase = 0.0;
+  std::vector<cfloat> fllPrevH{};
+
+  // CFO-derotate, FFT and TX-scale-correct the symbol whose FFT window
+  // starts at `start`. False when the window runs past the capture.
+  bool fftSymbol(int64_t start, std::vector<cfloat>& out) {
+    if (start < 0 || start + kFftBaseband > int64_t(rx.size())) return false;
+    std::vector<cfloat> in(static_cast<size_t>(kFftBaseband));
+    for (int i = 0; i < kFftBaseband; ++i) {
+      double ph = -2.0 * M_PI * (cfoHz + fllHz) * double(start + i) /
+                      kFsBaseband +
+                  fllPhase;
+      in[size_t(i)] = rx[size_t(start + i)] *
+                      cfloat(float(std::cos(ph)), float(std::sin(ph)));
+    }
+    out.resize(static_cast<size_t>(kFftBaseband));
+    fft.forward(in.data(), out.data());
+    // Undo the TX time-domain scale so pilot-measured H matches the
+    // ZC-seeded estimate (see ofdmTimeScale).
+    const float invTs = 1.0f / ofdmTimeScale(family);
+    for (auto& b : out) b *= invTs;
+    return true;
+  }
 
   // Collect exactly `bits` LLRs coded at the given parameters. Returns
   // false on running out of samples.
+  //
+  // With smoothing on (default; SKW_RTS=0 disables) the whole span is
+  // FFT'd and run through the tracker FIRST, then RTS-smoothed, and every
+  // group is demapped with the smoothed H of its last symbol: the frame
+  // is fully buffered, so each symbol's estimate can use the pilots
+  // AFTER it as well as before (GAP_CLOSURE_PLAN.md R6). Without it the
+  // tracker runs causally, interleaved with demapping (v1.1.0).
   bool collect(Constellation cst, int spread, CpMode cp, int bits,
                std::vector<float>& llr) {
     const int cpLen = cpSamplesAudio(cp) / kDecimation;
     const int symLen = kFftBaseband + cpLen;
     const int bps = bitsPerSymbol(cst);
     const int G = spreadGroupSymbols(family, spread, mask);
-    const int n = plan(family).carriers();
+
+    // Plan the span: groups until `bits` are covered.
+    int nGroups = 0;
+    for (int need = 0, s = symIdx; need < bits; s += G, ++nGroups) {
+      need += sourceSymbolsPerGroup(family, s, spread, mask) * bps;
+    }
+    const int nSym = nGroups * G;
+
+    // Forward pass: FFT + track every symbol of the span (the FLL needs
+    // each symbol's tracker update before the next symbol's FFT).
+    std::vector<std::vector<cfloat>> bins(static_cast<size_t>(nSym));
+    std::vector<std::vector<cfloat>> hS(static_cast<size_t>(nSym));
+    std::vector<double> nvS(static_cast<size_t>(nSym));
+    const bool smooth = rtsSmoothingEnabled();
+    const double gain = fllGain(tracker->robustClass());
+    if (smooth) tracker->beginHistory();
+    for (int k = 0; k < nSym; ++k) {
+      const int64_t start = nextSampleStart + int64_t(k) * symLen + cpLen;
+      if (!fftSymbol(start, bins[size_t(k)])) {
+        if (smooth) tracker->smoothHistory(hS, nvS);  // stop recording
+        return false;
+      }
+      tracker->processSymbol(bins[size_t(k)], symIdx + k);
+      const auto& h = tracker->h();
+      if (!smooth) {
+        hS[size_t(k)] = h;
+        nvS[size_t(k)] = tracker->noiseVar();
+      }
+      if (gain > 0.0) {
+        if (fllPrevH.size() == h.size()) {
+          std::complex<double> r(0, 0);
+          for (size_t c = 0; c < h.size(); ++c) {
+            r += std::complex<double>(h[c] * std::conj(fllPrevH[c]));
+          }
+          const double ferr = std::atan2(r.imag(), r.real()) * kFsBaseband /
+                              (2.0 * M_PI * symLen);
+          const double delta = gain * ferr;
+          // Phase continuity at the next symbol's first sample.
+          fllPhase += 2.0 * M_PI * delta * double(start + symLen) /
+                      kFsBaseband;
+          fllHz += delta;
+        }
+        fllPrevH = h;
+      }
+    }
+    if (smooth) tracker->smoothHistory(hS, nvS);
 
     int got = 0;
-    while (got < bits) {
-      // FFT the group's symbols.
-      std::vector<std::vector<cfloat>> bins;
+    for (int grp = 0; grp < nGroups; ++grp) {
       std::vector<std::pair<int, int>> pool;
       for (int g = 0; g < G; ++g) {
-        int64_t start = nextSampleStart + int64_t(g) * symLen + cpLen;
-        if (start < 0 || start + kFftBaseband > int64_t(rx.size())) {
-          return false;
-        }
-        std::vector<cfloat> in(static_cast<size_t>(kFftBaseband));
-        for (int i = 0; i < kFftBaseband; ++i) {
-          double ph = -2.0 * M_PI * cfoHz * double(start + i) / kFsBaseband;
-          in[size_t(i)] = rx[size_t(start + i)] *
-                          cfloat(float(std::cos(ph)), float(std::sin(ph)));
-        }
-        std::vector<cfloat> out(static_cast<size_t>(kFftBaseband));
-        fft.forward(in.data(), out.data());
-        // Undo the TX time-domain scale so pilot-measured H matches the
-        // ZC-seeded estimate (see ofdmTimeScale).
-        const float invTs = 1.0f / ofdmTimeScale(family);
-        for (auto& b : out) b *= invTs;
-        tracker->processSymbol(out, symIdx + g);
-        auto lay = symbolLayout(family, symIdx + g, mask);
-        for (int c : lay.dataCarriers) pool.push_back({g, c});
-        bins.push_back(std::move(out));
+        const int k = grp * G + g;
+        auto lay = symbolLayout(family, symIdx + k, mask);
+        for (int c : lay.dataCarriers) pool.push_back({k, c});
       }
+      const int last = grp * G + G - 1;
+      const auto& h = hS[size_t(last)];
+      const float nvar = float(nvS[size_t(last)]);
       const int nSrc = int(pool.size()) / spread;
-      const auto& h = tracker->h();
-      const float nvar = float(tracker->noiseVar());
       for (int i = 0; i < nSrc && got < bits; ++i) {
         cfloat z(0, 0);
         float a = 0;
         for (int k = 0; k < spread; ++k) {
-          auto [g, c] = pool[size_t(i + k * nSrc)];
-          cfloat y = bins[size_t(g)][size_t(carrierToBasebandBin(family, c))];
-          cfloat eff = h[size_t(c)] * spreadPhase(i, k, symIdx);
+          auto [sk, c] = pool[size_t(i + k * nSrc)];
+          cfloat y = bins[size_t(sk)][size_t(carrierToBasebandBin(family, c))];
+          cfloat eff = h[size_t(c)] * spreadPhase(i, k, symIdx + grp * G);
           z += y * std::conj(eff);
           a += std::norm(eff);
         }
@@ -110,10 +255,9 @@ struct SymbolWalker {
         demapLlr(cst, z, a, nvar, llr);
         got += bps;
       }
-      (void)n;
-      nextSampleStart += int64_t(G) * symLen;
-      symIdx += G;
     }
+    nextSampleStart += int64_t(nSym) * symLen;
+    symIdx += nSym;
     // Trim any over-collected LLRs from the last source symbol.
     llr.resize(size_t(bits));
     return true;
@@ -580,6 +724,90 @@ int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
   return 1;
 }
 
+// CFO BRANCH RESOLUTION (GAP_CLOSURE_PLAN.md R1). The chirp detector's
+// fine CFO is exact only modulo its ambiguity spacing, and the branch it
+// picks can be wrong two ways: a slope-less pattern (fast U-U) has no
+// coarse estimate at all, so any |CFO| > 1/(2T) = 3.1 Hz aliases; and in
+// two-path multipath an up/down dominance swap turns the delay spread
+// into a coarse-CFO error (~15 Hz on WIDE's sweep at 2 ms), landing the
+// fine estimate several branches off - the whole WIDE/CCIR-Poor header
+// outage. ZC refinement could not repair either: its fit spans +-3 Hz and
+// trusted the chirp prior at 0.7 Hz.
+//
+// Every branch c_k = cfo + k*amb within the detector's capture range is
+// scored by a local ZC fit (timing corrected for the pattern's
+// delay-Doppler bias; residual searched over half a branch spacing, so
+// the branches tile the range). On static channels the ZC fit power
+// separates branches by 11-35 dB. Under fast fading it does NOT: on CCIR
+// Poor the 3-symbol fast ZC block's fit power swings +-10 dB between
+// neighbouring branches, so a wrong one scored best on ~25% of fast
+// frames at 0 Hz (measured 2026-10, logged per candidate) - and no score
+// margin separates that from the genuinely needed moves (static 20 Hz:
+// >= 11 dB, Moderate 35 Hz: >= 3 dB, Poor robust: >= 0.3 dB). So the
+// score only ORDERS the candidates and the header decode (LDPC + CRC)
+// decides: best-scoring branch, then the detector's own branch, then the
+// runner-up. A frame the v1.1.0 receiver decoded on the detector's branch
+// still decodes; the extra header attempts are spent only on frames that
+// would otherwise fail.
+std::vector<CfoBranch> resolveCfoBranches(Family family,
+                                          std::span<const cfloat> sig,
+                                          ChirpSig chirpSig, double cfoHz,
+                                          double zcCoarse, int zcCount) {
+  const double amb = chirpCfoAmbiguityHz(chirpSig);
+  if (!cfoBranchSearchEnabled() || amb <= 0.0) {
+    return {CfoBranch{cfoHz, zcCoarse, 3.0}};
+  }
+  const double maxHz = chirpCfoCaptureMaxHz();
+  const double sens = chirpStartCfoSensitivity(family, chirpSig);
+  const double localRange = 0.5 * amb + 0.25;
+  const double fitRange = std::max(3.0, localRange);
+  const int symLen = zcSymbolSamples();
+  const int kLo = int(std::ceil((-maxHz - cfoHz) / amb));
+  const int kHi = int(std::floor((maxHz - cfoHz) / amb));
+  struct Scored {
+    CfoBranch b;
+    double power;
+  };
+  std::vector<Scored> scored;
+  for (int k = kLo; k <= kHi; ++k) {
+    const double c = cfoHz + k * amb;
+    // The detector's start carries an uncorrected delay-Doppler bias of
+    // -sens * (true CFO); under hypothesis c the unbiased start is
+    // zcCoarse + sens * c.
+    const double st = zcCoarse + sens * c;
+    const int64_t lo = std::max<int64_t>(0, int64_t(st) - 64);
+    const int64_t hi = std::min<int64_t>(
+        int64_t(sig.size()), int64_t(st) + int64_t(zcCount) * symLen + 64);
+    if (hi - lo < symLen) continue;
+    auto z = zcRefine(family, sig.subspan(size_t(lo), size_t(hi - lo)),
+                      st - double(lo), c, 0.7, zcCount, 8, localRange);
+    if (z.ok) scored.push_back({CfoBranch{c, st, fitRange}, z.fitPower});
+  }
+  const CfoBranch home{cfoHz, zcCoarse + sens * cfoHz, fitRange};
+  if (scored.empty()) return {home};
+  std::stable_sort(scored.begin(), scored.end(),
+                   [](const Scored& a, const Scored& b) {
+                     return a.power > b.power;
+                   });
+  std::vector<CfoBranch> out;
+  auto add = [&](const CfoBranch& b) {
+    for (const auto& o : out) {
+      if (std::abs(o.cfoHz - b.cfoHz) < 0.25 * amb) return;
+    }
+    out.push_back(b);
+  };
+  add(scored[0].b);
+  add(home);
+  if (scored.size() > 1) add(scored[1].b);
+  if (std::getenv("SKW_CFO_DEBUG")) {
+    std::fprintf(stderr, "cfo-branch sig=%d chirp=%+.2f amb=%.3f ->", int(chirpSig),
+                 cfoHz, amb);
+    for (const auto& b : out) std::fprintf(stderr, " %+.2f", b.cfoHz);
+    std::fprintf(stderr, "\n");
+  }
+  return out;
+}
+
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut, HarqChase* harq,
@@ -623,53 +851,75 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   const int reps = int(chirpPattern(hit.sig).size());
   const double zcCoarse =
       hit.startSample + double(reps) * chirpRepSamples();
-  auto zc = zcRefine(family, sig, zcCoarse, cfoSign, 0.7, zcCount);
-  if (!zc.ok) return std::nullopt;
-  stage(RxStage::HeaderFail);
-
-  // Integer symbol grid; fold the fractional remainder into H.
-  const double firstSym = zc.blockStart + double(zcCount) * zcSymbolSamples();
-  const int64_t t0 = int64_t(std::llround(firstSym));
-  const double delta = double(t0) - firstSym;
-  std::vector<cfloat> h0 = zc.channel;
-  const int n = plan(family).carriers();
-  for (int c = 0; c < n; ++c) {
-    int bin = plan(family).firstBin + c - centerBin();  // signed
-    double ph = 2.0 * M_PI * double(bin) * delta / kFftBaseband;
-    h0[size_t(c)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
-  }
-
-  // Initial noise guess: generous; the tracker converges within a few
-  // symbols and the header codeword is long.
-  double h0pow = 0;
-  for (const auto& v : h0) h0pow += std::norm(v);
-  h0pow /= std::max(n, 1);
-  // ZC-measured noise seed, taken only when it LOWERS the estimate:
-  // short frames (ACKs) never converge the tracker and the crude
-  // 10-dB-below-signal guess froze AMC's effective SNR at ~16 dB on
-  // rich channels - but under fading the "identical" ZC symbols differ
-  // by CHANNEL MOTION, so the inter-symbol spread overestimates noise
-  // and a high seed poisons whole frames (measured: M8+ fading FER
-  // 30-70% far above the floors).
-  const double nv0 = zc.noiseVar > 0.0
-                         ? std::min(zc.noiseVar, h0pow * 0.1)
-                         : h0pow * 0.1;
-  ChannelTracker tracker(family, robust, std::move(h0), nv0);
-
-  SymbolWalker walker{family, sig, zc.cfoHz, t0, 0, &tracker};
-
-  // 3) Header codeword.
+  // CFO branch candidates, verified by the header decode (R1): the ZC
+  // fit alone cannot pick the branch under fast fading (see
+  // resolveCfoBranches), but a header codeword that passes LDPC + CRC can.
+  const auto branches =
+      resolveCfoBranches(family, sig, hit.sig, cfoSign, zcCoarse, zcCount);
   const LdpcCode& hcode = LdpcCode::get(kLdpcNShort, {1, 2});
-  std::vector<float> hLlr;
-  if (!walker.collect(Constellation::Qpsk, headerSpread(robust),
-                      CpMode::Medium, hcode.n(), hLlr)) {
-    return std::nullopt;
-  }
+  ZcSyncResult zc;
+  std::optional<ChannelTracker> trackerSlot;
+  std::optional<SymbolWalker> walkerSlot;
   std::vector<uint8_t> hInfo;
-  if (!decodeCodeword(hcode, hLlr, hInfo)) return std::nullopt;
-  auto hdrBytes = bitsToBytes({hInfo.data(), size_t(kPhyHeaderBytes) * 8});
-  auto hdr = parsePhyHeader(hdrBytes);
+  std::optional<PhyHeader> hdr;
+  bool anyZc = false;
+  for (const auto& branch : branches) {
+    zc = zcRefine(family, sig, branch.start, branch.cfoHz, 0.7, zcCount, 24,
+                  branch.fitRangeHz);
+    if (!zc.ok) continue;
+    anyZc = true;
+
+    // Integer symbol grid; fold the fractional remainder into H.
+    const double firstSym =
+        zc.blockStart + double(zcCount) * zcSymbolSamples();
+    const int64_t t0 = int64_t(std::llround(firstSym));
+    const double delta = double(t0) - firstSym;
+    std::vector<cfloat> h0 = zc.channel;
+    const int n = plan(family).carriers();
+    for (int c = 0; c < n; ++c) {
+      int bin = plan(family).firstBin + c - centerBin();  // signed
+      double ph = 2.0 * M_PI * double(bin) * delta / kFftBaseband;
+      h0[size_t(c)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
+    }
+
+    // Initial noise guess: generous; the tracker converges within a few
+    // symbols and the header codeword is long.
+    double h0pow = 0;
+    for (const auto& v : h0) h0pow += std::norm(v);
+    h0pow /= std::max(n, 1);
+    // ZC-measured noise seed, taken only when it LOWERS the estimate:
+    // short frames (ACKs) never converge the tracker and the crude
+    // 10-dB-below-signal guess froze AMC's effective SNR at ~16 dB on
+    // rich channels - but under fading the "identical" ZC symbols differ
+    // by CHANNEL MOTION, so the inter-symbol spread overestimates noise
+    // and a high seed poisons whole frames (measured: M8+ fading FER
+    // 30-70% far above the floors).
+    const double nv0 = zc.noiseVar > 0.0
+                           ? std::min(zc.noiseVar, h0pow * 0.1)
+                           : h0pow * 0.1;
+    const double meanChanPow =
+        qNormEnabled() ? frameMeanChannelPower(family, sig, t0, 96) : -1.0;
+    trackerSlot.emplace(family, robust, std::move(h0), nv0, meanChanPow);
+    walkerSlot.emplace(SymbolWalker{family, sig, zc.cfoHz, t0, 0,
+                                    &*trackerSlot});
+
+    // 3) Header codeword.
+    std::vector<float> hLlr;
+    if (!walkerSlot->collect(Constellation::Qpsk, headerSpread(robust),
+                             CpMode::Medium, hcode.n(), hLlr)) {
+      continue;
+    }
+    hInfo.clear();
+    if (!decodeCodeword(hcode, hLlr, hInfo)) continue;
+    auto hdrBytes = bitsToBytes({hInfo.data(), size_t(kPhyHeaderBytes) * 8});
+    hdr = parsePhyHeader(hdrBytes);
+    if (hdr) break;
+  }
+  if (!anyZc) return std::nullopt;
+  stage(RxStage::HeaderFail);
   if (!hdr) return std::nullopt;
+  ChannelTracker& tracker = *trackerSlot;
+  SymbolWalker& walker = *walkerSlot;
   stage(RxStage::Ok);
 
   RxFrameResult res;
