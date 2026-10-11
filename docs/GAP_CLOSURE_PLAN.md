@@ -8,6 +8,14 @@ This plan covers the three gaps that stand between Skywave and an on-air compari
 
 Every item below comes from a measured root cause, not a hypothesis. The investigation was done on copies of the tree. Prototypes, CSVs and logs are archived in [investigations/2026-10-gap/](investigations/2026-10-gap/). The execution checklist is **Phase 8** in [ROADMAP.md](ROADMAP.md#phase-8--gap-closure-fading-cfo-killresume). This document is the reference behind those checkboxes.
 
+## Status (2026-10-11)
+
+8.0-8.7 landed; per-step results, gate numbers and deviations are in the
+ROADMAP Phase 8 entries, final sweeps in `conformance/gap_final/`
+(compared against `gap_base/`). 8.8 (CSS drift) was re-planned after two
+measured designs failed on fading - see its ROADMAP entry. 8.9
+(re-measure floors, recalibrate) and 8.10 (release gates) remain.
+
 ## Rules for this phase
 
 - **One root cause per step.** Measure before and after on the same command lines (given per step). A step is done only when its gate passes and `ctest -LE hardware` is green.

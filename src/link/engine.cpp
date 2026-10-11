@@ -1205,17 +1205,19 @@ void LinkEngine::drainFsmActions(double now) {
                      mode_ <= 3 ? mode_ : 4);
         break;
       case FsmAction::IndicateConnected: {
-        // TX-alignment bootstrap: connected fast-signature frames only
-        // capture ~+-5 Hz, so the correction must land BEFORE data
-        // traffic starts. The calling-signature handshake measured the
-        // offset (+-50 Hz capture): the initiator applies the peer's
+        // TX-alignment bootstrap: center both signals in both passbands
+        // before data traffic starts. (Since GAP_CLOSURE_PLAN 8.2 every
+        // frame acquires within +-55 Hz, so this is filter hygiene, no
+        // longer a decode precondition.) The initiator applies the peer's
         // CALL_ACK report in full; the responder uses reciprocity (if I
         // hear you +X high, you hear me X low) on its own measurement.
-        // The <=2 Hz slew applies to TRACKING adjustments thereafter.
+        // The responder measures the caller's CALL, sent before any
+        // correction: by START the caller has already applied our
+        // CALL_ACK report, and reciprocity on START under-corrected.
         txShiftHz_ = std::clamp(
             isInitiator_ ? -double(lastCallAck_.cfoHalfHz) * 0.5
-                         : lastRxQuality_.cfoHz,
-            -30.0, 30.0);
+                         : callRxCfoHz_,
+            -kTxShiftMaxHz, kTxShiftMaxHz);
         harq_.clear();
         probeGate_ = ProbeGate();
         maskDet_.emplace(cfg_.policy.family);
@@ -1306,6 +1308,13 @@ void LinkEngine::drainFsmActions(double now) {
         break;
       }
       case FsmAction::IndicateDisconnected: {
+        // TX alignment is per session: it was a correction toward THIS
+        // peer's frequency. Carried into the next session it shifted the
+        // next CALL, and both bootstraps then measured an already-shifted
+        // frame (the responder under-corrected by the old shift - a
+        // 45 Hz mistune left a permanent 22 Hz residual). Every signature
+        // now acquires within +-55 Hz, so starting unshifted is safe.
+        txShiftHz_ = 0.0;
         // Drop stale DATA, but keep queued control frames: the teardown
         // handshake's own DISC_ACK is queued in this same drain and must
         // still transmit.
@@ -1721,10 +1730,15 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   }
 }
 
+// Tracking: each report moves the shift by -reported/2 (loop gain 0.5, so
+// the two stations' loops, which see each other's corrections, converge
+// without overshoot). Each station converges to the FULL offset of its
+// own path. The former <=2 Hz-per-report slew made a 40 Hz retune take
+// ~180 s to re-align, and the +-30 Hz clamp left a 45 Hz mistune with a
+// permanent 15 Hz residual (GAP_CLOSURE_PLAN.md R3).
 void LinkEngine::onCfoReport(double reportedHz) {
-  const double target = txShiftHz_ - reportedHz / 2.0;
-  const double step = std::clamp(target - txShiftHz_, -2.0, 2.0);
-  txShiftHz_ = std::clamp(txShiftHz_ + step, -30.0, 30.0);
+  txShiftHz_ =
+      std::clamp(txShiftHz_ - reportedHz / 2.0, -kTxShiftMaxHz, kTxShiftMaxHz);
 }
 
 void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
@@ -2167,7 +2181,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
           const double dtMin = (now - lastCfoAssistAt_) / 60.0;
           const double step =
               std::clamp(cfoAdv.driftHzPerMin * dtMin * 0.5, -0.5, 0.5);
-          txShiftHz_ = std::clamp(txShiftHz_ - step, -30.0, 30.0);
+          txShiftHz_ =
+              std::clamp(txShiftHz_ - step, -kTxShiftMaxHz, kTxShiftMaxHz);
         }
         lastCfoAssistAt_ = now;
         if (advisor_.assistMask(maskAdv) && maskDet_) {
@@ -3004,6 +3019,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         }
       }
       lastCall_ = *call;
+      callRxCfoHz_ = q.cfoHz;  // the caller's UNCORRECTED frequency
       remoteCall_ = call->srcCall;
       isInitiator_ = false;
       hsOnCss_ = lastRxWasCss_;  // answer on the transport that reached us

@@ -965,7 +965,9 @@ void ModemWorker::updateStateEventsLocked() {
 
   // EVT:CFO_WARN (INTERFACES.md): the TX alignment shift has run past the
   // +-40 Hz envelope, which means the dial itself needs retuning - the
-  // per-side clamp cannot correct any further. Edge-triggered with 5 Hz of
+  // link still works (acquisition reaches +-55 Hz, the shift clamps at
+  // +-50) but has little margin left. (Before 2026-10 the shift clamped
+  // at +-30 Hz, so this warning could never fire.) Edge-triggered with 5 Hz of
   // hysteresis so a value parked at the clamp does not spam the client.
   {
     const double shift = std::abs(engine_->txShiftHz());

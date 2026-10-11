@@ -231,9 +231,20 @@ if(BUILD_TESTS)
   # test_st2 (+ its full-duplex variant).
   add_executable(soak_st2 tests/soak_st2.cpp)
   target_link_libraries(soak_st2 PRIVATE skywave_core)
-  # CFO step / offset / drift scenarios over ST2 (GAP_CLOSURE_PLAN 8.0).
+  # CFO step / offset / drift scenarios over ST2 (GAP_CLOSURE_PLAN 8.0,
+  # gates 8.2/8.6/8.7): one-way bulk for 200 sim-s must never drop and
+  # must deliver >= ~85% of the no-offset volume (~65 KB).
   add_executable(cfo_st2 tests/cfo_st2.cpp)
   target_link_libraries(cfo_st2 PRIVATE skywave_core)
+  function(skw_cfo_st2 name scenario)
+    add_test(NAME cfo_st2_${name} COMMAND cfo_st2)
+    set_tests_properties(cfo_st2_${name} PROPERTIES
+      ENVIRONMENT "SKW_CHANMEM_PATH=;DUR=200;MIN_BYTES=55000;${scenario}"
+      TIMEOUT 3000)
+  endfunction()
+  skw_cfo_st2(step40 "STEP=40")
+  skw_cfo_st2(cfo45 "CFO0=45")
+  skw_cfo_st2(drift01 "DRIFT=0.1")
   add_executable(monkey_st2 tests/monkey_st2.cpp)
   target_link_libraries(monkey_st2 PRIVATE skywave_core)
   # Minimal one-way bulk repro (diagnostic, not a registered test).

@@ -283,9 +283,13 @@ class LinkEngine {
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
   CpMode cpMode_ = activeProfile().cpDefault;  // committed session CP
-  // TX frequency alignment (PROTOCOL.md): split correction -reported/2,
-  // slewed <= 2 Hz per adjustment, clamped +-30 Hz per side.
+  // TX frequency alignment (PROTOCOL.md): tracks -reported/2 per report
+  // (loop gain 0.5), clamped +-kTxShiftMaxHz.
   double txShiftHz_ = 0.0;
+  // TX alignment clamp: the detector's +-55 Hz capture, less margin.
+  // EVT:CFO_WARN fires from 40 Hz (worker), inside this clamp.
+  static constexpr double kTxShiftMaxHz = 50.0;
+  double callRxCfoHz_ = 0.0;  // responder: CFO measured on the peer's CALL
   void onCfoReport(double reportedHz);
   double spreadEmaMs_ = 0.0;      // delay-spread EMA for CPMODE AUTO
   bool haveSpread_ = false;

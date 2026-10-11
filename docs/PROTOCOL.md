@@ -459,19 +459,23 @@ grid:
   The calling-signature handshake measures the offset (±50 Hz capture):
   at CONNECTED, the initiator applies the peer's `CALL_ACK` report in
   full and the responder applies its own measurement via reciprocity
-  (if I hear you X high, you hear me X low), both clamped ±30 Hz
-- **split correction**: thereafter each transmitter tracks by −(reported
-  CFO)/2, slewed at ≤ 2 Hz per adjustment, clamped to ±30 Hz per side. The full
-  correction has to move the audio spectrum relative to *someone's* filter
-  — a one-sided shift of the whole offset would push one station's edge
-  carriers into its own TX filter skirt. Splitting the offset caps each
-  station's audio excursion at half the mistuning, which fits inside every
-  family's edge guards (including `ULTRA`'s thin ones)
-- both sides converge within a few exchanges; the residual is tracked CFO
-  ≈ 0 and both signals sit centered in both filters
+  (if I hear you X high, you hear me X low), both clamped ±50 Hz
+- **tracking**: thereafter each transmitter moves its shift by
+  −(reported CFO)/2 per report, clamped to ±50 Hz. The ½ is a loop gain,
+  not a split of the offset: the two stations' loops see each other's
+  corrections, and gain ½ converges in a few exchanges without overshoot.
+  In steady state each station's shift equals the full offset of the path
+  it transmits on (each station moves its signal onto the other's
+  frequency). (Documentation before 2026-10 described this as a "split
+  correction" capping each station's excursion at half the mistuning;
+  the implementation never did that.)
+- since v1.2.0 alignment is filter hygiene, not a decode precondition:
+  every frame signature acquires within ±55 Hz (GAP_CLOSURE_PLAN.md 8.2)
+  and tracks in-frame drift (8.6), so a retune or LO drift is decoded
+  first and re-aligned after
 - the current correction is visible in `STATUS` (`CFO=` field) and
-  telemetry; mistuning beyond what split correction absorbs is an operator
-  problem, surfaced as an `EVT:CFO_WARN` past ±40 Hz total measured offset
+  telemetry; a shift past ±40 Hz raises `EVT:CFO_WARN` — the dial needs
+  retuning before the ±55 Hz acquisition margin runs out
 
 ### Keepalive
 
