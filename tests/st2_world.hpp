@@ -252,6 +252,12 @@ struct World {
   double jamAmpAB = 0.0, jamToneAB = 0.0;   // into B's receiver
   double jamAmpBA = 0.0, jamToneBA = 0.0;   // into A's receiver
   double jamPhase = 0.0;
+  // Ambient floor amplitude added at each receiver. 0 = EXACT digital
+  // silence between bursts, which is what a virtual audio cable delivers
+  // (ST3) and what an interface with a muted or dead source delivers.
+  float ambientAmp = std::getenv("SKW_ST2_AMBIENT")
+                         ? float(std::atof(std::getenv("SKW_ST2_AMBIENT")))
+                         : 1e-3f;
 
   // HALF-DUPLEX IS THE DEFAULT WORLD: a single SSB transceiver, deaf to
   // the channel while its own PTT is keyed and for a TX/RX switching
@@ -328,7 +334,7 @@ struct World {
       noiseRng ^= noiseRng >> 12;
       noiseRng ^= noiseRng << 25;
       noiseRng ^= noiseRng >> 27;
-      v += 1e-3f * (float(uint32_t(noiseRng * 0x2545F4914F6CDD1Dull >> 40)) /
+      v += ambientAmp * (float(uint32_t(noiseRng * 0x2545F4914F6CDD1Dull >> 40)) /
                         float(1u << 24) -
                     0.5f);
     }

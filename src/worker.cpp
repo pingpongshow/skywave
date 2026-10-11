@@ -447,18 +447,45 @@ std::vector<std::vector<uint8_t>> ModemWorker::takeMonitorRecords() {
 
 // --- processing ----------------------------------------------------------------
 
+// INGEST BEFORE DECODE. A long-window decode attempt costs seconds of CPU
+// (measured 2-7 s for 20-60 s windows on a loaded host) and the audio
+// callback keeps writing into the RX ring meanwhile. Reading ONE chunk per
+// pass and then decoding again let the ring fill and OVERRUN - the audio
+// callback dropped samples silently and whatever frame was on air was
+// destroyed (the ST3 kill/resume stall: ~100-195 s of audio lost per
+// station). So every pass first drains the ring through the cheap path
+// (downconvert, metering, detector) and only then spends the decode
+// budget. Audio is never shed; under sustained decode overload the
+// capture backlog cap sheds the OLDEST captures instead.
 void ModemWorker::pumpRxLocked(double now) {
+  if (!ingestChunkLocked(now)) return;
+  for (int k = 0; k < 512 && rx_.readAvailable() >= kChunkSamples; ++k) {
+    if (!ingestChunkLocked(now)) break;
+  }
+  decodePendingLocked(now);
+}
+
+bool ModemWorker::ingestChunkLocked(double now) {
   // 48 kHz audio -> baseband, metering + channel power on the way.
   size_t got = rx_.read(chunk_);
-  if (got == 0) return;
+  if (got == 0) return false;
   rxTotal_ += got;
+  if (const uint64_t drops = rx_.dropped(); drops != rxDropsReported_ &&
+                                           now - rxDropWarnAt_ >= 5.0) {
+    SKW_WARN("rx audio overrun: %llu samples dropped (%.1f s total) - "
+             "worker behind real time",
+             (unsigned long long)(drops - rxDropsReported_),
+             double(drops) / kFsAudio);
+    rxDropsReported_ = drops;
+    rxDropWarnAt_ = now;
+  }
   double e = 0.0;
   for (size_t i = 0; i < got; ++i) e += double(chunk_[i]) * chunk_[i];
   rxLevel_ = levelDbfs(e, got);
 
   std::vector<cfloat> bb;
   down_.process({chunk_.data(), got}, bb);
-  if (bb.empty()) return;
+  if (bb.empty()) return true;
 
   // Noise/CCA blocks (~100 ms of baseband).
   for (auto& v : bb) {
@@ -531,6 +558,7 @@ void ModemWorker::pumpRxLocked(double now) {
       ++rxCapturesDropped_;
     }
     pendingRx_.push_back({uint64_t(s), 0});
+    ++rxCapturesOpened_;
     // A chirp preamble proves this busy period is a STATION, not noise.
     // The claim is sticky for the whole busy period and is dropped the
     // moment the channel clears, so one stray classification cannot mark
@@ -538,6 +566,10 @@ void ModemWorker::pumpRxLocked(double now) {
     busyIsPeer_ = true;
   }
 
+  return true;
+}
+
+void ModemWorker::decodePendingLocked(double now) {
   // Grow each pending capture along the retry ladder until the engine
   // takes the frame (or the ladder ends and the monitor gets one look).
   const uint64_t histEnd = histBase_ + hist_.size();
@@ -962,6 +994,8 @@ size_t ModemWorker::processChunk() {
 
   working_.clockUs = clock_.nowUs();
   working_.rxSamplesTotal = rxTotal_;
+  working_.rxCapturesOpened = rxCapturesOpened_;
+  working_.rxCapturesDropped = rxCapturesDropped_;
   working_.txSamplesTotal = txTotal_;
   working_.rxLevelDbfs = rxLevel_;
   working_.txLevelDbfs = txLevel_;

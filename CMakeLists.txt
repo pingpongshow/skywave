@@ -231,6 +231,9 @@ if(BUILD_TESTS)
   # test_st2 (+ its full-duplex variant).
   add_executable(soak_st2 tests/soak_st2.cpp)
   target_link_libraries(soak_st2 PRIVATE skywave_core)
+  # CFO step / offset / drift scenarios over ST2 (GAP_CLOSURE_PLAN 8.0).
+  add_executable(cfo_st2 tests/cfo_st2.cpp)
+  target_link_libraries(cfo_st2 PRIVATE skywave_core)
   add_executable(monkey_st2 tests/monkey_st2.cpp)
   target_link_libraries(monkey_st2 PRIVATE skywave_core)
   # Minimal one-way bulk repro (diagnostic, not a registered test).

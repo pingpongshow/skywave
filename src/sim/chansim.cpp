@@ -136,8 +136,11 @@ void Chansim::process(std::span<const cfloat> in, std::vector<cfloat>& out) {
     }
 
     // CFO.
-    if (p_.cfoHz != 0.0) {
-      cfoPhase_ += 2.0 * M_PI * p_.cfoHz / kFsBaseband;
+    if (p_.cfoHz != 0.0 || p_.cfoDriftHzPerSec != 0.0) {
+      const double fNow =
+          p_.cfoHz + p_.cfoDriftHzPerSec * double(cfoN_++) / kFsBaseband;
+      cfoPhase_ += 2.0 * M_PI * fNow / kFsBaseband;
+      if (cfoPhase_ < 0.0) cfoPhase_ += 2.0 * M_PI;
       if (cfoPhase_ > 2.0 * M_PI) cfoPhase_ -= 2.0 * M_PI;
       y *= cfloat(float(std::cos(cfoPhase_)), float(std::sin(cfoPhase_)));
     }

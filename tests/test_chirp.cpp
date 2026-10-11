@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -179,6 +180,42 @@ TEST_CASE(chirp_no_false_alarms_in_noise) {
       det.process({x.data() + i, std::min(chunk, x.size() - i)}, out);
     }
     CHECK_EQ(out.size(), 0u);
+  }
+}
+
+// Regression (ST3 kill/resume stall, 2026-10): EXACT digital silence - a
+// virtual audio cable whose writer is idle or dead, a muted interface -
+// collapsed the noise-NCC floor to 0 and the detector then emitted a
+// phantom q=0.00 detection every ~0.65 s, indefinitely. Each phantom costs
+// the worker a capture climbing the full 90 s ladder; on the real device
+// path that put the receiver behind real time and lost handshake frames.
+// Silence must produce nothing, and a preamble after long silence (and
+// after an unrelated burst) must still be detected exactly once.
+TEST_CASE(chirp_no_phantoms_in_digital_silence) {
+  std::mt19937 rng(7001);
+  for (Family fam : {Family::Wide, Family::Narrow}) {
+    const size_t fs = size_t(kFsBaseband);
+    std::vector<cfloat> x(120 * fs, cfloat(0, 0));       // 120 s of zeros
+    auto burst = noiseOnly(4 * fs, 1.0, rng);             // non-preamble burst
+    x.insert(x.end(), burst.begin(), burst.end());
+    x.insert(x.end(), 40 * fs, cfloat(0, 0));             // 40 s of zeros
+    const size_t at = x.size();
+    auto pre = makeChirpPreamble(fam, ChirpSig::Calling);
+    x.insert(x.end(), pre.begin(), pre.end());
+    x.insert(x.end(), 5 * fs, cfloat(0, 0));
+    ChirpDetector det(fam);
+    std::vector<ChirpDetection> out;
+    const size_t chunk = 368;
+    for (size_t i = 0; i < x.size(); i += chunk) {
+      det.process({x.data() + i, std::min(chunk, x.size() - i)}, out);
+    }
+    std::printf("digital silence %s: %zu detection(s)\n",
+                fam == Family::Wide ? "wide" : "narrow", out.size());
+    CHECK_EQ(out.size(), 1u);
+    if (out.size() == 1) {
+      CHECK(out[0].sig == ChirpSig::Calling);
+      CHECK_NEAR(out[0].startSample, double(at), 12.0);
+    }
   }
 }
 

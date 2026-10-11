@@ -7,11 +7,18 @@
 // Usage:
 //   bertool [--trials N] [--offsets "0,3,10"] [--families wide,narrow]
 //           [--modes 4,8,13] [--preset good|moderate|poor|awgn]
-//           [--csv path] [--seed S] [--css]
+//           [--csv path] [--seed S] [--css] [--cfo HZ] [--drift HZ_PER_S]
 //
 // --css sweeps the CSS deep tier (M0-M3) instead of the OFDM ladder:
 // aligned modem-level FER (no PHY sync - that is ROADMAP 6.2), offsets
 // relative to the per-family cssFloorDb table.
+//
+// --cfo / --drift apply a static carrier offset and a linear drift (from
+// the start of each trial's signal) in the channel; the table then also
+// reports the receiver's mean and worst |CFO error| over decoded headers
+// (GAP_CLOSURE_PLAN.md 8.0).
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -53,6 +60,8 @@ struct Args {
   // fading floor, the input to any frame-length adaptation policy.
   int payloadLen = 0;
   Band band = Band::Hf;
+  double cfo = 0.0;    // static channel CFO, Hz
+  double drift = 0.0;  // linear CFO drift, Hz/s
 };
 
 std::vector<std::string> split(const std::string& s, char d) {
@@ -136,6 +145,8 @@ int cssSweep(const Args& a, FILE* csv) {
         for (int t = 0; t < a.trials; ++t) {
           ChansimParams cp = base;
           cp.snr3kDb = floor + off;
+          cp.cfoHz = a.cfo;
+          cp.cfoDriftHzPerSec = a.drift;
           cp.seed = a.seed + uint64_t(t) * 7919 + uint64_t(mode) * 131 +
                     uint64_t(fam) * 100003 +
                     uint64_t(std::llround(off * 2.0 + 64.0)) * 15485863ull;
@@ -206,6 +217,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
     else if (!strcmp(argv[i], "--css")) a.css = true;
+    else if (!strcmp(argv[i], "--cfo")) a.cfo = atof(need("--cfo").c_str());
+    else if (!strcmp(argv[i], "--drift")) a.drift = atof(need("--drift").c_str());
     else if (!strcmp(argv[i], "--css-frames")) a.cssFrames = true;
     else if (!strcmp(argv[i], "--css-hdr")) a.cssHdrCopies = atoi(need("--css-hdr").c_str());
     else if (!strcmp(argv[i], "--payload")) a.payloadLen = atoi(need("--payload").c_str());
@@ -240,7 +253,8 @@ int main(int argc, char** argv) {
 
   if (csv) {
     fprintf(csv,
-            "family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer\n");
+            "family,mode,snr3k,trials,noDetect,zcFail,hdrFail,payFail,fer,"
+            "cfo,drift,cfoErrMean,cfoErrMaxAbs\n");
   }
 
   printf("%-7s %-4s %7s %7s | %5s %5s %5s %5s %7s | %8s\n", "family",
@@ -317,9 +331,15 @@ int main(int argc, char** argv) {
         // calibration question.
         double evmSum = 0.0, pilotSum = 0.0;
         int evmN = 0;
+        // Receiver CFO error (estimate - channel offset at t = 0) over
+        // frames whose header decoded.
+        double cfoErrSum = 0.0, cfoErrMax = 0.0;
+        int cfoN = 0;
         for (int t = 0; t < a.trials; ++t) {
           ChansimParams cp = presetParams(a.preset);
           cp.snr3kDb = r.snrDb;
+          cp.cfoHz = a.cfo;
+          cp.cfoDriftHzPerSec = a.drift;
           // Seed must vary with the SNR point too: reusing realizations
           // across offsets pins any unlucky deep-fade-over-preamble seed
           // as a false FER floor across the whole ladder.
@@ -330,6 +350,10 @@ int main(int argc, char** argv) {
           RxStage st = RxStage::NoDetect;
           auto res = receiveFrame(fam, y, &st);
           if (res) {
+            const double cfoErr = res->cfoHz - a.cfo;
+            cfoErrSum += cfoErr;
+            cfoErrMax = std::max(cfoErrMax, std::abs(cfoErr));
+            ++cfoN;
             estSum += res->snrDb;
             ++estN;
             if (res->payloadOk && res->evmSnrDb > -90.0) {
@@ -368,11 +392,16 @@ int main(int argc, char** argv) {
                plan(fam).name, mode, floor, r.snrDb, r.noDetect, r.zcFail,
                r.hdrFail, r.payFail, 100.0 * r.fer(), netEff, est, evm, pilot,
                payloadLen, airSec, 100.0 * ovhFrac, good);
+        if (a.cfo != 0.0 || a.drift != 0.0) {
+          printf("          cfo %+.1f Hz drift %.2f Hz/s | cfoErr mean %+.2f max|%.2f| Hz\n",
+                 a.cfo, a.drift, cfoN ? cfoErrSum / cfoN : 0.0, cfoErrMax);
+        }
         fflush(stdout);
         if (csv) {
-          fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f\n", plan(fam).name,
-                  mode, r.snrDb, r.trials, r.noDetect, r.zcFail, r.hdrFail,
-                  r.payFail, r.fer());
+          fprintf(csv, "%s,%d,%.1f,%d,%d,%d,%d,%d,%.4f,%.2f,%.3f,%.3f,%.3f\n",
+                  plan(fam).name, mode, r.snrDb, r.trials, r.noDetect,
+                  r.zcFail, r.hdrFail, r.payFail, r.fer(), a.cfo, a.drift,
+                  cfoN ? cfoErrSum / cfoN : 0.0, cfoErrMax);
           fflush(csv);
         }
         all.push_back(r);

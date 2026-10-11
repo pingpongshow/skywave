@@ -142,7 +142,9 @@ int main(int argc, char** argv) {
   }
 
   // Rings sized for ~1 s of audio: deep enough for scheduling hiccups.
-  skw::SampleRing rxRing(skw::kFsAudio);
+  // RX ring: 8 s (as the ST2 world uses). At 1 s, one long-window decode
+  // under load overran it and the audio callback dropped samples silently.
+  skw::SampleRing rxRing(skw::kFsAudio * 8);
   skw::SampleRing txRing(skw::kFsAudio);
 
   const bool fileMode = !pre.replayPath.empty() || !pre.recordPath.empty();
@@ -311,9 +313,10 @@ int main(int argc, char** argv) {
 
   audio->stop();
   auto t = worker.telemetry();
-  SKW_INFO("shutdown: rx=%llu tx=%llu samples",
+  SKW_INFO("shutdown: rx=%llu tx=%llu samples, rx overrun=%llu samples",
            (unsigned long long)t.rxSamplesTotal,
-           (unsigned long long)t.txSamplesTotal);
+           (unsigned long long)t.txSamplesTotal,
+           (unsigned long long)rxRing.dropped());
 
   if (!pre.configPath.empty()) cfg.save(pre.configPath);
   return 0;

@@ -202,12 +202,28 @@ void ChirpDetector::evaluateGridPoint(int64_t g) {
   grid_.push_back(v);
 
   // Track the noise NCC floor (clipped so signal peaks cannot poison it).
+  //
+  // DIGITAL SILENCE IS NOT NOISE. A window with no energy has no NCC at
+  // all (both read 0 above), and folding those zeros into the EMA drove
+  // the floor geometrically to 0 - every threshold below is a multiple of
+  // it, so after ~30 s of exact zeros (a virtual audio cable whose writer
+  // is idle or dead, a muted interface) the detector emitted a phantom
+  // q=0.00 detection every ~0.65 s, forever: the clip below caps recovery
+  // at 6x the CURRENT floor, so a collapsed floor cannot climb back. On
+  // the ST3 kill/resume path each phantom opened a capture that climbed
+  // the whole 90 s ladder, the worker fell behind real time, the RX ring
+  // overflowed and handshake frames were lost in the dropped audio.
+  // Skip zero-energy windows, and never let the floor fall below half the
+  // white-noise expectation (E[NCC] = 1/N), which real noise never does.
   auto emaUpdate = [&](double ncc) {
     double clipped = std::min(ncc, 6.0 * emaNoiseNcc_);
     emaNoiseNcc_ += kEmaAlpha * (clipped - emaNoiseNcc_);
   };
-  emaUpdate(v.nccUp);
-  emaUpdate(v.nccDown);
+  if (denom > 1e-12f) {
+    emaUpdate(v.nccUp);
+    emaUpdate(v.nccDown);
+  }
+  emaNoiseNcc_ = std::max(emaNoiseNcc_, 0.5 / double(n));
 }
 
 ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,

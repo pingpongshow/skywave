@@ -854,16 +854,27 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
 *Exit gate: RELEASE.md gates 1–7 green on the 8.9 tree, with
 `st3_killresume` passing 2 consecutive runs; release v1.2.0.*
 
-- [ ] **8.0 Instruments + baseline** — chansim drift, bertool
+- [x] **8.0 Instruments + baseline** — chansim drift, bertool
   `--cfo/--drift` + CFO-error column, `cfo_st2` scenarios, ST2
   `ambientAmp`; archive baseline sweeps as `conformance/gap_base_*.csv`.
   *Gate: baseline reproduces the investigation (fast cliff at 3.5 Hz,
   WIDE Poor M4 hdrFail ≥35%).*
-- [ ] **8.1 Kill/resume (R7)** — detector floor only from energetic
+  ✓ 2026-10-11 — `conformance/gap_base/`: fast frames 0% FER at 0 Hz,
+  100% from 3.5 Hz on every family; WIDE Poor M4 never reaches 10% (floor
+  38%, 488/1000 header failures); drift kills NARROW at 0.1 Hz/s.
+  `tools/gap_sweeps.sh` + `gap_summary.py` run/compare the suites.
+- [x] **8.1 Kill/resume (R7)** — detector floor only from energetic
   windows + clamp; ingest-before-decode (never drop audio); 8 s RX ring,
   overrun counter/WARN, capture telemetry; numbered harness logs.
   *Gate: new phantom/peer-death tests fail-before/pass-after;
   `st3_killresume` 2 consecutive runs (10/10), `rx overrun=0`.*
+  ✓ 2026-10-11 — tests fail on v1.1.0 (204/194 phantom detections; 133
+  captures opened, 126 evicted) and pass after. `st3_killresume`: three
+  runs, 15/15 reconnects, every shutdown `rx overrun=0`, all under full
+  CPU load from parallel bertool sweeps. DEVIATION: one run first failed
+  on the HARNESS - it connected to a relaunched modem's control port a
+  fixed 3 s after launch while CoreAudio was still opening the device;
+  `connect_local()` now waits for the port.
 - [ ] **8.2 Unified CFO ambiguity resolution (R1)** — branch search over
   ±55 Hz for every chirp signature, scored by local ZC fit; wider ZC fit
   with prior gating. *Gate: CFO_SWEEP ≤5% at ±50 Hz; WIDE Poor M4

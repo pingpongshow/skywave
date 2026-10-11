@@ -38,8 +38,16 @@ class SampleRing {
     size_t n = in.size() < free ? in.size() : free;
     for (size_t i = 0; i < n; ++i) buf_[(head + i) & mask_] = in[i];
     head_.store(head + n, std::memory_order_release);
+    if (n < in.size()) {
+      dropped_.fetch_add(in.size() - n, std::memory_order_relaxed);
+    }
     return n;
   }
+
+  // Samples the producer could not write because the ring was full - the
+  // consumer fell behind real time. Never silent: an RX overrun destroys
+  // whatever frame was on air.
+  uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
 
   // Consumer-side LOOKAHEAD: copy up to out.size() samples starting
   // `offset` past the consumer position WITHOUT consuming them. Used by
@@ -74,6 +82,7 @@ class SampleRing {
   size_t mask_ = 0;
   std::atomic<size_t> head_{0};  // producer position
   std::atomic<size_t> tail_{0};  // consumer position
+  std::atomic<uint64_t> dropped_{0};  // producer-side overrun count
 };
 
 }  // namespace skw

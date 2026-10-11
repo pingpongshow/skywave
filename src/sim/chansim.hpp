@@ -27,6 +27,7 @@ struct ChansimParams {
   double snr3kDb = 99.0;        // AWGN, referenced to 3 kHz noise bandwidth
   double refSignalPower = 1.0;  // signal power the SNR refers to
   double cfoHz = 0.0;
+  double cfoDriftHzPerSec = 0.0;  // linear CFO drift from t = 0 (LO drift)
   double clockPpm = 0.0;        // sample-clock offset
   double toneHz = 0.0;          // narrowband interferer (baseband offset)
   double toneAmp = 0.0;         // 0 = off
@@ -83,6 +84,7 @@ class Chansim {
   double noiseStd_ = 0.0;
   uint64_t noiseRng_;
   double cfoPhase_ = 0.0;
+  uint64_t cfoN_ = 0;  // samples since start, for the drift term
   double tonePhase_ = 0.0;
   uint64_t samplesOut_ = 0;
 };

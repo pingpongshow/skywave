@@ -188,6 +188,15 @@ randomized impairments and per-cycle throughput reporting. CI runs the
 short soak; `SKW_SOAK=N` runs the long-haul stress (run under
 sanitizers for leak/corruption checks).
 
+#### Phase 8 measurement suites
+
+`tools/gap_sweeps.sh BERTOOL OUTDIR [awgn ladder cfo drift]` runs the
+GAP_CLOSURE_PLAN.md standard command lines in parallel (bertool
+`--cfo`/`--drift` apply a static offset / linear drift in the channel);
+`tools/gap_summary.py DIR [BASE_DIR]` prints the SNR at 10% FER per
+ladder row and per-point FER, flagging AWGN points worse than a base run.
+The v1.1.0 baseline is archived in `docs/conformance/gap_base/`.
+
 #### ST2 - Process-level loopback (gate: Phase 4 exit)
 
 The real `skywave` binary end to end - worker threads, telemetry,
@@ -197,6 +206,19 @@ Scripted via the control port (`CONNECT`, `STATUS JSON` scraping);
 data through the TCP data port; EVT: notification correctness asserted.
 Fault injection: audio dropouts, ring starvation, mid-frame TX abort,
 simultaneous-TX collisions, client disconnect/reconnect on every port.
+
+The world adds a -60 dBFS ambient floor at each receiver by default.
+`World::ambientAmp` / `SKW_ST2_AMBIENT=0` gives EXACT digital silence
+between bursts instead - what a virtual cable delivers when its writer is
+idle or dead. The floor hid the ST3 kill/resume failure for two releases
+(GAP_CLOSURE_PLAN.md R7): `st2_peer_death_digital_silence` runs with it
+off. FakeClock also hides CPU cost, so worker-overload effects (RX ring
+overrun) only show at ST3.
+
+Frequency scenarios: `cfo_st2` runs one-way bulk while B's LO is offset
+(`CFO0`), stepped (`STEP` at `STEP_AT`) or drifting (`DRIFT` Hz/s), and
+fails on a drop or on fewer than `MIN_BYTES` delivered. Registered as
+`cfo_st2_step40`, `cfo_st2_cfo45`, `cfo_st2_drift01`.
 
 #### ST3 - Real/virtual audio devices (gate: Phase 5 exit)
 
@@ -210,6 +232,12 @@ drift, real buffer timing, real underruns). Requirements:
   ring overflow/underflow counters zero, throughput drift < 10%
 - level calibration path exercised (TXTEST + AUDIOLEVEL against the
   device loop)
+- `st3_killresume`: five SIGKILL/relaunch cycles, all must reconnect;
+  logs are numbered per launch (`st3_<call>_NN.log` under
+  `SKW_ST3_LOGDIR`) and the modem logs `rx overrun=N samples` at
+  shutdown - nonzero means the worker fell behind real time and audio
+  was lost. The harness waits for each relaunched modem's ports rather
+  than assuming a fixed start-up time.
 
 #### ST4 - On-air readiness (gate: pre-release, attended)
 

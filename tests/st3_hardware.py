@@ -51,11 +51,27 @@ def find(devs, name, need_in=0, need_out=0):
     return None
 
 
+def connect_local(port, wait=30.0):
+    """Connect to a modem TCP port, waiting for it to come up. A freshly
+    launched modem opens its audio device before its ports, and CoreAudio
+    can take several seconds under load (a fixed sleep raced it: the
+    2026-10 kill/resume gate failed on "connection refused" with the
+    relaunched modem still opening its device)."""
+    deadline = time.time() + wait
+    while True:
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=10)
+        except ConnectionRefusedError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.25)
+
+
 class Ctrl:
     """Control-port client: one command, one response line."""
 
     def __init__(self, port, timeout=20.0):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.sock = connect_local(port)
         self.sock.settimeout(timeout)
         self.buf = b""
 
@@ -92,7 +108,13 @@ class Ctrl:
 
 def launch(binary, call, in_dev, out_dev, data_port, ctrl_port, logdir,
            impair=None):
-    log = open(os.path.join(logdir, f"st3_{call}.log"), "w")
+    # One numbered log per launch: st3_killresume relaunches the same
+    # callsign every cycle, and reopening a fixed name with "w" erased the
+    # previous run's evidence (the archived st3_K6XYZ.log was 7 lines).
+    n = 1
+    while os.path.exists(os.path.join(logdir, f"st3_{call}_{n:02d}.log")):
+        n += 1
+    log = open(os.path.join(logdir, f"st3_{call}_{n:02d}.log"), "w")
     env = dict(os.environ)
     if impair:
         # SKW_TX_IMPAIR: each modem impairs its OWN transmit audio
@@ -192,8 +214,8 @@ def main():
         print(f"ST3: connected in {time.time() - t0:.1f} s")
 
         # --- payload through the data ports --------------------------------
-        a_data = socket.create_connection(("127.0.0.1", 9200), timeout=10)
-        b_data = socket.create_connection(("127.0.0.1", 9210), timeout=10)
+        a_data = connect_local(9200)
+        b_data = connect_local(9210)
         payload = bytes((i * 37 + 11) % 251 for i in range(args.bytes))
         got = transfer(a_data, b_data, payload, timeout=240)
         if got != payload:

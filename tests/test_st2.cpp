@@ -330,4 +330,48 @@ TEST_CASE(st2_peer_death_then_reconnect) {
                     payload.data() + resume, tail) == 0);
 }
 
+
+// Peer death over a DIGITALLY SILENT channel (2026-10, ST3 kill/resume
+// stall). The ST2 world's -60 dBFS ambient floor hid this: on the real
+// virtual-cable path an idle or dead peer is exact zeros, the chirp
+// detector's noise floor collapsed, and it emitted a phantom detection
+// every ~0.65 s. Each phantom opened a capture that climbed the 90 s
+// ladder; on real audio the worker fell behind real time, the RX ring
+// overran and handshake frames were lost. FakeClock hides the CPU cost,
+// so this test pins the CAUSE instead: captures opened while the peer is
+// dead must track real bursts, not the silence (measured before the fix:
+// hundreds; after: a few dozen at most).
+TEST_CASE(st2_peer_death_digital_silence) {
+  World w(24.0, 7);
+  w.ambientAmp = 0.0f;
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  CHECK(w.waitState(w.a, "CONNECTED", 3000));
+  std::vector<uint8_t> payload(32768);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 7 + 3);
+  ::send(w.a.dataFd, payload.data(), payload.size(), 0);
+  for (int i = 0; i < 8000 && w.b.dataAcc.size() < 4096; ++i) w.round();
+  w.b.w.reset();
+  w.b.w.emplace(w.b.cfg, w.clk, w.b.rxRing, w.b.txRing);
+  w.b.ctrlAcc.clear();
+  CHECK(w.cmd(w.b, "LISTEN ON") == "LISTEN ON");
+  const auto a0 = w.a.w->telemetry();
+  CHECK(w.waitState(w.a, "LISTENING", 12000));
+  const auto a1 = w.a.w->telemetry();
+  const auto b1 = w.b.w->telemetry();
+  const uint64_t aOpened = a1.rxCapturesOpened - a0.rxCapturesOpened;
+  std::printf("digital-silence peer death: A opened %llu captures "
+              "(%llu evicted), restarted B opened %llu (%llu evicted)\n",
+              (unsigned long long)aOpened,
+              (unsigned long long)(a1.rxCapturesDropped - a0.rxCapturesDropped),
+              (unsigned long long)b1.rxCapturesOpened,
+              (unsigned long long)b1.rxCapturesDropped);
+  // The dead peer transmits NOTHING: the survivor has nothing to capture.
+  CHECK(aOpened <= 4);
+  CHECK_EQ(a1.rxCapturesDropped - a0.rxCapturesDropped, 0u);
+  CHECK_EQ(b1.rxCapturesDropped, 0u);
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  CHECK(w.waitState(w.a, "CONNECTED", 8000));
+  CHECK(w.waitState(w.b, "CONNECTED", 1000));
+}
+
 SKYTEST_MAIN

@@ -13,7 +13,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from st3_hardware import Ctrl, list_devices, find, launch  # noqa: E402
+from st3_hardware import Ctrl, connect_local, list_devices, find, launch  # noqa: E402
 
 
 class RecordingCtrl(Ctrl):
@@ -88,8 +88,8 @@ def main():
             return 1
         print("connected")
 
-        a_data = socket.create_connection(("127.0.0.1", 9200), timeout=10)
-        b_data = socket.create_connection(("127.0.0.1", 9210), timeout=10)
+        a_data = connect_local(9200)
+        b_data = connect_local(9210)
         b_data.settimeout(2.0)
         a_data.sendall(bytes((i * 131 + 7) % 251 for i in range(24 * 1024)))
 
