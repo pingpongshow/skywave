@@ -1,0 +1,25 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M10      4.5     4.5 |     0     0     3    72   75.0% |    1467 | est    1.4 evm    9.5 pilot  0.033 |   300B air   2.7 ovh  46% good   27.3
+MID     M10      4.5     6.0 |     0     0     2    55   57.0% |    1467 | est    2.5 evm   10.5 pilot  0.032 |   300B air   2.7 ovh  46% good   47.0
+MID     M10      4.5     7.5 |     0     0     0    47   47.0% |    1467 | est    4.2 evm   11.8 pilot  0.034 |   300B air   2.7 ovh  46% good   58.0
+MID     M10      4.5     9.0 |     0     0     0    20   20.0% |    1467 | est    6.1 evm   12.2 pilot  0.031 |   300B air   2.7 ovh  46% good   87.5
+MID     M10      4.5    10.5 |     0     0     0    15   15.0% |    1467 | est    7.8 evm   13.6 pilot  0.030 |   300B air   2.7 ovh  46% good   93.0
+MID     M10      4.5    12.0 |     0     0     0     5    5.0% |    1467 | est    9.7 evm   15.0 pilot  0.029 |   300B air   2.7 ovh  46% good  103.9
+MID     M10      4.5    13.5 |     0     0     0     5    5.0% |    1467 | est   10.5 evm   15.8 pilot  0.027 |   300B air   2.7 ovh  46% good  103.9
+MID     M10      4.5    15.0 |     0     0     0     1    1.0% |    1467 | est   13.3 evm   17.4 pilot  0.018 |   300B air   2.7 ovh  46% good  108.3
+MID     M10      4.5    16.5 |     0     0     0     1    1.0% |    1467 | est   13.7 evm   18.6 pilot  0.018 |   300B air   2.7 ovh  46% good  108.3
+MID     M10      4.5    18.0 |     0     0     0     0    0.0% |    1467 | est   16.2 evm   20.6 pilot  0.015 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    19.5 |     0     0     0     1    1.0% |    1467 | est   16.5 evm   21.2 pilot  0.013 |   300B air   2.7 ovh  46% good  108.3
+MID     M10      4.5    21.0 |     0     0     0     0    0.0% |    1467 | est   17.2 evm   22.6 pilot  0.015 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    22.5 |     0     0     0     0    0.0% |    1467 | est   18.3 evm   24.1 pilot  0.015 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    24.0 |     0     0     0     0    0.0% |    1467 | est   18.8 evm   25.3 pilot  0.012 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    25.5 |     0     0     0     0    0.0% |    1467 | est   18.8 evm   26.4 pilot  0.011 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    27.0 |     0     0     0     0    0.0% |    1467 | est   19.2 evm   27.0 pilot  0.018 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    28.5 |     0     0     0     0    0.0% |    1467 | est   19.8 evm   28.3 pilot  0.011 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    30.0 |     0     0     0     0    0.0% |    1467 | est   20.0 evm   28.8 pilot  0.010 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    31.5 |     0     0     0     0    0.0% |    1467 | est   19.5 evm   29.9 pilot  0.011 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5    33.0 |     0     0     0     0    0.0% |    1467 | est   20.1 evm   30.0 pilot  0.011 |   300B air   2.7 ovh  46% good  109.4
+FAIL: MID M10 @ 4.5 dB FER=75.0%
+FAIL: MID M10 @ 6.0 dB FER=57.0%
+FAIL: MID M10 @ 7.5 dB FER=47.0%
+== 3 conformance failures ==

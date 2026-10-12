@@ -1,0 +1,31 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M13     20.5    20.5 |     0     0     1    83   84.0% |    6403 | est    9.9 evm   19.6 pilot  0.019 |   300B air   1.1 ovh  69% good   44.2
+ULTRA   M13     20.5    22.0 |     0     0     1    86   87.0% |    6403 | est    6.7 evm   20.4 pilot  0.017 |   300B air   1.1 ovh  69% good   35.9
+ULTRA   M13     20.5    23.5 |     0     0     0    75   75.0% |    6403 | est   10.9 evm   20.7 pilot  0.016 |   300B air   1.1 ovh  69% good   69.0
+ULTRA   M13     20.5    25.0 |     0     0     0    71   71.0% |    6403 | est   10.2 evm   22.3 pilot  0.013 |   300B air   1.1 ovh  69% good   80.1
+ULTRA   M13     20.5    26.5 |     0     0     0    78   78.0% |    6403 | est    9.0 evm   22.0 pilot  0.019 |   300B air   1.1 ovh  69% good   60.7
+ULTRA   M13     20.5    28.0 |     0     0     0    67   67.0% |    6403 | est   10.5 evm   23.0 pilot  0.019 |   300B air   1.1 ovh  69% good   91.1
+ULTRA   M13     20.5    29.5 |     0     0     0    69   69.0% |    6403 | est    9.6 evm   22.4 pilot  0.019 |   300B air   1.1 ovh  69% good   85.6
+ULTRA   M13     20.5    31.0 |     0     0     0    64   64.0% |    6403 | est   12.0 evm   23.5 pilot  0.022 |   300B air   1.1 ovh  69% good   99.4
+ULTRA   M13     20.5    32.5 |     0     0     0    63   63.0% |    6403 | est   11.1 evm   23.7 pilot  0.025 |   300B air   1.1 ovh  69% good  102.1
+ULTRA   M13     20.5    34.0 |     0     0     0    73   73.0% |    6403 | est    9.6 evm   24.4 pilot  0.020 |   300B air   1.1 ovh  69% good   74.5
+ULTRA   M13     20.5    35.5 |     0     0     0    66   66.0% |    6403 | est   10.0 evm   24.2 pilot  0.027 |   300B air   1.1 ovh  69% good   93.9
+ULTRA   M13     20.5    37.0 |     0     0     0    59   59.0% |    6403 | est   10.5 evm   24.1 pilot  0.018 |   300B air   1.1 ovh  69% good  113.2
+ULTRA   M13     20.5    38.5 |     0     0     0    62   62.0% |    6403 | est   12.2 evm   25.1 pilot  0.019 |   300B air   1.1 ovh  69% good  104.9
+ULTRA   M13     20.5    40.0 |     0     0     0    55   55.0% |    6403 | est   11.7 evm   24.5 pilot  0.017 |   300B air   1.1 ovh  69% good  124.2
+ULTRA   M13     20.5    41.5 |     0     0     1    65   66.0% |    6403 | est   10.3 evm   24.3 pilot  0.019 |   300B air   1.1 ovh  69% good   93.9
+ULTRA   M13     20.5    43.0 |     0     0     0    60   60.0% |    6403 | est   11.6 evm   23.7 pilot  0.023 |   300B air   1.1 ovh  69% good  110.4
+ULTRA   M13     20.5    44.5 |     0     0     1    60   61.0% |    6403 | est   11.1 evm   24.4 pilot  0.023 |   300B air   1.1 ovh  69% good  107.7
+ULTRA   M13     20.5    46.0 |     0     0     0    66   66.0% |    6403 | est    9.6 evm   24.0 pilot  0.020 |   300B air   1.1 ovh  69% good   93.9
+ULTRA   M13     20.5    47.5 |     0     0     0    65   65.0% |    6403 | est   10.0 evm   24.6 pilot  0.020 |   300B air   1.1 ovh  69% good   96.6
+ULTRA   M13     20.5    49.0 |     0     0     0    62   62.0% |    6403 | est   11.1 evm   23.8 pilot  0.020 |   300B air   1.1 ovh  69% good  104.9
+FAIL: ULTRA M13 @ 20.5 dB FER=84.0%
+FAIL: ULTRA M13 @ 22.0 dB FER=87.0%
+FAIL: ULTRA M13 @ 23.5 dB FER=75.0%
+FAIL: ULTRA M13 @ 25.0 dB FER=71.0%
+FAIL: ULTRA M13 @ 26.5 dB FER=78.0%
+FAIL: ULTRA M13 @ 28.0 dB FER=67.0%
+FAIL: ULTRA M13 @ 29.5 dB FER=69.0%
+FAIL: ULTRA M13 @ 31.0 dB FER=64.0%
+FAIL: ULTRA M13 @ 32.5 dB FER=63.0%
+== 9 conformance failures ==

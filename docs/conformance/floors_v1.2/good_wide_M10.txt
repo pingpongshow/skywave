@@ -1,0 +1,24 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M10      8.0     8.0 |     0     0     4    55   59.0% |    3354 | est    6.2 evm    9.9 pilot  0.007 |   300B air   1.4 ovh  55% good   86.4
+WIDE    M10      8.0     9.5 |     0     0     1    31   32.0% |    3354 | est    8.2 evm   10.4 pilot  0.005 |   300B air   1.4 ovh  55% good  143.3
+WIDE    M10      8.0    11.0 |     0     0     0    17   17.0% |    3354 | est   10.2 evm   11.4 pilot  0.005 |   300B air   1.4 ovh  55% good  174.9
+WIDE    M10      8.0    12.5 |     0     0     0    16   16.0% |    3354 | est   11.6 evm   12.5 pilot  0.005 |   300B air   1.4 ovh  55% good  177.0
+WIDE    M10      8.0    14.0 |     0     0     0     8    8.0% |    3354 | est   13.6 evm   13.6 pilot  0.005 |   300B air   1.4 ovh  55% good  193.8
+WIDE    M10      8.0    15.5 |     0     0     0     8    8.0% |    3354 | est   14.6 evm   14.2 pilot  0.005 |   300B air   1.4 ovh  55% good  193.8
+WIDE    M10      8.0    17.0 |     0     0     0     2    2.0% |    3354 | est   17.5 evm   15.8 pilot  0.004 |   300B air   1.4 ovh  55% good  206.5
+WIDE    M10      8.0    18.5 |     0     0     0     0    0.0% |    3354 | est   19.1 evm   16.8 pilot  0.003 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    20.0 |     0     0     0     0    0.0% |    3354 | est   21.2 evm   18.4 pilot  0.002 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    21.5 |     0     0     0     0    0.0% |    3354 | est   22.4 evm   19.5 pilot  0.002 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    23.0 |     0     0     0     0    0.0% |    3354 | est   24.5 evm   21.2 pilot  0.002 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    24.5 |     0     0     0     0    0.0% |    3354 | est   25.5 evm   22.3 pilot  0.002 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    26.0 |     0     0     0     0    0.0% |    3354 | est   27.2 evm   23.9 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    27.5 |     0     0     0     0    0.0% |    3354 | est   28.4 evm   25.1 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    29.0 |     0     0     0     0    0.0% |    3354 | est   29.3 evm   26.0 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    30.5 |     0     0     0     0    0.0% |    3354 | est   30.8 evm   27.7 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    32.0 |     0     0     0     0    0.0% |    3354 | est   31.7 evm   28.7 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    33.5 |     0     0     0     0    0.0% |    3354 | est   32.8 evm   29.7 pilot  0.000 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    35.0 |     0     0     0     0    0.0% |    3354 | est   33.2 evm   30.3 pilot  0.001 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    36.5 |     0     0     0     0    0.0% |    3354 | est   34.1 evm   31.3 pilot  0.000 |   300B air   1.4 ovh  55% good  210.7
+FAIL: WIDE M10 @ 8.0 dB FER=59.0%
+FAIL: WIDE M10 @ 9.5 dB FER=32.0%
+== 2 conformance failures ==

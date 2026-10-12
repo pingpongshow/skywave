@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M4     -12.0   -15.0 |     0     0    78     9   43.5% |      24 | est  -17.9 evm  -12.3 pilot  0.148 |    60B air  20.7 ovh  52% good    1.6
+MID     M4     -12.0   -14.5 |     0     0    31     0   15.5% |      24 | est  -17.3 evm  -11.8 pilot  0.088 |    60B air  20.7 ovh  52% good    2.4
+MID     M4     -12.0   -14.0 |     0     0    16     0    8.0% |      24 | est  -16.6 evm  -11.1 pilot  0.087 |    60B air  20.7 ovh  52% good    2.7
+MID     M4     -12.0   -13.5 |     0     0     7     1    4.0% |      24 | est  -15.9 evm  -10.4 pilot  0.063 |    60B air  20.7 ovh  52% good    2.8
+MID     M4     -12.0   -13.0 |     0     0     0     0    0.0% |      24 | est  -15.0 evm   -9.7 pilot  0.039 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -12.5 |     0     0     0     0    0.0% |      24 | est  -14.5 evm   -9.1 pilot  0.036 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -12.0 |     0     0     1     0    0.5% |      24 | est  -13.8 evm   -8.5 pilot  0.021 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -11.5 |     0     0     1     0    0.5% |      24 | est  -13.0 evm   -7.8 pilot  0.020 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -11.0 |     0     0     2     0    1.0% |      24 | est  -12.4 evm   -7.2 pilot  0.016 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -10.5 |     0     0     0     0    0.0% |      24 | est  -11.7 evm   -6.6 pilot  0.024 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0   -10.0 |     0     0     0     0    0.0% |      24 | est  -11.0 evm   -5.9 pilot  0.018 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0    -9.5 |     0     0     0     0    0.0% |      24 | est  -10.5 evm   -5.5 pilot  0.021 |    60B air  20.7 ovh  52% good    2.9
+MID     M4     -12.0    -9.0 |     0     0     0     0    0.0% |      24 | est   -9.8 evm   -4.7 pilot  0.011 |    60B air  20.7 ovh  52% good    2.9
+FAIL: MID M4 @ -15.0 dB FER=43.5%
+FAIL: MID M4 @ -14.5 dB FER=15.5%
+== 2 conformance failures ==

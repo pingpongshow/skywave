@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M4      -8.0   -11.0 |     0     0   118    19   68.5% |      72 | est  -13.0 evm  -11.7 pilot  0.025 |    60B air   7.4 ovh  56% good    2.5
+ULTRA   M4      -8.0   -10.5 |     0     0    44     4   24.0% |      72 | est  -12.4 evm  -11.2 pilot  0.029 |    60B air   7.4 ovh  56% good    6.1
+ULTRA   M4      -8.0   -10.0 |     0     0     9     0    4.5% |      72 | est  -11.8 evm  -10.7 pilot  0.034 |    60B air   7.4 ovh  56% good    7.7
+ULTRA   M4      -8.0    -9.5 |     0     0     2     0    1.0% |      72 | est  -11.1 evm  -10.0 pilot  0.020 |    60B air   7.4 ovh  56% good    8.0
+ULTRA   M4      -8.0    -9.0 |     0     0     0     0    0.0% |      72 | est  -10.5 evm   -9.4 pilot  0.020 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -8.5 |     0     0     1     0    0.5% |      72 | est   -9.9 evm   -8.9 pilot  0.025 |    60B air   7.4 ovh  56% good    8.0
+ULTRA   M4      -8.0    -8.0 |     0     0     0     0    0.0% |      72 | est   -9.3 evm   -8.3 pilot  0.019 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -7.5 |     0     0     0     0    0.0% |      72 | est   -8.6 evm   -7.7 pilot  0.015 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -7.0 |     0     0     0     0    0.0% |      72 | est   -8.0 evm   -7.0 pilot  0.018 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -6.5 |     0     0     0     0    0.0% |      72 | est   -7.4 evm   -6.5 pilot  0.013 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -6.0 |     0     0     0     0    0.0% |      72 | est   -6.7 evm   -5.8 pilot  0.009 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -5.5 |     0     0     0     0    0.0% |      72 | est   -6.3 evm   -5.4 pilot  0.014 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    -5.0 |     0     0     0     0    0.0% |      72 | est   -5.5 evm   -4.8 pilot  0.008 |    60B air   7.4 ovh  56% good    8.1
+FAIL: ULTRA M4 @ -11.0 dB FER=68.5%
+FAIL: ULTRA M4 @ -10.5 dB FER=24.0%
+== 2 conformance failures ==

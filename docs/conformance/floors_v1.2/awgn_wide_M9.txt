@@ -1,0 +1,19 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M9       5.0     2.0 |     0     0     0   200  100.0% |    2012 | est    1.2 evm  -99.0 pilot -1.000 |   300B air   1.9 ovh  42% good    0.0
+WIDE    M9       5.0     2.5 |     0     0     0   200  100.0% |    2012 | est    1.8 evm  -99.0 pilot -1.000 |   300B air   1.9 ovh  42% good    0.0
+WIDE    M9       5.0     3.0 |     0     0     0   197   98.5% |    2012 | est    2.3 evm    3.8 pilot  0.014 |   300B air   1.9 ovh  42% good    2.4
+WIDE    M9       5.0     3.5 |     0     0     0    77   38.5% |    2012 | est    2.8 evm    4.0 pilot  0.008 |   300B air   1.9 ovh  42% good   99.6
+WIDE    M9       5.0     4.0 |     0     0     0     1    0.5% |    2012 | est    3.4 evm    4.5 pilot  0.005 |   300B air   1.9 ovh  42% good  161.1
+WIDE    M9       5.0     4.5 |     0     0     0     0    0.0% |    2012 | est    4.0 evm    5.0 pilot  0.005 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     5.0 |     0     0     0     0    0.0% |    2012 | est    4.5 evm    5.5 pilot  0.006 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     5.5 |     0     0     0     0    0.0% |    2012 | est    5.1 evm    6.0 pilot  0.004 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     6.0 |     0     0     0     0    0.0% |    2012 | est    5.6 evm    6.5 pilot  0.005 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     6.5 |     0     0     0     0    0.0% |    2012 | est    6.2 evm    7.0 pilot  0.004 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     7.0 |     0     0     0     0    0.0% |    2012 | est    6.8 evm    7.5 pilot  0.005 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     7.5 |     0     0     0     0    0.0% |    2012 | est    7.3 evm    7.9 pilot  0.005 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0     8.0 |     0     0     0     0    0.0% |    2012 | est    7.9 evm    8.5 pilot  0.005 |   300B air   1.9 ovh  42% good  161.9
+FAIL: WIDE M9 @ 2.0 dB FER=100.0%
+FAIL: WIDE M9 @ 2.5 dB FER=100.0%
+FAIL: WIDE M9 @ 3.0 dB FER=98.5%
+FAIL: WIDE M9 @ 3.5 dB FER=38.5%
+== 4 conformance failures ==

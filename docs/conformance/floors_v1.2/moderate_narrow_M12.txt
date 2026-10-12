@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M12      9.5     9.5 |     0     0     0    71   71.0% |    1236 | est    4.2 evm   15.3 pilot  0.053 |   300B air   4.0 ovh  57% good   21.6
+NARROW  M12      9.5    11.0 |     0     0     0    53   53.0% |    1236 | est    5.9 evm   17.0 pilot  0.034 |   300B air   4.0 ovh  57% good   35.0
+NARROW  M12      9.5    12.5 |     0     0     0    50   50.0% |    1236 | est    6.0 evm   18.0 pilot  0.036 |   300B air   4.0 ovh  57% good   37.2
+NARROW  M12      9.5    14.0 |     0     0     0    29   29.0% |    1236 | est    7.0 evm   18.2 pilot  0.052 |   300B air   4.0 ovh  57% good   52.8
+NARROW  M12      9.5    15.5 |     0     0     0    16   16.0% |    1236 | est    8.6 evm   20.0 pilot  0.037 |   300B air   4.0 ovh  57% good   62.5
+NARROW  M12      9.5    17.0 |     0     0     0    13   13.0% |    1236 | est    9.1 evm   20.6 pilot  0.041 |   300B air   4.0 ovh  57% good   64.8
+NARROW  M12      9.5    18.5 |     0     0     0     7    7.0% |    1236 | est    9.7 evm   21.4 pilot  0.051 |   300B air   4.0 ovh  57% good   69.2
+NARROW  M12      9.5    20.0 |     0     0     0     3    3.0% |    1236 | est   10.1 evm   21.8 pilot  0.039 |   300B air   4.0 ovh  57% good   72.2
+NARROW  M12      9.5    21.5 |     0     0     0     7    7.0% |    1236 | est    9.6 evm   23.0 pilot  0.042 |   300B air   4.0 ovh  57% good   69.2
+NARROW  M12      9.5    23.0 |     0     0     0     1    1.0% |    1236 | est   11.1 evm   23.6 pilot  0.046 |   300B air   4.0 ovh  57% good   73.7
+NARROW  M12      9.5    24.5 |     0     0     0     5    5.0% |    1236 | est   10.7 evm   24.3 pilot  0.034 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    26.0 |     0     0     0     5    5.0% |    1236 | est   10.1 evm   24.5 pilot  0.045 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    27.5 |     0     0     0     5    5.0% |    1236 | est   11.3 evm   25.3 pilot  0.036 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    29.0 |     0     0     0     5    5.0% |    1236 | est   10.3 evm   25.0 pilot  0.039 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    30.5 |     0     0     0     4    4.0% |    1236 | est   10.3 evm   25.2 pilot  0.053 |   300B air   4.0 ovh  57% good   71.5
+NARROW  M12      9.5    32.0 |     0     0     1     4    5.0% |    1236 | est    9.3 evm   24.7 pilot  0.051 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    33.5 |     0     0     0     6    6.0% |    1236 | est    9.4 evm   24.9 pilot  0.050 |   300B air   4.0 ovh  57% good   70.0
+NARROW  M12      9.5    35.0 |     0     0     0     3    3.0% |    1236 | est   10.2 evm   25.1 pilot  0.045 |   300B air   4.0 ovh  57% good   72.2
+NARROW  M12      9.5    36.5 |     0     0     0     5    5.0% |    1236 | est    9.6 evm   25.6 pilot  0.044 |   300B air   4.0 ovh  57% good   70.7
+NARROW  M12      9.5    38.0 |     0     0     0     7    7.0% |    1236 | est   10.6 evm   26.4 pilot  0.037 |   300B air   4.0 ovh  57% good   69.2
+FAIL: NARROW M12 @ 9.5 dB FER=71.0%
+FAIL: NARROW M12 @ 11.0 dB FER=53.0%
+FAIL: NARROW M12 @ 12.5 dB FER=50.0%
+FAIL: NARROW M12 @ 14.0 dB FER=29.0%
+== 4 conformance failures ==

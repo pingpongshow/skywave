@@ -11,8 +11,9 @@
 //              ride the whole ladder, sessions may die at the bottom but
 //              must recover, and every delivered byte must be exact.
 //   floor    - connect clean, then hold SKW_SOAK_SNR (default +6 dB)
-//              on CCIR Moderate, one-way load: retransmission
-//              machinery under continuous marginal-SNR grind.
+//              on CCIR Moderate (SKW_SOAK_PRESET=3: Poor), one-way
+//              load: retransmission machinery under continuous
+//              marginal-SNR grind.
 //   blackout - good channel, but periodic 10-60 s total dead air in both
 //              directions mid-transfer: ARQ retry budgets, keepalives,
 //              reconnect, and stream continuity.
@@ -76,6 +77,9 @@ void applyPreset(World& w, int preset, double snrDb) {
       case 1:
         c = ccirGood();
         break;
+      case 3:
+        c = ccirPoor();
+        break;
       default:
         c = ccirModerate();
         break;
@@ -86,7 +90,7 @@ void applyPreset(World& w, int preset, double snrDb) {
 }
 
 const char* presetName(int p) {
-  return p == 0 ? "static" : p == 1 ? "good" : "moderate";
+  return p == 0 ? "static" : p == 1 ? "good" : p == 3 ? "poor" : "moderate";
 }
 
 }  // namespace
@@ -121,6 +125,11 @@ int main() {
   const bool coupledSched = std::getenv("SKW_SOAK_COUPLED") != nullptr;
   double snr = scen == "churn" ? 30.0 : scen == "floor" ? floorSnr : 20.0;
   int preset = scen == "floor" ? 2 : scen == "blackout" ? 1 : 0;
+  // SKW_SOAK_PRESET overrides the floor scenario's channel: 0 static,
+  // 1 CCIR Good, 2 Moderate (default), 3 Poor - the SEVERE-class soak.
+  if (scen == "floor" && (e = std::getenv("SKW_SOAK_PRESET"))) {
+    preset = std::atoi(e);
+  }
 
   World w(snr, seed);
   // The floor scenario tests the RETRANSMISSION machinery at the tier

@@ -1,0 +1,23 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M5      -5.5    -5.5 |     2     0    10    28   40.0% |     167 | est   -8.0 evm   -6.1 pilot  0.031 |    60B air   5.6 ovh  74% good    6.5
+ULTRA   M5      -5.5    -4.0 |     1     0     2    19   22.0% |     167 | est   -7.0 evm   -5.4 pilot  0.042 |    60B air   5.6 ovh  74% good    8.4
+ULTRA   M5      -5.5    -2.5 |     2     0     0    12   14.0% |     167 | est   -5.2 evm   -3.8 pilot  0.062 |    60B air   5.6 ovh  74% good    9.3
+ULTRA   M5      -5.5    -1.0 |     1     1     1     5    8.0% |     167 | est   -3.0 evm   -2.0 pilot  0.049 |    60B air   5.6 ovh  74% good    9.9
+ULTRA   M5      -5.5     0.5 |     1     0     1     1    3.0% |     167 | est   -1.3 evm   -0.7 pilot  0.046 |    60B air   5.6 ovh  74% good   10.4
+ULTRA   M5      -5.5     2.0 |     0     0     0     1    1.0% |     167 | est    0.3 evm    0.8 pilot  0.044 |    60B air   5.6 ovh  74% good   10.7
+ULTRA   M5      -5.5     3.5 |     0     0     0     0    0.0% |     167 | est    2.2 evm    2.3 pilot  0.045 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5     5.0 |     0     0     0     0    0.0% |     167 | est    3.7 evm    3.5 pilot  0.035 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5     6.5 |     0     0     0     0    0.0% |     167 | est    5.7 evm    5.3 pilot  0.037 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5     8.0 |     0     0     0     0    0.0% |     167 | est    8.5 evm    7.1 pilot  0.029 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5     9.5 |     0     0     0     0    0.0% |     167 | est    9.9 evm    8.2 pilot  0.025 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    11.0 |     0     0     0     0    0.0% |     167 | est   11.7 evm    9.5 pilot  0.024 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    12.5 |     0     0     0     0    0.0% |     167 | est   15.0 evm   12.2 pilot  0.014 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    14.0 |     0     0     0     0    0.0% |     167 | est   15.7 evm   12.4 pilot  0.015 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    15.5 |     0     0     0     0    0.0% |     167 | est   16.7 evm   13.1 pilot  0.017 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    17.0 |     0     0     0     0    0.0% |     167 | est   19.1 evm   15.8 pilot  0.010 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    18.5 |     0     0     0     0    0.0% |     167 | est   20.1 evm   16.9 pilot  0.009 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    20.0 |     0     0     0     0    0.0% |     167 | est   21.1 evm   18.2 pilot  0.008 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    21.5 |     0     0     0     0    0.0% |     167 | est   22.0 evm   19.4 pilot  0.008 |    60B air   5.6 ovh  74% good   10.8
+ULTRA   M5      -5.5    23.0 |     0     0     0     0    0.0% |     167 | est   22.6 evm   20.3 pilot  0.007 |    60B air   5.6 ovh  74% good   10.8
+FAIL: ULTRA M5 @ -5.5 dB FER=40.0%
+== 1 conformance failures ==

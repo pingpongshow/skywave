@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M4     -15.0   -18.0 |    20     2   115    20   78.5% |      12 | est  -20.6 evm  -12.6 pilot  0.121 |    60B air  40.6 ovh  51% good    0.3
+NARROW  M4     -15.0   -17.5 |    11     2    82     7   51.0% |      12 | est  -20.4 evm  -12.1 pilot  0.133 |    60B air  40.6 ovh  51% good    0.7
+NARROW  M4     -15.0   -17.0 |     4     3    42     1   25.0% |      12 | est  -19.8 evm  -11.7 pilot  0.085 |    60B air  40.6 ovh  51% good    1.1
+NARROW  M4     -15.0   -16.5 |     0     0    17     0    8.5% |      12 | est  -19.3 evm  -11.0 pilot  0.099 |    60B air  40.6 ovh  51% good    1.4
+NARROW  M4     -15.0   -16.0 |     0     0    12     0    6.0% |      12 | est  -18.6 evm  -10.3 pilot  0.106 |    60B air  40.6 ovh  51% good    1.4
+NARROW  M4     -15.0   -15.5 |     0     0    11     0    5.5% |      12 | est  -17.8 evm   -9.6 pilot  0.088 |    60B air  40.6 ovh  51% good    1.4
+NARROW  M4     -15.0   -15.0 |     0     0     2     0    1.0% |      12 | est  -17.2 evm   -9.1 pilot  0.075 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -14.5 |     0     0     2     0    1.0% |      12 | est  -16.3 evm   -8.2 pilot  0.043 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -14.0 |     0     0     2     0    1.0% |      12 | est  -15.7 evm   -7.7 pilot  0.031 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -13.5 |     0     0     0     0    0.0% |      12 | est  -15.1 evm   -7.1 pilot  0.052 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -13.0 |     0     0     0     0    0.0% |      12 | est  -14.2 evm   -6.5 pilot  0.029 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -12.5 |     0     0     0     0    0.0% |      12 | est  -13.8 evm   -5.9 pilot  0.034 |    60B air  40.6 ovh  51% good    1.5
+NARROW  M4     -15.0   -12.0 |     0     0     0     0    0.0% |      12 | est  -12.9 evm   -5.2 pilot  0.020 |    60B air  40.6 ovh  51% good    1.5
+FAIL: NARROW M4 @ -18.0 dB FER=78.5%
+FAIL: NARROW M4 @ -17.5 dB FER=51.0%
+FAIL: NARROW M4 @ -17.0 dB FER=25.0%
+== 3 conformance failures ==

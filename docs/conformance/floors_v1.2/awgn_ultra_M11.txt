@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M11     12.5     9.5 |     0     0     0   200  100.0% |    4402 | est    9.1 evm  -99.0 pilot -1.000 |   300B air   1.2 ovh  60% good    0.0
+ULTRA   M11     12.5    10.0 |     0     0     0   170   85.0% |    4402 | est    9.7 evm    9.7 pilot  0.005 |   300B air   1.2 ovh  60% good   36.3
+ULTRA   M11     12.5    10.5 |     0     0     0    33   16.5% |    4402 | est   10.3 evm   10.1 pilot  0.004 |   300B air   1.2 ovh  60% good  202.0
+ULTRA   M11     12.5    11.0 |     0     0     0     0    0.0% |    4402 | est   10.9 evm   10.5 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    11.5 |     0     0     0     0    0.0% |    4402 | est   11.5 evm   11.0 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    12.0 |     0     0     0     0    0.0% |    4402 | est   12.2 evm   11.5 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    12.5 |     0     0     0     0    0.0% |    4402 | est   12.8 evm   11.9 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    13.0 |     0     0     0     0    0.0% |    4402 | est   13.3 evm   12.4 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    13.5 |     0     0     0     0    0.0% |    4402 | est   14.0 evm   12.9 pilot  0.003 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    14.0 |     0     0     0     0    0.0% |    4402 | est   14.7 evm   13.3 pilot  0.002 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    14.5 |     0     0     0     0    0.0% |    4402 | est   15.3 evm   13.8 pilot  0.002 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    15.0 |     0     0     0     0    0.0% |    4402 | est   16.1 evm   14.2 pilot  0.002 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    15.5 |     0     0     0     0    0.0% |    4402 | est   16.7 evm   14.6 pilot  0.002 |   300B air   1.2 ovh  60% good  241.9
+FAIL: ULTRA M11 @ 9.5 dB FER=100.0%
+FAIL: ULTRA M11 @ 10.0 dB FER=85.0%
+FAIL: ULTRA M11 @ 10.5 dB FER=16.5%
+== 3 conformance failures ==

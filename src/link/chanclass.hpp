@@ -1,5 +1,9 @@
 // Channel-character classifier (LINK_ADAPTATION.md).
 //
+// (v1.2.0: the history below describes the v1.1.0 receiver. The classes
+// now select per-class floor tables - AMC operatingFloorDb - and the
+// pilot thresholds were re-measured on the new tracker.)
+//
 // The AMC has always operated against ONE floor table - the measured
 // fading floors - because that is the safe assumption. Two costs were
 // measured and logged against that choice:
@@ -19,6 +23,8 @@
 #pragma once
 
 #include <array>
+
+#include "core/constants.hpp"
 #include <cstdint>
 
 namespace skw {
@@ -54,9 +60,17 @@ struct ChanClassConfig {
   double severeSnrVarMin = 12.0;
   double severeSpreadMsMin = 1.6;
   double severeFerMin = 0.35;
-  // The sharpest discriminator measured: Poor 1.77-1.83 against
-  // Moderate 0.38-0.55. Worth a signal of its own.
-  double severePilotStabMin = 1.20;
+  // Pilot excess on CCIR Poor vs Moderate, per family (index = Family).
+  // RE-MEASURED 2026-10 on the v1.2.0 tracker (smoothed, multipath
+  // margin) - bertool `pilot` column, decoded frames 3-10 dB above each
+  // mode's floor on that channel, median over M4-M13:
+  //            WIDE   MID    NARROW ULTRA
+  //   Moderate 0.018  0.021  0.059  0.017
+  //   Poor     0.095  0.142  0.263  0.097
+  // Threshold = geometric mean of the two. (The former 1.20 came from
+  // the old tracker's Poor 1.77-1.83 and can no longer fire.)
+  std::array<double, kNumFamilies> severePilotStabMin = {
+      {0.040, 0.055, 0.125, 0.040}};
 
   // MODERATE gate: pilot-residual EXCESS over its noise share (the
   // figure the receiver reports since 2026-09-06; LINK_ADAPTATION.md
@@ -74,7 +88,12 @@ struct ChanClassConfig {
   // two-modem churn (SKW_CHANCLASS_DEBUG): static 0.003, CCIR Good at
   // M6-M8 0.004-0.0045 (p75 <= 0.006), CCIR Moderate at M8-M11
   // 0.008-0.021 (p25 0.003-0.011).
-  double moderatePilotMin = 0.007;
+  // RE-MEASURED 2026-10 (same campaign): the larger of AWGN/Good vs
+  // Moderate medians, per family - WIDE 0.005/0.018, MID 0.011/0.021,
+  // NARROW 0.017/0.059, ULTRA 0.005/0.017; geometric mean. A single
+  // 0.007 read NARROW's own AWGN median (0.017) as Moderate.
+  std::array<double, kNumFamilies> moderatePilotMin = {
+      {0.010, 0.015, 0.030, 0.009}};
   int moderatePilotMinSamples = 5;
 
   // Hysteresis: a verdict must repeat before it replaces the last one.
@@ -91,8 +110,10 @@ class ChannelClassifier {
 
   // snrDb: post-equalizer estimate. spreadMs: tracker delay spread.
   // pilotStability: tracker residual ratio (lower is steadier).
+  // family: the session's current family (the pilot thresholds are
+  // per family - narrow bands read a larger excess on the same channel).
   void onFrame(double snrDb, double spreadMs, double pilotStability,
-               bool decodeOk);
+               bool decodeOk, Family family = Family::Wide);
   void reset();
 
   ChannelClass verdict() const { return verdict_; }
@@ -104,6 +125,7 @@ class ChannelClassifier {
   ChannelClass classifyNow() const;
 
   ChanClassConfig cfg_;
+  Family family_ = Family::Wide;
   // Welford accumulators over a decaying window, so an old regime does
   // not pin the verdict after conditions change.
   int n_ = 0;

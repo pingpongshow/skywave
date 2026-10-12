@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M13     20.5    17.5 |     0     0     0   183   91.5% |    6403 | est   19.3 evm   16.3 pilot  0.002 |   300B air   1.1 ovh  69% good   23.5
+ULTRA   M13     20.5    18.0 |     0     0     0    86   43.0% |    6403 | est   20.0 evm   16.7 pilot  0.001 |   300B air   1.1 ovh  69% good  157.4
+ULTRA   M13     20.5    18.5 |     0     0     0    17    8.5% |    6403 | est   20.8 evm   17.0 pilot  0.001 |   300B air   1.1 ovh  69% good  252.6
+ULTRA   M13     20.5    19.0 |     0     0     0     0    0.0% |    6403 | est   21.4 evm   17.4 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    19.5 |     0     0     0     0    0.0% |    6403 | est   22.1 evm   17.9 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    20.0 |     0     0     0     0    0.0% |    6403 | est   22.7 evm   18.3 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    20.5 |     0     0     0     0    0.0% |    6403 | est   23.2 evm   18.7 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    21.0 |     0     0     0     0    0.0% |    6403 | est   23.8 evm   19.2 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    21.5 |     0     0     0     0    0.0% |    6403 | est   24.2 evm   19.6 pilot  0.001 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    22.0 |     0     0     0     0    0.0% |    6403 | est   24.7 evm   20.1 pilot  0.000 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    22.5 |     0     0     0     0    0.0% |    6403 | est   25.0 evm   20.5 pilot  0.000 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    23.0 |     0     0     0     0    0.0% |    6403 | est   25.6 evm   20.9 pilot  0.000 |   300B air   1.1 ovh  69% good  276.1
+ULTRA   M13     20.5    23.5 |     0     0     0     0    0.0% |    6403 | est   26.0 evm   21.4 pilot  0.000 |   300B air   1.1 ovh  69% good  276.1
+FAIL: ULTRA M13 @ 17.5 dB FER=91.5%
+FAIL: ULTRA M13 @ 18.0 dB FER=43.0%
+== 2 conformance failures ==

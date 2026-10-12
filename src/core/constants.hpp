@@ -99,9 +99,10 @@ inline constexpr int    kChirpRepsRobust    = 4;  // up-down-up-down
 inline constexpr int    kChirpRepsCalling   = 4;  // up-up-up-up
 inline constexpr int    kZcSymbolsFast      = 3;
 inline constexpr int    kZcSymbolsRobust    = 6;
-inline constexpr double kCfoCaptureConnHz   = 5.0;   // connected preambles
-inline constexpr double kCfoCaptureCallHz   = 50.0;  // calling, stepped search
-inline constexpr double kCfoSearchStepHz    = 12.5;
+// CFO capture is +-55 Hz for every signature (chirp.cpp
+// chirpCfoCaptureMaxHz; the receiver resolves the fine estimate's branch,
+// GAP_CLOSURE_PLAN.md R1). The former kCfoCapture*/kCfoSearchStepHz
+// constants were never read by any code path.
 
 // ------------------------------------------------------------------ mode ladder
 enum class Waveform : uint8_t { Ofdm = 0, Css = 1 /* reserved */ };
@@ -170,32 +171,28 @@ inline double netRate(Family f, int mode, CpMode cp);
 // floors (WAVEFORM.md "CSS Deep Tier", 2026-07-29).
 inline constexpr double kFloorReserved = -99.0;
 using FloorTable = std::array<double, kNumModes>;
+// AWGN reference floors: lowest SNR (3 kHz ref) one ~dB below the
+// mode's 10% one-shot FER point (conformance tests floor+1 <= 10%).
+// OFDM M4-M13 RE-MEASURED 2026-10 for v1.2.0 (tools/floor_campaign.sh:
+// 200 trials per 0.5 dB, floor = SNR(10%) - 1 rounded up to 0.5;
+// archived docs/conformance/floors_v1.2/). The receiver gained 1.5-3 dB
+// across every family (RTS smoothing and Q normalisation at deep SNR,
+// branch-resolved CFO; GAP_CLOSURE_PLAN.md). CSS M0-M3 unchanged (the
+// CSS path did not change). The previous per-entry history (e.g. NARROW
+// M9's 2026-09-07 re-measure) is in git and the ROADMAP.
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
     {{-13.0, -10.5, -8.0, -5.0,
-      -8.5, -6.0, -3.5, -1.0, 2.0, 5.0, 8.0, 12.0, 16.0, 20.0, 99.0}},
+      -11.0, -8.5, -6.0, -3.0, 0.5, 3.0, 5.5, 9.5, 13.5, 17.0, 99.0}},
     // MID
     {{-16.5, -14.0, -12.0, -9.0,
-      -12.0, -9.5, -7.0, -4.5, -1.5, 1.5, 4.5, 8.5, 12.5, 16.5, 99.0}},
-    // NARROW. M9 RE-MEASURED 2026-09-07 (bertool --preset awgn, 200
-    // trials): -0.5 -> 0.5. The conformance sweep tests floor+1 against
-    // the <= 10% spec, so a table entry is ~1 dB below the mode's 10%
-    // point. M9's 10% point is ~1.4 dB (14.5% at 0.5, 6.5% at 2.5), so
-    // -0.5 was a full dB optimistic and the sweep failed it - as it
-    // also does in the ARCHIVED rel_awgn.csv (17.5% at 40 trials), so
-    // this has been wrong since the entry was set, not a regression.
-    // Notably 11 of 18 failures are HEADER decodes, not payload: 13
-    // carriers give the header codeword very little frequency
-    // diversity. M10 was checked at the same time and is correct (9.0%
-    // at its floor+1), which leaves M9 and M10 only 1 dB apart on this
-    // family - QPSK r3/4 buys almost nothing over 16QAM r1/2 in 13
-    // carriers, and test_core's ladder-monotonicity invariant is what
-    // caught an over-correction that would have made them equal.
+      -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
+    // NARROW
     {{-19.5, -17.5, -15.0, -12.0,
-      -15.0, -12.5, -10.0, -7.5, -3.5, 0.5, 1.5, 5.5, 9.5, 13.5, 99.0}},
+      -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,
-      -8.0, -5.5, -3.0, -0.5, 2.5, 5.5, 8.5, 12.5, 16.5, 20.5, 99.0}},
+      -11.0, -8.5, -5.5, -3.0, 1.0, 3.5, 6.0, 10.0, 14.0, 17.5, 99.0}},
 }};
 inline double floorDb(Family f, int mode);  // reads the active profile
 
@@ -213,47 +210,72 @@ inline constexpr double kFadingNA = 99.0;
 // fade dwell faces Rayleigh OUTAGE: FER ~= P(fade < threshold), and 10%
 // outage costs ~8 dB at diversity ~chi2_2-4. ARQ + soft-combining
 // (Phase 2) is the design response; AMC (Phase 3) keys off these values
-// plus channel-quality gates. Measured 2026-07-29, 20-40 trials/point,
-// bertool ladders archived in docs/conformance/.
+// plus channel-quality gates. First measured 2026-07-29 (20-40 trials).
+// RE-MEASURED 2026-10 for v1.2.0 (tools/floor_campaign.sh, 100 trials
+// per 1.5 dB, floor = SNR(15%) rounded up to 0.5; floors_v1.2/): 2-7 dB
+// lower across the ladder, and WIDE/ULTRA/MID M13 now have a fading
+// floor. NARROW M6/M7 sit higher on Good than on Moderate: a 20-40 s
+// NARROW frame averages Moderate's faster fades but sits inside a Good
+// fade.
 inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
-    // WIDE (M9 > M10 is real: r3/4 QPSK is more burst-fragile than
-    // r1/2 16QAM under fading; M13 = kFadingNA like NARROW's. CSS
-    // M2/M3 = kFadingNA: 1 ms delay spread is 2.4 of their chips and
-    // the shallow spreading leaves a flat outage tail - ARQ territory)
-    // M11 RE-MEASURED 2026-09-07 (bertool --preset good, 200 trials):
-    // 16.0 was optimistic by ~1 dB - at floor+1 the FER is 18.0%
-    // against the 15% fading base, 8.0% at floor+3. 15% falls at
-    // ~17.5 dB. Also a long-standing miss (the archived release sweep
-    // fails the same point), not a regression.
+    // WIDE
     {{-3.0, 0.0, kFadingNA, kFadingNA,
-      1.5, 1.5, 4.5, 11.0, 10.0, 15.0, 14.0, 17.0, 26.0, kFadingNA, kFadingNA}},
+      -5.5, -3.0, -0.5, 4.0, 7.5, 11.0, 13.0, 17.5, 21.0, 25.0, kFadingNA}},
     // MID
     {{-10.0, -7.0, -5.0, -3.0,
-      -4.0, -5.5, -3.0, -0.5, 8.5, 13.5, 14.5, 16.5, 24.5, 30.5, kFadingNA}},
-    // NARROW (M13 = kFadingNA: 64QAM r5/6 over a flat-Rayleigh one-shot
-    // frame has a near-flat outage tail - no 10% point exists at sane
-    // SNR; AMC admits it only on near-static channels)
+      -9.0, -7.5, -5.0, -2.5, 6.0, 10.5, 10.5, 14.5, 17.5, 23.0, kFadingNA}},
+    // NARROW (all modes on CCIR Good - see above)
     {{-11.0, -9.0, -8.0, -7.0,
-      -7.0, -4.5, -5.0, 0.5, 11.5, 12.5, 12.5, 19.5, 23.5, 99.0, kFadingNA}},
-    // ULTRA - RE-MEASURED 2026-08-17 (bertool, 60 trials, M4-M7 on CCIR
-    // Moderate and M8-M9 on Good, i.e. each mode's designated channel):
-    //   M4 4.0 (unchanged)  M5 6.5 -> 4.5   M6 16.0 -> 10.0
-    //   M7 12.5 (knee, no clean 10% point)  M8 8.5 -> 10.5
-    //   M9 13.5 -> 15.5
-    // The old M6/M7 pair ran 16.0/12.5 - DECREASING as the mode got
-    // faster, which is physically backwards and was flagged provisional.
-    // M8/M9 were optimistic by ~2 dB, so the AMC was promoting into
-    // modes that do not hold up.
-    //
-    // The recorded cause of ULTRA's remaining ~3 dB deficit vs WIDE
-    // ("outermost carriers ride the TX band-FIR transition, 40 Hz
-    // margin") is REFUTED: sweeping that margin 40/120/200 Hz changes
-    // the floors not at all (see ROADMAP). ~0.5 dB is simple noise
-    // bandwidth (72 vs 64 carriers at equal total power); the rest is
-    // still unexplained and pilot extrapolation is ruled out too -
-    // pilots are evenly spaced across every family's full carrier set.
+      -10.5, -8.5, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
+    // ULTRA
     {{-4.0, -2.0, kFadingNA, kFadingNA,
-      4.0, 4.5, 10.0, 12.5, 10.5, 15.5, 14.5, 18.5, 24.5, 28.5, kFadingNA}},
+      -5.0, -2.5, 1.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
+}};
+
+// Per-channel-class fading floors (v1.2.0, GAP_CLOSURE_PLAN.md 8.9): the
+// AMC uses the table of the channel the classifier sees - MODERATE ->
+// every mode measured on CCIR Moderate, SEVERE -> on CCIR Poor - instead
+// of capping the ladder (the v1.1.0 caps, M8 on Moderate and M7 on
+// Severe, encoded "the fast tier fails there at any SNR", no longer
+// true: Moderate WIDE M11 closes at 22 dB, Poor WIDE M10 at 22.5).
+// Same definition as kFadingFloors (FER <= 15%, 100 trials per 1.5 dB,
+// rounded up to 0.5), then moved up until the campaign curve meets
+// bertool's gate levels at floor+1 / floor+3 WITHOUT the binomial slack
+// (tools/floor_tables.py; independent fresh-seed sweeps keep the slack).
+// M10 on Poor sits on a 13-25% outage plateau and has no floor: WIDE's
+// first 15% crossing was a lucky dip at 23 dB that failed conformance.
+// One manual override: Moderate NARROW M13 (derived 36.0) is kFadingNA -
+// FER plateaus at 10-23% from 27 to 46 dB (64QAM r5/6 on a flat-Rayleigh
+// 500 Hz band), so it failed a fresh-seed sweep at floor+3 (23%). kFadingNA here means "never closes on this
+// channel" and makes the mode INELIGIBLE in that class. CSS M0-M3 carry
+// the designated values (not re-measured on Poor).
+inline constexpr std::array<FloorTable, kNumFamilies> kModerateFloors = {{
+    // WIDE
+    {{-3.0, 0.0, kFadingNA, kFadingNA,
+      -5.5, -3.0, -0.5, 4.0, 10.0, 13.5, 14.0, 19.0, 22.0, 28.5, kFadingNA}},
+    // MID
+    {{-10.0, -7.0, -5.0, -3.0,
+      -9.0, -7.5, -5.0, -2.5, 4.5, 7.5, 10.5, 14.5, 17.0, 24.5, kFadingNA}},
+    // NARROW
+    {{-11.0, -9.0, -8.0, -7.0,
+      -10.0, -9.5, -6.5, -5.0, 3.5, 6.5, 8.5, 13.0, 16.0, kFadingNA, kFadingNA}},
+    // ULTRA
+    {{-4.0, -2.0, kFadingNA, kFadingNA,
+      -5.0, -2.5, 1.0, 2.5, 8.5, 12.5, 15.0, 19.0, 22.5, 26.5, kFadingNA}},
+}};
+inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
+    // WIDE
+    {{-3.0, 0.0, kFadingNA, kFadingNA,
+      -4.0, -2.5, 0.5, 2.0, 11.5, 19.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+    // MID
+    {{-10.0, -7.0, -5.0, -3.0,
+      -8.0, -6.5, -4.5, 0.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+    // NARROW
+    {{-11.0, -9.0, -8.0, -7.0,
+      -10.0, -9.0, -7.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+    // ULTRA
+    {{-4.0, -2.0, kFadingNA, kFadingNA,
+      -4.0, -1.5, 0.0, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile
 
@@ -279,8 +301,13 @@ inline double fadingFloorDb(Family f, int mode);  // active profile
 // 4-6 dB at M8 (channel-motion innovation counted as noise); that is
 // left as is - it keeps the fast tier out of a channel its floors were
 // never measured on (WAVEFORM.md fading annex).
+// RE-MEASURED 2026-10 on the v1.2.0 receiver (floor campaign, AWGN,
+// points 0-3 dB above each M4-M10 10% point): with the old constants the
+// estimate read LOW by a median 0.6 (WIDE/NARROW/ULTRA) and 0.8 (MID) dB.
+// The constants moved down by that much, rounded so the estimate never
+// over-reads (an over-read promotes early; an under-read only late).
 inline constexpr std::array<double, kNumFamilies> kOfdmSnrCalDb = {
-    {4.0, 8.0, 11.0, 3.5}};
+    {3.5, 7.5, 10.5, 3.0}};
 // VHF-FM: its floor tables were calibrated against the uncorrected
 // estimator (bertool --band vhf-fm), so no offset there.
 inline double ofdmSnrCalDb(Family f);
@@ -307,6 +334,8 @@ struct BandProfile {
   int centerBin;  // audio-grid bin the converters shift to DC
   const std::array<FloorTable, kNumFamilies>* floors;        // AWGN
   const std::array<FloorTable, kNumFamilies>* fadingFloors;  // designated
+  const std::array<FloorTable, kNumFamilies>* moderateFloors;  // CCIR Moderate
+  const std::array<FloorTable, kNumFamilies>* poorFloors;      // CCIR Poor
   bool cssTier;   // CSS deep tier available on this band
   bool masking;   // carrier masking available (wire bitmap: <= 72 carriers)
   // Chirp rep duration: HF needs 160 ms of integration to detect at the
@@ -337,11 +366,13 @@ struct BandProfile {
 };
 inline constexpr BandProfile kHfProfile = {
     "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
+    &kModerateFloors, &kPoorFloors,
     true,     true,          0.160,           CpMode::Medium,
     &kHfCpSamplesAudio,      3,               6,             8.0,  2,
     16,       5};
 inline constexpr BandProfile kVhfFmProfile = {
     "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
+    &kVhfFloors, &kVhfFloors,
     false,    false,         0.040,           CpMode::Short,
     &kVhfCpSamplesAudio,     2,               4,             11.0, 1,
     2,        2};
@@ -394,6 +425,12 @@ inline double floorDb(Family f, int mode) {
 }
 inline double fadingFloorDb(Family f, int mode) {
   return (*activeProfile().fadingFloors)[size_t(f)][size_t(mode)];
+}
+inline double moderateFloorDb(Family f, int mode) {
+  return (*activeProfile().moderateFloors)[size_t(f)][size_t(mode)];
+}
+inline double poorFloorDb(Family f, int mode) {
+  return (*activeProfile().poorFloors)[size_t(f)][size_t(mode)];
 }
 inline double ofdmSnrCalDb(Family f) {
   return activeBand() == Band::Hf ? kOfdmSnrCalDb[size_t(f)] : 0.0;

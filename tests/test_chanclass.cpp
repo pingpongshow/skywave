@@ -14,8 +14,10 @@ using namespace skw;
 
 namespace {
 
-// Measured means: AWGN 0.003-0.025, Good 0.010-0.057, Moderate
-// 0.38-0.55, Poor 1.77-1.83.
+// Pilot EXCESS medians (v1.2.0 tracker, WIDE): AWGN/Good ~0.005,
+// Moderate 0.018, Poor 0.095 (chanclass.hpp). The cases below use
+// values on the right side of the WIDE thresholds; older raw-ratio
+// figures in individual comments describe the pre-2026-09 tracker.
 void feed(ChannelClassifier& c, int n, double snr, double spreadMs,
           double pilot, bool ok = true) {
   for (int i = 0; i < n; ++i) c.onFrame(snr, spreadMs, pilot, ok);
@@ -135,8 +137,9 @@ TEST_CASE(severe_verdict_caps_the_ladder_at_the_robust_tier) {
   CHECK(amc.channelClass() == ChannelClass::Severe);
 
   // Feed a channel that looks excellent by SNR alone, then let the AMC
-  // climb for a long time. Measured on CCIR Poor: MID closes only
-  // M4-M6, so the ladder must stop at severeMaxMode regardless.
+  // climb for a long time. Measured on CCIR Poor (v1.2.0 floor campaign,
+  // kPoorFloors): MID closes M4-M7 and nothing above, so the SEVERE
+  // table must stop the ladder at M7 however good the SNR looks.
   double now = 0.0;
   for (int i = 0; i < 4000; ++i) {
     amc.onLocalSnr(40.0);
@@ -149,7 +152,8 @@ TEST_CASE(severe_verdict_caps_the_ladder_at_the_robust_tier) {
     }
     now += 1.0;
   }
-  CHECK(amc.mode() <= cfg.severeMaxMode);
+  CHECK(amc.mode() <= 7);
+  CHECK(amc.mode() >= 6);  // and it does climb the rungs that close
 }
 
 TEST_CASE(static_verdict_climbs_higher_than_fading_on_the_same_snr) {

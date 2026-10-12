@@ -1,0 +1,42 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M13     20.0    20.0 |     0     0     0    88   88.0% |    5870 | est    7.5 evm   18.8 pilot  0.019 |   300B air   1.1 ovh  68% good   31.4
+WIDE    M13     20.0    21.5 |     0     0     0    91   91.0% |    5870 | est    7.1 evm   19.2 pilot  0.015 |   300B air   1.1 ovh  68% good   23.5
+WIDE    M13     20.0    23.0 |     0     0     0    84   84.0% |    5870 | est    9.5 evm   19.9 pilot  0.016 |   300B air   1.1 ovh  68% good   41.8
+WIDE    M13     20.0    24.5 |     0     0     1    74   75.0% |    5870 | est   10.2 evm   21.0 pilot  0.013 |   300B air   1.1 ovh  68% good   65.3
+WIDE    M13     20.0    26.0 |     0     0     0    78   78.0% |    5870 | est    9.3 evm   21.4 pilot  0.019 |   300B air   1.1 ovh  68% good   57.5
+WIDE    M13     20.0    27.5 |     0     0     0    73   73.0% |    5870 | est   10.1 evm   21.1 pilot  0.017 |   300B air   1.1 ovh  68% good   70.6
+WIDE    M13     20.0    29.0 |     0     0     0    71   71.0% |    5870 | est    9.9 evm   22.2 pilot  0.014 |   300B air   1.1 ovh  68% good   75.8
+WIDE    M13     20.0    30.5 |     0     0     0    75   75.0% |    5870 | est   10.4 evm   21.9 pilot  0.019 |   300B air   1.1 ovh  68% good   65.3
+WIDE    M13     20.0    32.0 |     0     0     0    79   79.0% |    5870 | est    9.1 evm   22.5 pilot  0.018 |   300B air   1.1 ovh  68% good   54.9
+WIDE    M13     20.0    33.5 |     0     0     1    71   72.0% |    5870 | est   10.7 evm   22.0 pilot  0.020 |   300B air   1.1 ovh  68% good   73.2
+WIDE    M13     20.0    35.0 |     0     0     0    74   74.0% |    5870 | est    9.8 evm   22.0 pilot  0.022 |   300B air   1.1 ovh  68% good   67.9
+WIDE    M13     20.0    36.5 |     0     0     0    59   59.0% |    5870 | est   11.6 evm   22.7 pilot  0.016 |   300B air   1.1 ovh  68% good  107.1
+WIDE    M13     20.0    38.0 |     0     0     0    72   72.0% |    5870 | est   10.1 evm   23.6 pilot  0.019 |   300B air   1.1 ovh  68% good   73.2
+WIDE    M13     20.0    39.5 |     0     0     0    72   72.0% |    5870 | est   10.9 evm   22.4 pilot  0.017 |   300B air   1.1 ovh  68% good   73.2
+WIDE    M13     20.0    41.0 |     0     0     0    74   74.0% |    5870 | est    9.9 evm   23.1 pilot  0.018 |   300B air   1.1 ovh  68% good   67.9
+WIDE    M13     20.0    42.5 |     0     0     0    75   75.0% |    5870 | est    9.4 evm   22.5 pilot  0.014 |   300B air   1.1 ovh  68% good   65.3
+WIDE    M13     20.0    44.0 |     0     0     0    75   75.0% |    5870 | est    9.9 evm   22.8 pilot  0.025 |   300B air   1.1 ovh  68% good   65.3
+WIDE    M13     20.0    45.5 |     0     0     1    67   68.0% |    5870 | est   11.0 evm   23.1 pilot  0.025 |   300B air   1.1 ovh  68% good   83.6
+WIDE    M13     20.0    47.0 |     0     0     0    73   73.0% |    5870 | est    9.0 evm   22.8 pilot  0.022 |   300B air   1.1 ovh  68% good   70.6
+WIDE    M13     20.0    48.5 |     0     0     0    66   66.0% |    5870 | est   10.3 evm   22.1 pilot  0.024 |   300B air   1.1 ovh  68% good   88.9
+FAIL: WIDE M13 @ 20.0 dB FER=88.0%
+FAIL: WIDE M13 @ 21.5 dB FER=91.0%
+FAIL: WIDE M13 @ 23.0 dB FER=84.0%
+FAIL: WIDE M13 @ 24.5 dB FER=75.0%
+FAIL: WIDE M13 @ 26.0 dB FER=78.0%
+FAIL: WIDE M13 @ 27.5 dB FER=73.0%
+FAIL: WIDE M13 @ 29.0 dB FER=71.0%
+FAIL: WIDE M13 @ 30.5 dB FER=75.0%
+FAIL: WIDE M13 @ 32.0 dB FER=79.0%
+FAIL: WIDE M13 @ 33.5 dB FER=72.0%
+FAIL: WIDE M13 @ 35.0 dB FER=74.0%
+FAIL: WIDE M13 @ 36.5 dB FER=59.0%
+FAIL: WIDE M13 @ 38.0 dB FER=72.0%
+FAIL: WIDE M13 @ 39.5 dB FER=72.0%
+FAIL: WIDE M13 @ 41.0 dB FER=74.0%
+FAIL: WIDE M13 @ 42.5 dB FER=75.0%
+FAIL: WIDE M13 @ 44.0 dB FER=75.0%
+FAIL: WIDE M13 @ 45.5 dB FER=68.0%
+FAIL: WIDE M13 @ 47.0 dB FER=73.0%
+FAIL: WIDE M13 @ 48.5 dB FER=66.0%
+== 20 conformance failures ==

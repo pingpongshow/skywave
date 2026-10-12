@@ -1,0 +1,25 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M8       2.5     2.5 |     0     0    17    40   57.0% |    1957 | est    1.7 evm    4.2 pilot  0.008 |   300B air   1.9 ovh  40% good   69.6
+ULTRA   M8       2.5     4.0 |     0     0     8    33   41.0% |    1957 | est    2.5 evm    4.8 pilot  0.008 |   300B air   1.9 ovh  40% good   95.5
+ULTRA   M8       2.5     5.5 |     0     0    10    18   28.0% |    1957 | est    4.2 evm    5.7 pilot  0.007 |   300B air   1.9 ovh  40% good  116.5
+ULTRA   M8       2.5     7.0 |     0     0     3    13   16.0% |    1957 | est    5.9 evm    7.2 pilot  0.005 |   300B air   1.9 ovh  40% good  136.0
+ULTRA   M8       2.5     8.5 |     0     0     2     6    8.0% |    1957 | est    7.1 evm    7.8 pilot  0.006 |   300B air   1.9 ovh  40% good  148.9
+ULTRA   M8       2.5    10.0 |     0     0     3     5    8.0% |    1957 | est    9.1 evm    9.4 pilot  0.005 |   300B air   1.9 ovh  40% good  148.9
+ULTRA   M8       2.5    11.5 |     0     0     1     5    6.0% |    1957 | est   10.2 evm   10.3 pilot  0.005 |   300B air   1.9 ovh  40% good  152.2
+ULTRA   M8       2.5    13.0 |     0     0     0     1    1.0% |    1957 | est   11.9 evm   11.3 pilot  0.007 |   300B air   1.9 ovh  40% good  160.3
+ULTRA   M8       2.5    14.5 |     0     0     0     2    2.0% |    1957 | est   13.8 evm   12.9 pilot  0.004 |   300B air   1.9 ovh  40% good  158.6
+ULTRA   M8       2.5    16.0 |     0     0     0     1    1.0% |    1957 | est   15.9 evm   14.3 pilot  0.004 |   300B air   1.9 ovh  40% good  160.3
+ULTRA   M8       2.5    17.5 |     0     0     0     2    2.0% |    1957 | est   17.8 evm   15.7 pilot  0.003 |   300B air   1.9 ovh  40% good  158.6
+ULTRA   M8       2.5    19.0 |     0     0     0     0    0.0% |    1957 | est   20.3 evm   17.3 pilot  0.003 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    20.5 |     0     0     0     0    0.0% |    1957 | est   22.0 evm   18.7 pilot  0.002 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    22.0 |     0     0     0     0    0.0% |    1957 | est   23.3 evm   19.7 pilot  0.002 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    23.5 |     0     0     0     0    0.0% |    1957 | est   24.9 evm   21.2 pilot  0.002 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    25.0 |     0     0     0     0    0.0% |    1957 | est   25.9 evm   22.1 pilot  0.002 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    26.5 |     0     0     0     0    0.0% |    1957 | est   27.8 evm   23.9 pilot  0.001 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    28.0 |     0     0     0     0    0.0% |    1957 | est   29.2 evm   25.3 pilot  0.001 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    29.5 |     0     0     0     0    0.0% |    1957 | est   30.3 evm   26.6 pilot  0.001 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5    31.0 |     0     0     0     0    0.0% |    1957 | est   31.0 evm   27.3 pilot  0.001 |   300B air   1.9 ovh  40% good  161.9
+FAIL: ULTRA M8 @ 2.5 dB FER=57.0%
+FAIL: ULTRA M8 @ 4.0 dB FER=41.0%
+FAIL: ULTRA M8 @ 5.5 dB FER=28.0%
+== 3 conformance failures ==

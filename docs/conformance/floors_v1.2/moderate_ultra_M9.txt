@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M9       5.5     5.5 |     0     0     6    72   78.0% |    2272 | est    2.1 evm    6.6 pilot  0.027 |   300B air   1.7 ovh  44% good   38.8
+ULTRA   M9       5.5     7.0 |     1     0     4    66   71.0% |    2272 | est    3.1 evm    8.3 pilot  0.023 |   300B air   1.7 ovh  44% good   51.2
+ULTRA   M9       5.5     8.5 |     0     0     4    39   43.0% |    2272 | est    5.7 evm    8.5 pilot  0.027 |   300B air   1.7 ovh  44% good  100.6
+ULTRA   M9       5.5    10.0 |     0     0     1    40   41.0% |    2272 | est    6.4 evm    9.7 pilot  0.026 |   300B air   1.7 ovh  44% good  104.1
+ULTRA   M9       5.5    11.5 |     0     0     0    20   20.0% |    2272 | est    8.7 evm   10.6 pilot  0.027 |   300B air   1.7 ovh  44% good  141.2
+ULTRA   M9       5.5    13.0 |     0     0     0    10   10.0% |    2272 | est   10.8 evm   12.1 pilot  0.025 |   300B air   1.7 ovh  44% good  158.8
+ULTRA   M9       5.5    14.5 |     0     0     0     7    7.0% |    2272 | est   12.0 evm   13.0 pilot  0.024 |   300B air   1.7 ovh  44% good  164.1
+ULTRA   M9       5.5    16.0 |     0     0     0     4    4.0% |    2272 | est   13.6 evm   14.2 pilot  0.022 |   300B air   1.7 ovh  44% good  169.4
+ULTRA   M9       5.5    17.5 |     0     0     0     5    5.0% |    2272 | est   15.6 evm   15.7 pilot  0.018 |   300B air   1.7 ovh  44% good  167.6
+ULTRA   M9       5.5    19.0 |     0     0     0     2    2.0% |    2272 | est   17.4 evm   17.1 pilot  0.016 |   300B air   1.7 ovh  44% good  172.9
+ULTRA   M9       5.5    20.5 |     0     0     0     0    0.0% |    2272 | est   19.5 evm   18.4 pilot  0.015 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    22.0 |     0     0     0     1    1.0% |    2272 | est   20.1 evm   19.4 pilot  0.015 |   300B air   1.7 ovh  44% good  174.7
+ULTRA   M9       5.5    23.5 |     0     0     0     0    0.0% |    2272 | est   22.3 evm   21.4 pilot  0.009 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    25.0 |     0     0     0     0    0.0% |    2272 | est   22.4 evm   21.9 pilot  0.016 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    26.5 |     0     0     0     0    0.0% |    2272 | est   24.1 evm   24.0 pilot  0.008 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    28.0 |     0     0     0     0    0.0% |    2272 | est   23.7 evm   24.5 pilot  0.009 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    29.5 |     0     0     0     0    0.0% |    2272 | est   24.2 evm   25.5 pilot  0.010 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    31.0 |     0     0     0     0    0.0% |    2272 | est   26.1 evm   27.4 pilot  0.008 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    32.5 |     0     0     0     0    0.0% |    2272 | est   25.7 evm   28.2 pilot  0.008 |   300B air   1.7 ovh  44% good  176.5
+ULTRA   M9       5.5    34.0 |     0     0     0     0    0.0% |    2272 | est   26.7 evm   29.3 pilot  0.006 |   300B air   1.7 ovh  44% good  176.5
+FAIL: ULTRA M9 @ 5.5 dB FER=78.0%
+FAIL: ULTRA M9 @ 7.0 dB FER=71.0%
+FAIL: ULTRA M9 @ 8.5 dB FER=43.0%
+FAIL: ULTRA M9 @ 10.0 dB FER=41.0%
+== 4 conformance failures ==

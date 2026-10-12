@@ -1,0 +1,29 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M11     12.0    12.0 |     0     0     0    87   87.0% |    3913 | est    3.0 evm   12.2 pilot  0.041 |   300B air   1.3 ovh  59% good   29.3
+WIDE    M11     12.0    13.5 |     0     0     0    75   75.0% |    3913 | est    4.8 evm   12.6 pilot  0.072 |   300B air   1.3 ovh  59% good   56.3
+WIDE    M11     12.0    15.0 |     0     0     0    65   65.0% |    3913 | est    5.1 evm   13.2 pilot  0.042 |   300B air   1.3 ovh  59% good   78.8
+WIDE    M11     12.0    16.5 |     0     0     1    54   55.0% |    3913 | est    6.5 evm   15.0 pilot  0.042 |   300B air   1.3 ovh  59% good  101.4
+WIDE    M11     12.0    18.0 |     0     0     0    46   46.0% |    3913 | est    6.0 evm   14.8 pilot  0.047 |   300B air   1.3 ovh  59% good  121.6
+WIDE    M11     12.0    19.5 |     0     0     0    39   39.0% |    3913 | est    8.0 evm   16.1 pilot  0.036 |   300B air   1.3 ovh  59% good  137.4
+WIDE    M11     12.0    21.0 |     0     0     0    39   39.0% |    3913 | est    7.9 evm   16.2 pilot  0.038 |   300B air   1.3 ovh  59% good  137.4
+WIDE    M11     12.0    22.5 |     0     0     0    32   32.0% |    3913 | est    8.4 evm   16.9 pilot  0.062 |   300B air   1.3 ovh  59% good  153.2
+WIDE    M11     12.0    24.0 |     0     0     0    23   23.0% |    3913 | est    9.4 evm   17.2 pilot  0.051 |   300B air   1.3 ovh  59% good  173.4
+WIDE    M11     12.0    25.5 |     0     0     0    29   29.0% |    3913 | est    9.1 evm   17.4 pilot  0.058 |   300B air   1.3 ovh  59% good  159.9
+WIDE    M11     12.0    27.0 |     0     0     0    24   24.0% |    3913 | est   10.2 evm   18.3 pilot  0.063 |   300B air   1.3 ovh  59% good  171.2
+WIDE    M11     12.0    28.5 |     0     0     0    30   30.0% |    3913 | est    8.1 evm   18.4 pilot  0.067 |   300B air   1.3 ovh  59% good  157.7
+WIDE    M11     12.0    30.0 |     0     0     1    24   25.0% |    3913 | est    9.4 evm   18.6 pilot  0.069 |   300B air   1.3 ovh  59% good  168.9
+WIDE    M11     12.0    31.5 |     0     0     0    17   17.0% |    3913 | est   10.0 evm   18.0 pilot  0.061 |   300B air   1.3 ovh  59% good  186.9
+WIDE    M11     12.0    33.0 |     0     0     0    25   25.0% |    3913 | est   10.3 evm   19.8 pilot  0.052 |   300B air   1.3 ovh  59% good  168.9
+WIDE    M11     12.0    34.5 |     0     0     0    20   20.0% |    3913 | est    9.6 evm   18.5 pilot  0.058 |   300B air   1.3 ovh  59% good  180.2
+WIDE    M11     12.0    36.0 |     0     0     1    23   24.0% |    3913 | est   10.9 evm   19.8 pilot  0.052 |   300B air   1.3 ovh  59% good  171.2
+WIDE    M11     12.0    37.5 |     0     0     2    26   28.0% |    3913 | est    9.9 evm   19.9 pilot  0.048 |   300B air   1.3 ovh  59% good  162.2
+WIDE    M11     12.0    39.0 |     0     0     1    16   17.0% |    3913 | est   10.4 evm   19.0 pilot  0.058 |   300B air   1.3 ovh  59% good  186.9
+WIDE    M11     12.0    40.5 |     0     0     0    25   25.0% |    3913 | est    9.8 evm   20.5 pilot  0.041 |   300B air   1.3 ovh  59% good  168.9
+FAIL: WIDE M11 @ 12.0 dB FER=87.0%
+FAIL: WIDE M11 @ 13.5 dB FER=75.0%
+FAIL: WIDE M11 @ 15.0 dB FER=65.0%
+FAIL: WIDE M11 @ 16.5 dB FER=55.0%
+FAIL: WIDE M11 @ 18.0 dB FER=46.0%
+FAIL: WIDE M11 @ 19.5 dB FER=39.0%
+FAIL: WIDE M11 @ 21.0 dB FER=39.0%
+== 7 conformance failures ==

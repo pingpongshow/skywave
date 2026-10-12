@@ -1,0 +1,30 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M8      -3.5    -3.5 |     1     2    45    52  100.0% |     352 | est  -12.6 evm  -99.0 pilot -1.000 |   300B air   8.4 ovh  27% good    0.0
+NARROW  M8      -3.5    -2.0 |     4     0    30    60   94.0% |     352 | est  -11.4 evm    1.7 pilot  0.370 |   300B air   8.4 ovh  27% good    2.1
+NARROW  M8      -3.5    -0.5 |     2     0    15    75   92.0% |     352 | est  -11.1 evm    2.7 pilot  0.417 |   300B air   8.4 ovh  27% good    2.9
+NARROW  M8      -3.5     1.0 |     1     0     8    58   67.0% |     352 | est  -10.6 evm    2.7 pilot  0.531 |   300B air   8.4 ovh  27% good   11.8
+NARROW  M8      -3.5     2.5 |     0     0     6    48   54.0% |     352 | est   -9.9 evm    3.4 pilot  0.550 |   300B air   8.4 ovh  27% good   16.4
+NARROW  M8      -3.5     4.0 |     0     0     2    34   36.0% |     352 | est   -8.3 evm    4.2 pilot  0.420 |   300B air   8.4 ovh  27% good   22.8
+NARROW  M8      -3.5     5.5 |     0     0     6    20   26.0% |     352 | est   -6.6 evm    5.0 pilot  0.384 |   300B air   8.4 ovh  27% good   26.4
+NARROW  M8      -3.5     7.0 |     0     0     4    18   22.0% |     352 | est   -7.7 evm    4.7 pilot  0.559 |   300B air   8.4 ovh  27% good   27.8
+NARROW  M8      -3.5     8.5 |     0     0     0    26   26.0% |     352 | est   -7.3 evm    5.3 pilot  0.480 |   300B air   8.4 ovh  27% good   26.4
+NARROW  M8      -3.5    10.0 |     0     0     1    14   15.0% |     352 | est   -6.3 evm    5.7 pilot  0.405 |   300B air   8.4 ovh  27% good   30.3
+NARROW  M8      -3.5    11.5 |     0     0     0     9    9.0% |     352 | est   -5.7 evm    5.8 pilot  0.532 |   300B air   8.4 ovh  27% good   32.4
+NARROW  M8      -3.5    13.0 |     0     0     0    12   12.0% |     352 | est   -6.6 evm    6.0 pilot  0.497 |   300B air   8.4 ovh  27% good   31.4
+NARROW  M8      -3.5    14.5 |     0     0     1     5    6.0% |     352 | est   -5.7 evm    5.6 pilot  0.472 |   300B air   8.4 ovh  27% good   33.5
+NARROW  M8      -3.5    16.0 |     0     0     1    12   13.0% |     352 | est   -6.4 evm    5.7 pilot  0.571 |   300B air   8.4 ovh  27% good   31.0
+NARROW  M8      -3.5    17.5 |     0     0     1    15   16.0% |     352 | est   -5.8 evm    6.9 pilot  0.500 |   300B air   8.4 ovh  27% good   29.9
+NARROW  M8      -3.5    19.0 |     0     0     1    16   17.0% |     352 | est   -6.5 evm    5.9 pilot  0.589 |   300B air   8.4 ovh  27% good   29.6
+NARROW  M8      -3.5    20.5 |     0     0     3     7   10.0% |     352 | est   -5.5 evm    6.6 pilot  0.471 |   300B air   8.4 ovh  27% good   32.1
+NARROW  M8      -3.5    22.0 |     0     0     0     8    8.0% |     352 | est   -5.4 evm    7.0 pilot  0.518 |   300B air   8.4 ovh  27% good   32.8
+NARROW  M8      -3.5    23.5 |     0     0     1    17   18.0% |     352 | est   -7.3 evm    6.2 pilot  0.562 |   300B air   8.4 ovh  27% good   29.2
+NARROW  M8      -3.5    25.0 |     0     0     2     8   10.0% |     352 | est   -5.7 evm    6.3 pilot  0.463 |   300B air   8.4 ovh  27% good   32.1
+FAIL: NARROW M8 @ -3.5 dB FER=100.0%
+FAIL: NARROW M8 @ -2.0 dB FER=94.0%
+FAIL: NARROW M8 @ -0.5 dB FER=92.0%
+FAIL: NARROW M8 @ 1.0 dB FER=67.0%
+FAIL: NARROW M8 @ 2.5 dB FER=54.0%
+FAIL: NARROW M8 @ 4.0 dB FER=36.0%
+FAIL: NARROW M8 @ 5.5 dB FER=26.0%
+FAIL: NARROW M8 @ 8.5 dB FER=26.0%
+== 8 conformance failures ==

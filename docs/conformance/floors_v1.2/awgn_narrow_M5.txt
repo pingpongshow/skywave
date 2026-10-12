@@ -1,0 +1,16 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M5     -12.5   -15.5 |     0     0     9    59   34.0% |      24 | est  -17.8 evm   -9.1 pilot  0.185 |    60B air  30.6 ovh  68% good    1.3
+NARROW  M5     -12.5   -15.0 |     0     0     5    11    8.0% |      24 | est  -16.6 evm   -8.4 pilot  0.093 |    60B air  30.6 ovh  68% good    1.8
+NARROW  M5     -12.5   -14.5 |     0     0     2     0    1.0% |      24 | est  -16.2 evm   -8.0 pilot  0.068 |    60B air  30.6 ovh  68% good    1.9
+NARROW  M5     -12.5   -14.0 |     0     0     0     0    0.0% |      24 | est  -15.8 evm   -7.4 pilot  0.096 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -13.5 |     0     0     0     0    0.0% |      24 | est  -14.9 evm   -6.8 pilot  0.074 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -13.0 |     0     0     0     0    0.0% |      24 | est  -14.3 evm   -6.2 pilot  0.080 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -12.5 |     0     0     0     0    0.0% |      24 | est  -13.8 evm   -5.6 pilot  0.072 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -12.0 |     0     0     0     0    0.0% |      24 | est  -12.8 evm   -4.9 pilot  0.043 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -11.5 |     0     0     0     0    0.0% |      24 | est  -12.2 evm   -4.3 pilot  0.045 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -11.0 |     0     0     0     0    0.0% |      24 | est  -11.4 evm   -3.7 pilot  0.037 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -10.5 |     0     0     0     0    0.0% |      24 | est  -11.1 evm   -3.2 pilot  0.031 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5   -10.0 |     0     0     0     0    0.0% |      24 | est  -10.3 evm   -2.7 pilot  0.039 |    60B air  30.6 ovh  68% good    2.0
+NARROW  M5     -12.5    -9.5 |     0     0     0     0    0.0% |      24 | est   -9.7 evm   -2.2 pilot  0.024 |    60B air  30.6 ovh  68% good    2.0
+FAIL: NARROW M5 @ -15.5 dB FER=34.0%
+== 1 conformance failures ==

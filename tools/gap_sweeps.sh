@@ -47,5 +47,5 @@ jobs() {
     esac
   done
 }
-jobs | xargs -P "$J" -I{} sh -c '{} > /dev/null 2>&1'
+jobs | xargs -P "$J" -S 4096 -I{} sh -c '{} > /dev/null 2>&1'
 echo "done: $OUT"

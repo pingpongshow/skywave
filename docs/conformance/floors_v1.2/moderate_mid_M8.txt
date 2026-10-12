@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M8      -1.5    -1.5 |     0     0    20    63   83.0% |     734 | est   -4.9 evm    3.7 pilot  0.079 |   300B air   4.2 ovh  30% good   12.1
+MID     M8      -1.5     0.0 |     1     0    12    56   69.0% |     734 | est   -3.4 evm    4.6 pilot  0.092 |   300B air   4.2 ovh  30% good   22.1
+MID     M8      -1.5     1.5 |     1     1     9    47   58.0% |     734 | est   -2.2 evm    5.6 pilot  0.075 |   300B air   4.2 ovh  30% good   29.9
+MID     M8      -1.5     3.0 |     1     0     2    29   32.0% |     734 | est   -0.4 evm    6.3 pilot  0.077 |   300B air   4.2 ovh  30% good   48.4
+MID     M8      -1.5     4.5 |     0     0     1     8    9.0% |     734 | est    1.9 evm    7.8 pilot  0.061 |   300B air   4.2 ovh  30% good   64.8
+MID     M8      -1.5     6.0 |     0     0     0     8    8.0% |     734 | est    2.8 evm    9.0 pilot  0.057 |   300B air   4.2 ovh  30% good   65.5
+MID     M8      -1.5     7.5 |     0     0     0     0    0.0% |     734 | est    4.5 evm   10.3 pilot  0.052 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5     9.0 |     0     0     0     1    1.0% |     734 | est    6.4 evm   11.8 pilot  0.046 |   300B air   4.2 ovh  30% good   70.5
+MID     M8      -1.5    10.5 |     1     0     0     0    1.0% |     734 | est    8.7 evm   13.8 pilot  0.030 |   300B air   4.2 ovh  30% good   70.5
+MID     M8      -1.5    12.0 |     0     0     0     0    0.0% |     734 | est    9.6 evm   14.4 pilot  0.035 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    13.5 |     0     0     0     0    0.0% |     734 | est   11.9 evm   15.9 pilot  0.024 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    15.0 |     0     0     0     0    0.0% |     734 | est   12.5 evm   16.9 pilot  0.023 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    16.5 |     0     0     0     0    0.0% |     734 | est   14.6 evm   18.8 pilot  0.025 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    18.0 |     0     0     0     0    0.0% |     734 | est   15.4 evm   19.9 pilot  0.017 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    19.5 |     0     0     0     0    0.0% |     734 | est   16.8 evm   21.5 pilot  0.012 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    21.0 |     0     0     0     0    0.0% |     734 | est   17.6 evm   22.7 pilot  0.013 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    22.5 |     0     0     0     0    0.0% |     734 | est   18.2 evm   23.7 pilot  0.015 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    24.0 |     0     0     0     0    0.0% |     734 | est   18.4 evm   25.2 pilot  0.014 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    25.5 |     0     0     0     0    0.0% |     734 | est   19.2 evm   26.5 pilot  0.011 |   300B air   4.2 ovh  30% good   71.2
+MID     M8      -1.5    27.0 |     0     0     0     0    0.0% |     734 | est   19.4 evm   27.6 pilot  0.011 |   300B air   4.2 ovh  30% good   71.2
+FAIL: MID M8 @ -1.5 dB FER=83.0%
+FAIL: MID M8 @ 0.0 dB FER=69.0%
+FAIL: MID M8 @ 1.5 dB FER=58.0%
+FAIL: MID M8 @ 3.0 dB FER=32.0%
+== 4 conformance failures ==

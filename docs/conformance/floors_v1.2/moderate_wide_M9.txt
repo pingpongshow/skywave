@@ -1,0 +1,27 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M9       5.0     5.0 |     0     0    11    69   80.0% |    2012 | est    2.1 evm    6.8 pilot  0.032 |   300B air   1.9 ovh  42% good   32.4
+WIDE    M9       5.0     6.5 |     0     0     3    68   71.0% |    2012 | est    2.6 evm    7.5 pilot  0.039 |   300B air   1.9 ovh  42% good   46.9
+WIDE    M9       5.0     8.0 |     1     0     1    54   56.0% |    2012 | est    5.0 evm    9.1 pilot  0.027 |   300B air   1.9 ovh  42% good   71.2
+WIDE    M9       5.0     9.5 |     0     0     1    31   32.0% |    2012 | est    6.2 evm    9.6 pilot  0.032 |   300B air   1.9 ovh  42% good  110.1
+WIDE    M9       5.0    11.0 |     0     0     1    21   22.0% |    2012 | est    8.6 evm   11.1 pilot  0.024 |   300B air   1.9 ovh  42% good  126.3
+WIDE    M9       5.0    12.5 |     0     0     0    23   23.0% |    2012 | est    8.9 evm   11.2 pilot  0.032 |   300B air   1.9 ovh  42% good  124.6
+WIDE    M9       5.0    14.0 |     0     0     0     5    5.0% |    2012 | est   11.6 evm   12.6 pilot  0.028 |   300B air   1.9 ovh  42% good  153.8
+WIDE    M9       5.0    15.5 |     0     0     0     2    2.0% |    2012 | est   13.6 evm   14.1 pilot  0.029 |   300B air   1.9 ovh  42% good  158.6
+WIDE    M9       5.0    17.0 |     0     0     0     1    1.0% |    2012 | est   14.9 evm   15.2 pilot  0.028 |   300B air   1.9 ovh  42% good  160.3
+WIDE    M9       5.0    18.5 |     0     0     0     1    1.0% |    2012 | est   17.0 evm   17.1 pilot  0.016 |   300B air   1.9 ovh  42% good  160.3
+WIDE    M9       5.0    20.0 |     0     0     0     2    2.0% |    2012 | est   18.5 evm   18.5 pilot  0.013 |   300B air   1.9 ovh  42% good  158.6
+WIDE    M9       5.0    21.5 |     0     0     0     0    0.0% |    2012 | est   20.4 evm   19.6 pilot  0.013 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    23.0 |     0     0     0     1    1.0% |    2012 | est   20.6 evm   20.5 pilot  0.015 |   300B air   1.9 ovh  42% good  160.3
+WIDE    M9       5.0    24.5 |     0     0     0     1    1.0% |    2012 | est   22.4 evm   22.5 pilot  0.013 |   300B air   1.9 ovh  42% good  160.3
+WIDE    M9       5.0    26.0 |     0     0     0     0    0.0% |    2012 | est   23.1 evm   23.0 pilot  0.010 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    27.5 |     0     0     0     0    0.0% |    2012 | est   23.5 evm   24.4 pilot  0.010 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    29.0 |     0     0     0     0    0.0% |    2012 | est   24.4 evm   25.7 pilot  0.008 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    30.5 |     0     0     0     0    0.0% |    2012 | est   24.6 evm   26.5 pilot  0.010 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    32.0 |     0     0     0     0    0.0% |    2012 | est   24.4 evm   26.9 pilot  0.011 |   300B air   1.9 ovh  42% good  161.9
+WIDE    M9       5.0    33.5 |     0     0     0     0    0.0% |    2012 | est   25.7 evm   28.4 pilot  0.009 |   300B air   1.9 ovh  42% good  161.9
+FAIL: WIDE M9 @ 5.0 dB FER=80.0%
+FAIL: WIDE M9 @ 6.5 dB FER=71.0%
+FAIL: WIDE M9 @ 8.0 dB FER=56.0%
+FAIL: WIDE M9 @ 9.5 dB FER=32.0%
+FAIL: WIDE M9 @ 12.5 dB FER=23.0%
+== 5 conformance failures ==

@@ -1,0 +1,15 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M9       0.5    -2.5 |     0     0     3     0    1.5% |     412 | est   -3.0 evm    4.8 pilot  0.020 |   300B air   7.5 ovh  30% good   39.3
+NARROW  M9       0.5    -2.0 |     0     0     2     0    1.0% |     412 | est   -2.8 evm    5.2 pilot  0.023 |   300B air   7.5 ovh  30% good   39.5
+NARROW  M9       0.5    -1.5 |     0     0     1     0    0.5% |     412 | est   -2.0 evm    5.7 pilot  0.019 |   300B air   7.5 ovh  30% good   39.7
+NARROW  M9       0.5    -1.0 |     0     0     0     0    0.0% |     412 | est   -1.5 evm    6.2 pilot  0.019 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    -0.5 |     0     0     0     0    0.0% |     412 | est   -0.8 evm    6.7 pilot  0.017 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     0.0 |     0     0     0     0    0.0% |     412 | est   -0.3 evm    7.2 pilot  0.017 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     0.5 |     0     0     0     0    0.0% |     412 | est    0.2 evm    7.6 pilot  0.017 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     1.0 |     0     0     0     0    0.0% |     412 | est    0.8 evm    8.1 pilot  0.016 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     1.5 |     0     0     0     0    0.0% |     412 | est    1.4 evm    8.6 pilot  0.016 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     2.0 |     0     0     0     0    0.0% |     412 | est    2.0 evm    9.1 pilot  0.015 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     2.5 |     0     0     0     0    0.0% |     412 | est    2.4 evm    9.6 pilot  0.014 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     3.0 |     0     0     0     0    0.0% |     412 | est    3.1 evm   10.1 pilot  0.014 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5     3.5 |     0     0     0     0    0.0% |     412 | est    3.6 evm   10.5 pilot  0.013 |   300B air   7.5 ovh  30% good   39.9
+== all points pass ==

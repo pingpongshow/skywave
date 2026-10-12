@@ -1,0 +1,35 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M11      5.5     5.5 |     0     0     0   100  100.0% |     819 | est   -8.4 evm  -99.0 pilot -1.000 |   300B air   4.9 ovh  46% good    0.0
+NARROW  M11      5.5     7.0 |     0     0     1    97   98.0% |     819 | est   -7.8 evm   12.4 pilot  0.116 |   300B air   4.9 ovh  46% good    1.2
+NARROW  M11      5.5     8.5 |     0     0     1    94   95.0% |     819 | est   -6.6 evm   11.8 pilot  0.127 |   300B air   4.9 ovh  46% good    3.0
+NARROW  M11      5.5    10.0 |     0     0     0    97   97.0% |     819 | est   -7.4 evm   13.4 pilot  0.078 |   300B air   4.9 ovh  46% good    1.8
+NARROW  M11      5.5    11.5 |     0     0     0    97   97.0% |     819 | est   -7.0 evm   11.0 pilot  0.203 |   300B air   4.9 ovh  46% good    1.8
+NARROW  M11      5.5    13.0 |     0     0     4    87   91.0% |     819 | est   -6.7 evm   11.5 pilot  0.204 |   300B air   4.9 ovh  46% good    5.5
+NARROW  M11      5.5    14.5 |     0     0     3    92   95.0% |     819 | est   -6.8 evm   13.1 pilot  0.233 |   300B air   4.9 ovh  46% good    3.0
+NARROW  M11      5.5    16.0 |     0     0     0    85   85.0% |     819 | est   -6.2 evm   12.6 pilot  0.174 |   300B air   4.9 ovh  46% good    9.1
+NARROW  M11      5.5    17.5 |     0     0     1    86   87.0% |     819 | est   -5.1 evm   12.6 pilot  0.190 |   300B air   4.9 ovh  46% good    7.9
+NARROW  M11      5.5    19.0 |     0     0     1    88   89.0% |     819 | est   -6.6 evm   12.0 pilot  0.190 |   300B air   4.9 ovh  46% good    6.7
+NARROW  M11      5.5    20.5 |     0     0     3    83   86.0% |     819 | est   -7.2 evm   11.5 pilot  0.254 |   300B air   4.9 ovh  46% good    8.5
+NARROW  M11      5.5    22.0 |     0     0     0    84   84.0% |     819 | est   -5.6 evm   12.1 pilot  0.214 |   300B air   4.9 ovh  46% good    9.8
+NARROW  M11      5.5    23.5 |     0     0     0    92   92.0% |     819 | est   -6.3 evm   14.5 pilot  0.134 |   300B air   4.9 ovh  46% good    4.9
+NARROW  M11      5.5    25.0 |     0     0     1    83   84.0% |     819 | est   -6.4 evm   13.0 pilot  0.196 |   300B air   4.9 ovh  46% good    9.8
+NARROW  M11      5.5    26.5 |     0     0     1    93   94.0% |     819 | est   -6.5 evm    9.3 pilot  0.322 |   300B air   4.9 ovh  46% good    3.7
+NARROW  M11      5.5    28.0 |     0     0     1    86   87.0% |     819 | est   -6.3 evm   12.9 pilot  0.208 |   300B air   4.9 ovh  46% good    7.9
+NARROW  M11      5.5    29.5 |     0     0     0    91   91.0% |     819 | est   -5.9 evm   11.7 pilot  0.168 |   300B air   4.9 ovh  46% good    5.5
+NARROW  M11      5.5    31.0 |     0     0     3    80   83.0% |     819 | est   -6.4 evm   11.4 pilot  0.293 |   300B air   4.9 ovh  46% good   10.4
+NARROW  M11      5.5    32.5 |     0     0     2    93   95.0% |     819 | est   -7.2 evm   12.3 pilot  0.153 |   300B air   4.9 ovh  46% good    3.0
+NARROW  M11      5.5    34.0 |     0     0     0    86   86.0% |     819 | est   -5.8 evm   12.3 pilot  0.221 |   300B air   4.9 ovh  46% good    8.5
+FAIL: NARROW M11 @ 5.5 dB FER=100.0%
+FAIL: NARROW M11 @ 7.0 dB FER=98.0%
+FAIL: NARROW M11 @ 8.5 dB FER=95.0%
+FAIL: NARROW M11 @ 10.0 dB FER=97.0%
+FAIL: NARROW M11 @ 11.5 dB FER=97.0%
+FAIL: NARROW M11 @ 13.0 dB FER=91.0%
+FAIL: NARROW M11 @ 14.5 dB FER=95.0%
+FAIL: NARROW M11 @ 16.0 dB FER=85.0%
+FAIL: NARROW M11 @ 17.5 dB FER=87.0%
+FAIL: NARROW M11 @ 19.0 dB FER=89.0%
+FAIL: NARROW M11 @ 20.5 dB FER=86.0%
+FAIL: NARROW M11 @ 22.0 dB FER=84.0%
+FAIL: NARROW M11 @ 23.5 dB FER=92.0%
+== 13 conformance failures ==

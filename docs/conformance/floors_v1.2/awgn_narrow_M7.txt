@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M7      -7.5   -10.5 |     0     0     0   149   74.5% |     128 | est  -10.9 evm   -2.7 pilot  0.068 |    60B air  22.6 ovh  92% good    0.7
+NARROW  M7      -7.5   -10.0 |     0     0     0    68   34.0% |     128 | est  -10.4 evm   -2.2 pilot  0.079 |    60B air  22.6 ovh  92% good    1.8
+NARROW  M7      -7.5    -9.5 |     0     0     0    13    6.5% |     128 | est   -9.8 evm   -1.9 pilot  0.067 |    60B air  22.6 ovh  92% good    2.5
+NARROW  M7      -7.5    -9.0 |     0     0     0     2    1.0% |     128 | est   -9.1 evm   -1.2 pilot  0.058 |    60B air  22.6 ovh  92% good    2.6
+NARROW  M7      -7.5    -8.5 |     0     0     0     0    0.0% |     128 | est   -8.6 evm   -0.6 pilot  0.068 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -8.0 |     0     0     0     0    0.0% |     128 | est   -7.9 evm   -0.2 pilot  0.061 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -7.5 |     0     0     0     0    0.0% |     128 | est   -7.3 evm    0.3 pilot  0.054 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -7.0 |     0     0     0     0    0.0% |     128 | est   -6.7 evm    0.9 pilot  0.050 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -6.5 |     0     0     0     0    0.0% |     128 | est   -6.2 evm    1.4 pilot  0.050 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -6.0 |     0     0     0     0    0.0% |     128 | est   -5.6 evm    1.9 pilot  0.049 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -5.5 |     0     0     0     0    0.0% |     128 | est   -4.9 evm    2.5 pilot  0.042 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -5.0 |     0     0     0     0    0.0% |     128 | est   -4.6 evm    2.9 pilot  0.052 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    -4.5 |     0     0     0     0    0.0% |     128 | est   -3.7 evm    3.4 pilot  0.040 |    60B air  22.6 ovh  92% good    2.7
+FAIL: NARROW M7 @ -10.5 dB FER=74.5%
+FAIL: NARROW M7 @ -10.0 dB FER=34.0%
+== 2 conformance failures ==

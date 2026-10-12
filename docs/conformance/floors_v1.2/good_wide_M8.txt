@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M8       2.0     2.0 |     1     0    17    39   57.0% |    1718 | est    0.8 evm    3.8 pilot  0.007 |   300B air   2.0 ovh  38% good   63.3
+WIDE    M8       2.0     3.5 |     0     0     9    31   40.0% |    1718 | est    2.3 evm    5.1 pilot  0.007 |   300B air   2.0 ovh  38% good   88.4
+WIDE    M8       2.0     5.0 |     0     0     7    23   30.0% |    1718 | est    3.8 evm    6.1 pilot  0.008 |   300B air   2.0 ovh  38% good  103.1
+WIDE    M8       2.0     6.5 |     0     0     3    20   23.0% |    1718 | est    4.8 evm    7.0 pilot  0.005 |   300B air   2.0 ovh  38% good  113.4
+WIDE    M8       2.0     8.0 |     0     0     3     4    7.0% |    1718 | est    7.4 evm    8.2 pilot  0.007 |   300B air   2.0 ovh  38% good  136.9
+WIDE    M8       2.0     9.5 |     0     0     0     6    6.0% |    1718 | est    8.8 evm    9.6 pilot  0.007 |   300B air   2.0 ovh  38% good  138.4
+WIDE    M8       2.0    11.0 |     0     0     2     2    4.0% |    1718 | est    9.9 evm   10.2 pilot  0.006 |   300B air   2.0 ovh  38% good  141.4
+WIDE    M8       2.0    12.5 |     0     0     0     2    2.0% |    1718 | est   11.8 evm   11.6 pilot  0.007 |   300B air   2.0 ovh  38% good  144.3
+WIDE    M8       2.0    14.0 |     0     0     0     3    3.0% |    1718 | est   13.2 evm   12.7 pilot  0.005 |   300B air   2.0 ovh  38% good  142.8
+WIDE    M8       2.0    15.5 |     0     0     0     1    1.0% |    1718 | est   15.6 evm   14.3 pilot  0.005 |   300B air   2.0 ovh  38% good  145.8
+WIDE    M8       2.0    17.0 |     0     0     0     1    1.0% |    1718 | est   18.1 evm   16.2 pilot  0.004 |   300B air   2.0 ovh  38% good  145.8
+WIDE    M8       2.0    18.5 |     0     0     0     0    0.0% |    1718 | est   19.9 evm   17.4 pilot  0.003 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    20.0 |     0     0     0     0    0.0% |    1718 | est   20.9 evm   18.2 pilot  0.003 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    21.5 |     0     0     0     0    0.0% |    1718 | est   22.8 evm   19.7 pilot  0.003 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    23.0 |     0     0     0     0    0.0% |    1718 | est   24.0 evm   20.9 pilot  0.002 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    24.5 |     0     0     0     0    0.0% |    1718 | est   25.1 evm   21.8 pilot  0.002 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    26.0 |     0     0     0     0    0.0% |    1718 | est   27.0 evm   23.7 pilot  0.001 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    27.5 |     0     0     0     0    0.0% |    1718 | est   27.8 evm   24.6 pilot  0.001 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    29.0 |     0     0     0     0    0.0% |    1718 | est   29.5 evm   26.4 pilot  0.001 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0    30.5 |     0     0     0     0    0.0% |    1718 | est   29.8 evm   26.6 pilot  0.001 |   300B air   2.0 ovh  38% good  147.3
+FAIL: WIDE M8 @ 2.0 dB FER=57.0%
+FAIL: WIDE M8 @ 3.5 dB FER=40.0%
+FAIL: WIDE M8 @ 5.0 dB FER=30.0%
+FAIL: WIDE M8 @ 6.5 dB FER=23.0%
+== 4 conformance failures ==

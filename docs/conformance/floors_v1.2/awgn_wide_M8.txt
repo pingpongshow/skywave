@@ -1,0 +1,20 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M8       2.0    -1.0 |     0     0    24   176  100.0% |    1718 | est   -2.1 evm  -99.0 pilot -1.000 |   300B air   2.0 ovh  38% good    0.0
+WIDE    M8       2.0    -0.5 |     0     0     8   192  100.0% |    1718 | est   -1.5 evm  -99.0 pilot -1.000 |   300B air   2.0 ovh  38% good    0.0
+WIDE    M8       2.0     0.0 |     0     0     3   197  100.0% |    1718 | est   -0.9 evm  -99.0 pilot -1.000 |   300B air   2.0 ovh  38% good    0.0
+WIDE    M8       2.0     0.5 |     0     0     0   150   75.0% |    1718 | est   -0.5 evm    1.0 pilot  0.008 |   300B air   2.0 ovh  38% good   36.8
+WIDE    M8       2.0     1.0 |     0     0     0    26   13.0% |    1718 | est    0.2 evm    1.5 pilot  0.006 |   300B air   2.0 ovh  38% good  128.1
+WIDE    M8       2.0     1.5 |     0     0     0     2    1.0% |    1718 | est    0.7 evm    2.1 pilot  0.007 |   300B air   2.0 ovh  38% good  145.8
+WIDE    M8       2.0     2.0 |     0     0     0     0    0.0% |    1718 | est    1.2 evm    2.5 pilot  0.007 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     2.5 |     0     0     0     0    0.0% |    1718 | est    1.7 evm    3.0 pilot  0.007 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     3.0 |     0     0     0     0    0.0% |    1718 | est    2.3 evm    3.5 pilot  0.006 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     3.5 |     0     0     0     0    0.0% |    1718 | est    2.9 evm    4.0 pilot  0.005 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     4.0 |     0     0     0     0    0.0% |    1718 | est    3.4 evm    4.5 pilot  0.005 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     4.5 |     0     0     0     0    0.0% |    1718 | est    3.9 evm    5.0 pilot  0.005 |   300B air   2.0 ovh  38% good  147.3
+WIDE    M8       2.0     5.0 |     0     0     0     0    0.0% |    1718 | est    4.5 evm    5.5 pilot  0.006 |   300B air   2.0 ovh  38% good  147.3
+FAIL: WIDE M8 @ -1.0 dB FER=100.0%
+FAIL: WIDE M8 @ -0.5 dB FER=100.0%
+FAIL: WIDE M8 @ 0.0 dB FER=100.0%
+FAIL: WIDE M8 @ 0.5 dB FER=75.0%
+FAIL: WIDE M8 @ 1.0 dB FER=13.0%
+== 5 conformance failures ==

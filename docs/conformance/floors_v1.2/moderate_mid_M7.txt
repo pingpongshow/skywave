@@ -1,0 +1,22 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M7      -4.5    -4.5 |     1     0     0    21   22.0% |     280 | est   -6.1 evm   -0.0 pilot  0.104 |    60B air  11.6 ovh  93% good    4.0
+MID     M7      -4.5    -3.0 |     1     0     0    17   18.0% |     280 | est   -4.6 evm    1.1 pilot  0.111 |    60B air  11.6 ovh  93% good    4.2
+MID     M7      -4.5    -1.5 |     0     0     0     7    7.0% |     280 | est   -2.6 evm    2.7 pilot  0.086 |    60B air  11.6 ovh  93% good    4.8
+MID     M7      -4.5     0.0 |     0     0     0     2    2.0% |     280 | est   -0.9 evm    3.9 pilot  0.083 |    60B air  11.6 ovh  93% good    5.1
+MID     M7      -4.5     1.5 |     0     0     0     1    1.0% |     280 | est    0.2 evm    4.5 pilot  0.084 |    60B air  11.6 ovh  93% good    5.1
+MID     M7      -4.5     3.0 |     0     0     0     1    1.0% |     280 | est    2.3 evm    6.5 pilot  0.063 |    60B air  11.6 ovh  93% good    5.1
+MID     M7      -4.5     4.5 |     0     0     0     1    1.0% |     280 | est    4.2 evm    8.0 pilot  0.049 |    60B air  11.6 ovh  93% good    5.1
+MID     M7      -4.5     6.0 |     1     0     0     0    1.0% |     280 | est    6.8 evm   10.2 pilot  0.034 |    60B air  11.6 ovh  93% good    5.1
+MID     M7      -4.5     7.5 |     0     0     0     0    0.0% |     280 | est    7.7 evm   10.6 pilot  0.035 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5     9.0 |     0     0     0     0    0.0% |     280 | est    9.8 evm   12.4 pilot  0.034 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    10.5 |     0     0     0     0    0.0% |     280 | est   11.4 evm   13.8 pilot  0.029 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    12.0 |     0     0     0     0    0.0% |     280 | est   12.7 evm   14.9 pilot  0.023 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    13.5 |     0     0     0     0    0.0% |     280 | est   14.3 evm   16.6 pilot  0.019 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    15.0 |     0     0     0     0    0.0% |     280 | est   15.1 evm   17.4 pilot  0.022 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    16.5 |     0     0     0     0    0.0% |     280 | est   16.2 evm   18.7 pilot  0.014 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    18.0 |     0     0     0     0    0.0% |     280 | est   17.4 evm   20.2 pilot  0.012 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    19.5 |     0     0     0     0    0.0% |     280 | est   18.1 evm   21.5 pilot  0.010 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    21.0 |     0     0     0     0    0.0% |     280 | est   19.2 evm   23.3 pilot  0.009 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    22.5 |     0     0     0     0    0.0% |     280 | est   18.9 evm   23.7 pilot  0.011 |    60B air  11.6 ovh  93% good    5.2
+MID     M7      -4.5    24.0 |     0     0     0     0    0.0% |     280 | est   19.6 evm   24.4 pilot  0.010 |    60B air  11.6 ovh  93% good    5.2
+== all points pass ==

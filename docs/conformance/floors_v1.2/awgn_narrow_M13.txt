@@ -1,0 +1,16 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M13     13.5    10.5 |     0     0     0   109   54.5% |    1236 | est   11.0 evm   16.5 pilot  0.007 |   300B air   4.0 ovh  57% good   33.9
+NARROW  M13     13.5    11.0 |     0     0     0    24   12.0% |    1236 | est   11.5 evm   16.9 pilot  0.007 |   300B air   4.0 ovh  57% good   65.5
+NARROW  M13     13.5    11.5 |     0     0     0     1    0.5% |    1236 | est   12.2 evm   17.3 pilot  0.006 |   300B air   4.0 ovh  57% good   74.1
+NARROW  M13     13.5    12.0 |     0     0     0     0    0.0% |    1236 | est   12.8 evm   17.8 pilot  0.006 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    12.5 |     0     0     0     0    0.0% |    1236 | est   13.3 evm   18.2 pilot  0.005 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    13.0 |     0     0     0     0    0.0% |    1236 | est   14.0 evm   18.7 pilot  0.005 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    13.5 |     0     0     0     0    0.0% |    1236 | est   14.3 evm   19.2 pilot  0.004 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    14.0 |     0     0     0     0    0.0% |    1236 | est   15.0 evm   19.6 pilot  0.004 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    14.5 |     0     0     0     0    0.0% |    1236 | est   15.6 evm   20.1 pilot  0.004 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    15.0 |     0     0     0     0    0.0% |    1236 | est   16.1 evm   20.5 pilot  0.003 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    15.5 |     0     0     0     0    0.0% |    1236 | est   16.5 evm   21.0 pilot  0.003 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    16.0 |     0     0     0     0    0.0% |    1236 | est   17.0 evm   21.5 pilot  0.003 |   300B air   4.0 ovh  57% good   74.4
+NARROW  M13     13.5    16.5 |     0     0     0     0    0.0% |    1236 | est   17.4 evm   21.9 pilot  0.003 |   300B air   4.0 ovh  57% good   74.4
+FAIL: NARROW M13 @ 10.5 dB FER=54.5%
+== 1 conformance failures ==

@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M5      -6.0    -9.0 |     0     0     0   183   91.5% |     167 | est  -10.9 evm   -8.8 pilot  0.043 |    60B air   5.6 ovh  74% good    0.9
+WIDE    M5      -6.0    -8.5 |     0     0     0   109   54.5% |     167 | est  -10.3 evm   -8.4 pilot  0.066 |    60B air   5.6 ovh  74% good    4.9
+WIDE    M5      -6.0    -8.0 |     0     0     0    33   16.5% |     167 | est   -9.6 evm   -8.0 pilot  0.047 |    60B air   5.6 ovh  74% good    9.0
+WIDE    M5      -6.0    -7.5 |     0     0     0     2    1.0% |     167 | est   -9.0 evm   -7.4 pilot  0.027 |    60B air   5.6 ovh  74% good   10.7
+WIDE    M5      -6.0    -7.0 |     0     0     0     0    0.0% |     167 | est   -8.4 evm   -6.8 pilot  0.031 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -6.5 |     0     0     0     0    0.0% |     167 | est   -7.8 evm   -6.4 pilot  0.026 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -6.0 |     0     0     0     0    0.0% |     167 | est   -7.1 evm   -5.7 pilot  0.021 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -5.5 |     0     0     0     0    0.0% |     167 | est   -6.6 evm   -5.2 pilot  0.028 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -5.0 |     0     0     0     0    0.0% |     167 | est   -5.9 evm   -4.6 pilot  0.029 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -4.5 |     0     0     0     0    0.0% |     167 | est   -5.3 evm   -4.0 pilot  0.017 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -4.0 |     0     0     0     0    0.0% |     167 | est   -4.7 evm   -3.4 pilot  0.021 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -3.5 |     0     0     0     0    0.0% |     167 | est   -4.1 evm   -3.0 pilot  0.012 |    60B air   5.6 ovh  74% good   10.8
+WIDE    M5      -6.0    -3.0 |     0     0     0     0    0.0% |     167 | est   -3.6 evm   -2.5 pilot  0.014 |    60B air   5.6 ovh  74% good   10.8
+FAIL: WIDE M5 @ -9.0 dB FER=91.5%
+FAIL: WIDE M5 @ -8.5 dB FER=54.5%
+FAIL: WIDE M5 @ -8.0 dB FER=16.5%
+== 3 conformance failures ==

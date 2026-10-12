@@ -1,0 +1,25 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M11     12.5    12.5 |     0     0     1    51   52.0% |    4402 | est   12.0 evm   13.2 pilot  0.003 |   300B air   1.2 ovh  60% good  116.1
+ULTRA   M11     12.5    14.0 |     0     0     0    36   36.0% |    4402 | est   13.7 evm   14.0 pilot  0.003 |   300B air   1.2 ovh  60% good  154.8
+ULTRA   M11     12.5    15.5 |     0     0     0    26   26.0% |    4402 | est   15.3 evm   14.8 pilot  0.002 |   300B air   1.2 ovh  60% good  179.0
+ULTRA   M11     12.5    17.0 |     0     0     0    18   18.0% |    4402 | est   17.3 evm   15.9 pilot  0.002 |   300B air   1.2 ovh  60% good  198.4
+ULTRA   M11     12.5    18.5 |     0     0     0    13   13.0% |    4402 | est   18.8 evm   16.9 pilot  0.002 |   300B air   1.2 ovh  60% good  210.5
+ULTRA   M11     12.5    20.0 |     0     0     0     4    4.0% |    4402 | est   21.3 evm   18.2 pilot  0.002 |   300B air   1.2 ovh  60% good  232.3
+ULTRA   M11     12.5    21.5 |     0     0     0     2    2.0% |    4402 | est   22.4 evm   19.0 pilot  0.002 |   300B air   1.2 ovh  60% good  237.1
+ULTRA   M11     12.5    23.0 |     0     0     0     4    4.0% |    4402 | est   23.7 evm   20.3 pilot  0.001 |   300B air   1.2 ovh  60% good  232.3
+ULTRA   M11     12.5    24.5 |     0     0     0     0    0.0% |    4402 | est   25.9 evm   21.9 pilot  0.001 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    26.0 |     0     0     0     0    0.0% |    4402 | est   26.7 evm   22.6 pilot  0.001 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    27.5 |     0     0     0     0    0.0% |    4402 | est   28.2 evm   24.2 pilot  0.001 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    29.0 |     0     0     0     0    0.0% |    4402 | est   29.3 evm   25.2 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    30.5 |     0     0     0     0    0.0% |    4402 | est   30.2 evm   26.2 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    32.0 |     0     0     0     1    1.0% |    4402 | est   30.7 evm   27.0 pilot  0.000 |   300B air   1.2 ovh  60% good  239.5
+ULTRA   M11     12.5    33.5 |     0     0     0     0    0.0% |    4402 | est   31.8 evm   28.0 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    35.0 |     0     0     0     0    0.0% |    4402 | est   32.5 evm   28.8 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    36.5 |     0     0     0     0    0.0% |    4402 | est   33.3 evm   29.5 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    38.0 |     0     0     0     0    0.0% |    4402 | est   34.1 evm   30.5 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    39.5 |     0     0     0     0    0.0% |    4402 | est   34.5 evm   31.0 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+ULTRA   M11     12.5    41.0 |     0     0     0     0    0.0% |    4402 | est   34.6 evm   31.2 pilot  0.000 |   300B air   1.2 ovh  60% good  241.9
+FAIL: ULTRA M11 @ 12.5 dB FER=52.0%
+FAIL: ULTRA M11 @ 14.0 dB FER=36.0%
+FAIL: ULTRA M11 @ 15.5 dB FER=26.0%
+== 3 conformance failures ==

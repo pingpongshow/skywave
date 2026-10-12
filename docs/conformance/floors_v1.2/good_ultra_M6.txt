@@ -1,0 +1,23 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M6      -3.0    -3.0 |     0     0     2    26   28.0% |     356 | est   -4.3 evm   -2.0 pilot  0.019 |    60B air   4.8 ovh  86% good    9.0
+ULTRA   M6      -3.0    -1.5 |     0     0     0    17   17.0% |     356 | est   -3.2 evm   -1.4 pilot  0.015 |    60B air   4.8 ovh  86% good   10.4
+ULTRA   M6      -3.0     0.0 |     0     0     2    12   14.0% |     356 | est   -1.1 evm    0.4 pilot  0.023 |    60B air   4.8 ovh  86% good   10.7
+ULTRA   M6      -3.0     1.5 |     0     0     0     7    7.0% |     356 | est    0.1 evm    1.0 pilot  0.023 |    60B air   4.8 ovh  86% good   11.6
+ULTRA   M6      -3.0     3.0 |     0     0     1     4    5.0% |     356 | est    2.4 evm    2.8 pilot  0.019 |    60B air   4.8 ovh  86% good   11.8
+ULTRA   M6      -3.0     4.5 |     0     0     0     2    2.0% |     356 | est    4.0 evm    3.8 pilot  0.015 |    60B air   4.8 ovh  86% good   12.2
+ULTRA   M6      -3.0     6.0 |     0     0     0     1    1.0% |     356 | est    5.4 evm    5.0 pilot  0.017 |    60B air   4.8 ovh  86% good   12.3
+ULTRA   M6      -3.0     7.5 |     0     0     0     1    1.0% |     356 | est    7.1 evm    6.2 pilot  0.017 |    60B air   4.8 ovh  86% good   12.3
+ULTRA   M6      -3.0     9.0 |     0     0     0     1    1.0% |     356 | est   10.1 evm    8.5 pilot  0.015 |    60B air   4.8 ovh  86% good   12.3
+ULTRA   M6      -3.0    10.5 |     0     0     0     1    1.0% |     356 | est   12.0 evm    9.8 pilot  0.013 |    60B air   4.8 ovh  86% good   12.3
+ULTRA   M6      -3.0    12.0 |     0     0     0     0    0.0% |     356 | est   13.6 evm   10.8 pilot  0.011 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    13.5 |     0     0     0     0    0.0% |     356 | est   16.0 evm   12.6 pilot  0.010 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    15.0 |     0     0     0     0    0.0% |     356 | est   17.7 evm   13.9 pilot  0.007 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    16.5 |     0     0     0     0    0.0% |     356 | est   19.1 evm   15.3 pilot  0.006 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    18.0 |     0     0     0     0    0.0% |     356 | est   20.2 evm   16.5 pilot  0.005 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    19.5 |     0     0     0     0    0.0% |     356 | est   21.4 evm   17.7 pilot  0.004 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    21.0 |     0     0     0     0    0.0% |     356 | est   23.1 evm   19.3 pilot  0.003 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    22.5 |     0     0     0     0    0.0% |     356 | est   24.6 evm   21.0 pilot  0.003 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    24.0 |     0     0     0     0    0.0% |     356 | est   25.7 evm   22.2 pilot  0.002 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    25.5 |     0     0     0     0    0.0% |     356 | est   27.2 evm   23.9 pilot  0.002 |    60B air   4.8 ovh  86% good   12.5
+FAIL: ULTRA M6 @ -3.0 dB FER=28.0%
+== 1 conformance failures ==

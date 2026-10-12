@@ -1,0 +1,51 @@
+== awgn floors (M4..M13)
+  wide   -11.0 -8.5 -6.0 -3.0  0.5  3.0  5.5  9.5 13.5 17.0
+  mid    -15.0-13.0-10.0 -7.5 -3.5 -0.5  2.0  6.0  9.5 13.5
+  narrow -17.5-16.0-13.0-10.5 -6.5 -3.5 -1.0  2.5  6.5 10.5
+  ultra  -11.0 -8.5 -5.5 -3.0  1.0  3.5  6.0 10.0 14.0 17.5
+== designated floors (M4..M13)
+  wide    -5.5 -3.0 -0.5  4.0  7.5 11.0 13.0 17.5 21.0 25.0
+  mid     -9.0 -7.5 -5.0 -2.5  6.0 10.5 10.5 14.5 17.5 23.0
+  narrow -10.5 -8.5 -4.5 -3.0  5.0  8.0 10.0 13.5 16.5 21.5
+  ultra   -5.0 -2.5  1.0  2.5  7.5 11.5 13.0 18.0 21.5 26.0
+== good floors (M4..M13)
+  wide    -4.5 -3.0 -1.0  3.0  7.5 11.0 13.0 17.5 21.0 25.0
+  mid     -8.0 -6.5 -4.5 -1.0  6.0 10.5 10.5 14.5 17.5 23.0
+  narrow -10.5 -8.5 -4.5 -3.0  5.0  8.0 10.0 13.5 16.5 21.5
+  ultra   -4.0 -3.0 -0.5  3.0  7.5 11.5 13.0 18.0 21.5 26.0
+== moderate floors (M4..M13)
+  wide    -5.5 -3.0 -0.5  4.0 10.0 13.5 14.0 19.0 22.0 28.5
+  mid     -9.0 -7.5 -5.0 -2.5  4.5  7.5 10.5 14.5 17.0 24.5
+  narrow -10.0 -9.5 -6.5 -5.0  3.5  6.5  8.5 13.0 16.0 36.0
+  ultra   -5.0 -2.5  1.0  2.5  8.5 12.5 15.0 19.0 22.5 26.5
+== poor floors (M4..M13)
+  wide    -4.0 -2.5  0.5  2.0 11.5 19.0  NA   NA   NA   NA 
+  mid     -8.0 -6.5 -4.5  0.0  NA   NA   NA   NA   NA   NA 
+  narrow -10.0 -9.0 -7.0 -5.0 10.5  NA   NA   NA   NA   NA 
+  ultra   -4.0 -1.5  0.0  3.5 12.5 20.0  NA   NA   NA   NA 
+== estimator bias (est - set point), AWGN, 0..3 dB above the 10% point
+  wide    median -0.60  range -2.10..+0.10  (n=42)
+  mid     median -0.80  range -2.60..-0.10  (n=42)
+  narrow  median -0.60  range -2.80..+0.30  (n=44)
+  ultra   median -0.60  range -1.80..+0.20  (n=42)
+== pilot excess median over modes, 3..10 dB above each mode's floor on that channel
+  awgn     wide    median 0.005  p10 0.001  p90 0.019  (n=57)
+  awgn     mid     median 0.011  p10 0.002  p90 0.035  (n=65)
+  awgn     narrow  median 0.017  p10 0.004  p90 0.054  (n=71)
+  awgn     ultra   median 0.005  p10 0.001  p90 0.015  (n=60)
+  good     wide    median 0.004  p10 0.000  p90 0.017  (n=50)
+  good     mid     median 0.005  p10 0.001  p90 0.034  (n=50)
+  good     narrow  median 0.011  p10 0.002  p90 0.061  (n=50)
+  good     ultra   median 0.003  p10 0.000  p90 0.015  (n=50)
+  moderate wide    median 0.018  p10 0.006  p90 0.049  (n=50)
+  moderate mid     median 0.021  p10 0.008  p90 0.062  (n=50)
+  moderate narrow  median 0.059  p10 0.029  p90 0.113  (n=48)
+  moderate ultra   median 0.017  p10 0.006  p90 0.045  (n=50)
+  poor     wide    median 0.095  p10 0.031  p90 0.143  (n=30)
+  poor     mid     median 0.142  p10 0.003  p90 0.263  (n=20)
+  poor     narrow  median 0.263  p10 0.007  p90 0.528  (n=25)
+  poor     ultra   median 0.101  p10 0.024  p90 0.141  (n=30)
+
+MANUAL OVERRIDE (constants.hpp kModerateFloors): NARROW M13 derived 36.0 is
+set to NA - the Moderate curve plateaus at 10-23% from 27 to 46 dB and a
+fresh-seed (7000) sweep failed floor+3 at 23%.

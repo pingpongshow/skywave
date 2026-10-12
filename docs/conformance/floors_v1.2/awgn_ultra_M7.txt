@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M7      -0.5    -3.5 |     0     0     0   195   97.5% |     711 | est   -3.9 evm   -3.0 pilot  0.048 |    60B air   4.5 ovh  92% good    0.3
+ULTRA   M7      -0.5    -3.0 |     0     0     0   182   91.0% |     711 | est   -3.3 evm   -2.3 pilot  0.029 |    60B air   4.5 ovh  92% good    1.2
+ULTRA   M7      -0.5    -2.5 |     0     0     0    93   46.5% |     711 | est   -2.8 evm   -1.9 pilot  0.021 |    60B air   4.5 ovh  92% good    7.2
+ULTRA   M7      -0.5    -2.0 |     0     0     0    19    9.5% |     711 | est   -2.3 evm   -1.6 pilot  0.015 |    60B air   4.5 ovh  92% good   12.1
+ULTRA   M7      -0.5    -1.5 |     0     0     0     2    1.0% |     711 | est   -1.7 evm   -1.1 pilot  0.014 |    60B air   4.5 ovh  92% good   13.3
+ULTRA   M7      -0.5    -1.0 |     0     0     0     0    0.0% |     711 | est   -1.1 evm   -0.6 pilot  0.013 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5    -0.5 |     0     0     0     0    0.0% |     711 | est   -0.5 evm   -0.0 pilot  0.013 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     0.0 |     0     0     0     0    0.0% |     711 | est    0.2 evm    0.6 pilot  0.015 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     0.5 |     0     0     0     0    0.0% |     711 | est    0.7 evm    1.1 pilot  0.013 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     1.0 |     0     0     0     0    0.0% |     711 | est    1.2 evm    1.5 pilot  0.014 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     1.5 |     0     0     0     0    0.0% |     711 | est    1.8 evm    1.9 pilot  0.013 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     2.0 |     0     0     0     0    0.0% |     711 | est    2.4 evm    2.5 pilot  0.011 |    60B air   4.5 ovh  92% good   13.4
+ULTRA   M7      -0.5     2.5 |     0     0     0     0    0.0% |     711 | est    2.9 evm    3.0 pilot  0.014 |    60B air   4.5 ovh  92% good   13.4
+FAIL: ULTRA M7 @ -3.5 dB FER=97.5%
+FAIL: ULTRA M7 @ -3.0 dB FER=91.0%
+FAIL: ULTRA M7 @ -2.5 dB FER=46.5%
+== 3 conformance failures ==

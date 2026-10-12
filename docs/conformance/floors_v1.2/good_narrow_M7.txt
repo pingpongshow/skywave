@@ -1,0 +1,25 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M7      -7.5    -7.5 |     4     0     4    38   46.0% |     128 | est   -9.7 evm    1.0 pilot  0.069 |    60B air  22.6 ovh  92% good    1.4
+NARROW  M7      -7.5    -6.0 |     1     0     1    31   33.0% |     128 | est   -7.6 evm    2.0 pilot  0.052 |    60B air  22.6 ovh  92% good    1.8
+NARROW  M7      -7.5    -4.5 |     1     0     2    26   29.0% |     128 | est   -6.6 evm    2.5 pilot  0.072 |    60B air  22.6 ovh  92% good    1.9
+NARROW  M7      -7.5    -3.0 |     0     0     0    13   13.0% |     128 | est   -4.1 evm    4.1 pilot  0.050 |    60B air  22.6 ovh  92% good    2.3
+NARROW  M7      -7.5    -1.5 |     0     0     1     8    9.0% |     128 | est   -3.1 evm    4.8 pilot  0.076 |    60B air  22.6 ovh  92% good    2.4
+NARROW  M7      -7.5     0.0 |     0     0     0     8    8.0% |     128 | est   -1.2 evm    6.1 pilot  0.076 |    60B air  22.6 ovh  92% good    2.4
+NARROW  M7      -7.5     1.5 |     0     0     2     4    6.0% |     128 | est    1.0 evm    7.9 pilot  0.057 |    60B air  22.6 ovh  92% good    2.5
+NARROW  M7      -7.5     3.0 |     0     0     0     3    3.0% |     128 | est    1.5 evm    8.2 pilot  0.061 |    60B air  22.6 ovh  92% good    2.6
+NARROW  M7      -7.5     4.5 |     0     0     0     1    1.0% |     128 | est    3.3 evm    9.5 pilot  0.065 |    60B air  22.6 ovh  92% good    2.6
+NARROW  M7      -7.5     6.0 |     0     0     0     1    1.0% |     128 | est    5.4 evm   11.8 pilot  0.040 |    60B air  22.6 ovh  92% good    2.6
+NARROW  M7      -7.5     7.5 |     0     0     0     0    0.0% |     128 | est    7.5 evm   13.2 pilot  0.033 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5     9.0 |     0     0     0     0    0.0% |     128 | est    8.5 evm   14.4 pilot  0.035 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    10.5 |     0     0     0     0    0.0% |     128 | est    9.9 evm   15.6 pilot  0.031 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    12.0 |     0     0     0     0    0.0% |     128 | est   10.5 evm   16.3 pilot  0.036 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    13.5 |     0     0     0     0    0.0% |     128 | est   13.3 evm   19.4 pilot  0.014 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    15.0 |     0     0     1     0    1.0% |     128 | est   13.7 evm   19.7 pilot  0.016 |    60B air  22.6 ovh  92% good    2.6
+NARROW  M7      -7.5    16.5 |     0     0     0     0    0.0% |     128 | est   14.3 evm   21.0 pilot  0.012 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    18.0 |     0     0     0     0    0.0% |     128 | est   16.0 evm   22.8 pilot  0.008 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    19.5 |     0     0     0     0    0.0% |     128 | est   16.8 evm   24.7 pilot  0.008 |    60B air  22.6 ovh  92% good    2.7
+NARROW  M7      -7.5    21.0 |     0     0     0     0    0.0% |     128 | est   17.6 evm   25.3 pilot  0.007 |    60B air  22.6 ovh  92% good    2.7
+FAIL: NARROW M7 @ -7.5 dB FER=46.0%
+FAIL: NARROW M7 @ -6.0 dB FER=33.0%
+FAIL: NARROW M7 @ -4.5 dB FER=29.0%
+== 3 conformance failures ==

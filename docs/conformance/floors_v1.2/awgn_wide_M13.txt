@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M13     20.0    17.0 |     0     0     0   175   87.5% |    5870 | est   18.7 evm   16.2 pilot  0.002 |   300B air   1.1 ovh  68% good   32.7
+WIDE    M13     20.0    17.5 |     0     0     0    81   40.5% |    5870 | est   19.5 evm   16.5 pilot  0.001 |   300B air   1.1 ovh  68% good  155.5
+WIDE    M13     20.0    18.0 |     0     0     0    20   10.0% |    5870 | est   20.1 evm   16.9 pilot  0.001 |   300B air   1.1 ovh  68% good  235.2
+WIDE    M13     20.0    18.5 |     0     0     0     2    1.0% |    5870 | est   20.7 evm   17.3 pilot  0.001 |   300B air   1.1 ovh  68% good  258.7
+WIDE    M13     20.0    19.0 |     0     0     0     0    0.0% |    5870 | est   21.4 evm   17.8 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    19.5 |     0     0     0     0    0.0% |    5870 | est   22.0 evm   18.2 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    20.0 |     0     0     0     0    0.0% |    5870 | est   22.6 evm   18.7 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    20.5 |     0     0     0     0    0.0% |    5870 | est   23.1 evm   19.1 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    21.0 |     0     0     0     0    0.0% |    5870 | est   23.6 evm   19.5 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    21.5 |     0     0     0     0    0.0% |    5870 | est   24.0 evm   20.0 pilot  0.001 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    22.0 |     0     0     0     0    0.0% |    5870 | est   24.4 evm   20.4 pilot  0.000 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    22.5 |     0     0     0     0    0.0% |    5870 | est   24.8 evm   20.8 pilot  0.000 |   300B air   1.1 ovh  68% good  261.3
+WIDE    M13     20.0    23.0 |     0     0     0     0    0.0% |    5870 | est   25.2 evm   21.3 pilot  0.000 |   300B air   1.1 ovh  68% good  261.3
+FAIL: WIDE M13 @ 17.0 dB FER=87.5%
+FAIL: WIDE M13 @ 17.5 dB FER=40.5%
+== 2 conformance failures ==

@@ -8,6 +8,7 @@
 //   bertool [--trials N] [--offsets "0,3,10"] [--families wide,narrow]
 //           [--modes 4,8,13] [--preset good|moderate|poor|awgn]
 //           [--csv path] [--seed S] [--css] [--cfo HZ] [--drift HZ_PER_S]
+//           [--base awgn]
 //
 // --css sweeps the CSS deep tier (M0-M3) instead of the OFDM ladder:
 // aligned modem-level FER (no PHY sync - that is ROADMAP 6.2), offsets
@@ -60,6 +61,12 @@ struct Args {
   // fading floor, the input to any frame-length adaptation policy.
   int payloadLen = 0;
   Band band = Band::Hf;
+  // --base awgn: offsets are relative to the AWGN floor whatever the
+  // preset, and kFadingNA modes are swept too (floor-table measurement).
+  bool baseAwgn = false;
+  // --table moderate|poor: fading presets gate (and offset) against the
+  // class tables instead of the designated kFadingFloors.
+  std::string table = "designated";
   double cfo = 0.0;    // static channel CFO, Hz
   double drift = 0.0;  // linear CFO drift, Hz/s
 };
@@ -74,6 +81,12 @@ std::vector<std::string> split(const std::string& s, char d) {
     p = q + 1;
   }
   return out;
+}
+
+double tableFloorDb(const std::string& table, Family f, int mode) {
+  if (table == "moderate") return moderateFloorDb(f, mode);
+  if (table == "poor") return poorFloorDb(f, mode);
+  return fadingFloorDb(f, mode);
 }
 
 ChansimParams presetParams(const std::string& name) {
@@ -218,6 +231,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
     else if (!strcmp(argv[i], "--css")) a.css = true;
     else if (!strcmp(argv[i], "--cfo")) a.cfo = atof(need("--cfo").c_str());
+    else if (!strcmp(argv[i], "--base")) a.baseAwgn = need("--base") == "awgn";
+    else if (!strcmp(argv[i], "--table")) a.table = need("--table");
     else if (!strcmp(argv[i], "--drift")) a.drift = atof(need("--drift").c_str());
     else if (!strcmp(argv[i], "--css-frames")) a.cssFrames = true;
     else if (!strcmp(argv[i], "--css-hdr")) a.cssHdrCopies = atoi(need("--css-hdr").c_str());
@@ -272,9 +287,9 @@ int main(int argc, char** argv) {
       // AWGN reference for --preset awgn, the measured fading floor for
       // the fading presets (WAVEFORM.md fading conformance annex).
       const double floor =
-          a.preset == "awgn"
+          a.preset == "awgn" || a.baseAwgn
               ? (cssMode ? cssFloorDb(fam, mode) : floorDb(fam, mode))
-              : fadingFloorDb(fam, mode);
+              : tableFloorDb(a.table, fam, mode);
       if (floor >= 90.0) continue;  // kFadingNA: no fading conformance
       const bool robust = mode <= 7;
       const size_t payloadLen =
@@ -418,7 +433,7 @@ int main(int argc, char** argv) {
     const double base =
         a.preset == "awgn"
             ? (cssR ? cssFloorDb(r.fam, r.mode) : floorDb(r.fam, r.mode))
-            : fadingFloorDb(r.fam, r.mode);
+            : tableFloorDb(a.table, r.fam, r.mode);
     double off = r.snrDb - base;
     // AWGN decays as a coding waterfall (steep); fading FER is outage-
     // limited and falls off far more gently above the floor. Gates carry

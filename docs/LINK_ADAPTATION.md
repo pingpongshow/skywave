@@ -299,20 +299,22 @@ than being wrong in one direction. `Unknown` keeps the fading floors.
 figures — AWGN 0.003–0.025, Good 0.010–0.057, Moderate 0.38–0.55 — were
 ~0.7/SNR plus motion and belonged to an earlier tracker.)
 
-Consumption: `Static` switches `Amc::operatingFloorDb()` to the AWGN
-reference table (measured effect: static ramp 0.39 → 0.67 of its oracle);
-`Severe` caps the ladder at `severeMaxMode` (M7, the robust tier);
-`Moderate` can cap it at `moderateMaxMode` (M8 when enabled; **off by
-default**, 13) — the fast tier's fading floors are measured on CCIR Good
-(WAVEFORM annex) and it fails 25–75% on Moderate at any SNR (bertool),
-while M8 still closes at 6%; measured with the cap on, the churn seed
-spread was a wash and the coupled schedule lost 8.8 KB and its pass, so
-the verdict is recorded (STATUS) but not acted on until a seed spread
-shows a benefit. Both caps
-act on eligibility only; a verdict that arrives while the ladder sits
-above its cap leaves the failure rules to bring it down (a forced
+Consumption (v1.2.0): `Amc::operatingFloorDb()` selects the table of the
+class - `Static` the AWGN reference (measured effect: static ramp
+0.39 → 0.67 of its oracle), `Moderate` every mode measured on CCIR
+Moderate (`kModerateFloors`), `Severe` every mode measured on CCIR Poor
+(`kPoorFloors`), `Fading`/`Unknown` the designated table. On the
+Moderate and Severe tables `kFadingNA` is a measurement - the mode never
+closes on that channel - and makes it ineligible (on the designated
+table it keeps its "static-only, probe-gated" meaning). Until v1.1.0 the
+classes acted through hard caps (`severeMaxMode` M7, `moderateMaxMode`
+M8) encoding "the fast tier never closes there"; the v1.2.0 receiver
+closes WIDE M10 on Poor and M13 on Moderate, so the caps are now
+operator overrides defaulting off (13). Classes still act on eligibility
+only; a verdict that arrives while the ladder sits above an ineligible
+rung leaves the failure rules to bring it down (a forced
 one-rung-per-dwell walk-down was measured and withdrawn: under ISI the
 Severe verdict marched M10 → M6 in 18 s and starved CPMODE AUTO of
-decoded frames). The Moderate threshold is provisional: in the two-modem
-churn the verdict was driven by single pilot spikes through the 0.15
-EMA, and its cap did not change the soak outcomes.
+decoded frames). The pilot thresholds are per family (narrow bands read
+a larger excess on the same channel) and were re-measured for the
+v1.2.0 tracker (chanclass.hpp).

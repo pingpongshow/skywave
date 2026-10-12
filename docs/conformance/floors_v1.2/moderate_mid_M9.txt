@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M9       1.5     1.5 |     1     0     7    82   90.0% |     849 | est   -2.7 evm    5.5 pilot  0.053 |   300B air   3.8 ovh  33% good    7.9
+MID     M9       1.5     3.0 |     0     0     2    77   79.0% |     849 | est   -1.5 evm    7.5 pilot  0.068 |   300B air   3.8 ovh  33% good   16.5
+MID     M9       1.5     4.5 |     0     0     1    50   51.0% |     849 | est    0.8 evm    7.7 pilot  0.066 |   300B air   3.8 ovh  33% good   38.5
+MID     M9       1.5     6.0 |     0     0     1    33   34.0% |     849 | est    2.9 evm    9.5 pilot  0.047 |   300B air   3.8 ovh  33% good   51.9
+MID     M9       1.5     7.5 |     0     0     0    14   14.0% |     849 | est    5.0 evm   10.8 pilot  0.043 |   300B air   3.8 ovh  33% good   67.6
+MID     M9       1.5     9.0 |     0     0     0     8    8.0% |     849 | est    6.6 evm   11.5 pilot  0.037 |   300B air   3.8 ovh  33% good   72.3
+MID     M9       1.5    10.5 |     1     0     0     5    6.0% |     849 | est    8.4 evm   13.6 pilot  0.032 |   300B air   3.8 ovh  33% good   73.9
+MID     M9       1.5    12.0 |     0     0     0     4    4.0% |     849 | est   10.1 evm   14.9 pilot  0.031 |   300B air   3.8 ovh  33% good   75.5
+MID     M9       1.5    13.5 |     0     0     0     5    5.0% |     849 | est   11.7 evm   15.9 pilot  0.025 |   300B air   3.8 ovh  33% good   74.7
+MID     M9       1.5    15.0 |     0     0     0     0    0.0% |     849 | est   13.1 evm   17.3 pilot  0.020 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    16.5 |     0     0     0     1    1.0% |     849 | est   13.9 evm   18.3 pilot  0.022 |   300B air   3.8 ovh  33% good   77.8
+MID     M9       1.5    18.0 |     0     0     0     0    0.0% |     849 | est   15.8 evm   20.3 pilot  0.020 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    19.5 |     0     0     0     0    0.0% |     849 | est   16.7 evm   21.1 pilot  0.016 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    21.0 |     0     0     0     0    0.0% |     849 | est   17.5 evm   22.7 pilot  0.012 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    22.5 |     0     0     0     0    0.0% |     849 | est   18.3 evm   23.3 pilot  0.013 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    24.0 |     0     0     0     0    0.0% |     849 | est   19.3 evm   25.5 pilot  0.010 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    25.5 |     0     0     0     0    0.0% |     849 | est   19.0 evm   26.0 pilot  0.012 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    27.0 |     0     0     0     0    0.0% |     849 | est   19.9 evm   27.3 pilot  0.010 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    28.5 |     0     0     0     0    0.0% |     849 | est   20.2 evm   28.6 pilot  0.009 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5    30.0 |     0     0     0     0    0.0% |     849 | est   20.1 evm   29.8 pilot  0.009 |   300B air   3.8 ovh  33% good   78.6
+FAIL: MID M9 @ 1.5 dB FER=90.0%
+FAIL: MID M9 @ 3.0 dB FER=79.0%
+FAIL: MID M9 @ 4.5 dB FER=51.0%
+FAIL: MID M9 @ 6.0 dB FER=34.0%
+== 4 conformance failures ==

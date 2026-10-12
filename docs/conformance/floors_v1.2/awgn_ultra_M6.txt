@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M6      -3.0    -6.0 |     0     0     0   179   89.5% |     356 | est   -7.0 evm   -5.6 pilot  0.043 |    60B air   4.8 ovh  86% good    1.3
+ULTRA   M6      -3.0    -5.5 |     0     0     0   109   54.5% |     356 | est   -6.4 evm   -5.2 pilot  0.031 |    60B air   4.8 ovh  86% good    5.7
+ULTRA   M6      -3.0    -5.0 |     0     0     0    28   14.0% |     356 | est   -5.7 evm   -4.7 pilot  0.027 |    60B air   4.8 ovh  86% good   10.7
+ULTRA   M6      -3.0    -4.5 |     0     0     0     1    0.5% |     356 | est   -5.1 evm   -4.2 pilot  0.017 |    60B air   4.8 ovh  86% good   12.4
+ULTRA   M6      -3.0    -4.0 |     0     0     0     0    0.0% |     356 | est   -4.6 evm   -3.8 pilot  0.014 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -3.5 |     0     0     0     0    0.0% |     356 | est   -3.9 evm   -3.2 pilot  0.017 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -3.0 |     0     0     0     0    0.0% |     356 | est   -3.4 evm   -2.6 pilot  0.015 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -2.5 |     0     0     0     0    0.0% |     356 | est   -2.8 evm   -2.2 pilot  0.013 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -2.0 |     0     0     0     0    0.0% |     356 | est   -2.2 evm   -1.6 pilot  0.010 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -1.5 |     0     0     0     0    0.0% |     356 | est   -1.6 evm   -1.1 pilot  0.014 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -1.0 |     0     0     0     0    0.0% |     356 | est   -1.0 evm   -0.5 pilot  0.014 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0    -0.5 |     0     0     0     0    0.0% |     356 | est   -0.4 evm    0.0 pilot  0.012 |    60B air   4.8 ovh  86% good   12.5
+ULTRA   M6      -3.0     0.0 |     0     0     0     0    0.0% |     356 | est    0.0 evm    0.4 pilot  0.015 |    60B air   4.8 ovh  86% good   12.5
+FAIL: ULTRA M6 @ -6.0 dB FER=89.5%
+FAIL: ULTRA M6 @ -5.5 dB FER=54.5%
+FAIL: ULTRA M6 @ -5.0 dB FER=14.0%
+== 3 conformance failures ==

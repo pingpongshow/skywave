@@ -1,0 +1,23 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M5      -9.5    -9.5 |     3     1     8    21   33.0% |      64 | est  -12.5 evm   -6.7 pilot  0.067 |    60B air  14.5 ovh  74% good    2.8
+MID     M5      -9.5    -8.0 |     0     1     5    11   17.0% |      64 | est  -11.4 evm   -5.8 pilot  0.075 |    60B air  14.5 ovh  74% good    3.4
+MID     M5      -9.5    -6.5 |     0     0     2     5    7.0% |      64 | est   -9.6 evm   -4.4 pilot  0.086 |    60B air  14.5 ovh  74% good    3.8
+MID     M5      -9.5    -5.0 |     0     0     1     0    1.0% |      64 | est   -7.3 evm   -2.2 pilot  0.067 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    -3.5 |     1     0     0     0    1.0% |      64 | est   -5.1 evm   -0.1 pilot  0.069 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    -2.0 |     0     0     0     0    0.0% |      64 | est   -4.0 evm    0.7 pilot  0.055 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    -0.5 |     1     0     0     0    1.0% |      64 | est   -1.7 evm    2.7 pilot  0.045 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     1.0 |     0     0     0     0    0.0% |      64 | est   -0.3 evm    3.9 pilot  0.058 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     2.5 |     0     0     0     0    0.0% |      64 | est    1.6 evm    5.3 pilot  0.044 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     4.0 |     0     0     0     0    0.0% |      64 | est    4.4 evm    7.8 pilot  0.029 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     5.5 |     0     0     0     0    0.0% |      64 | est    5.3 evm    8.6 pilot  0.035 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     7.0 |     0     0     0     0    0.0% |      64 | est    7.1 evm    9.7 pilot  0.032 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5     8.5 |     0     0     0     0    0.0% |      64 | est    8.7 evm   10.7 pilot  0.025 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    10.0 |     0     0     0     0    0.0% |      64 | est   10.7 evm   12.2 pilot  0.017 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    11.5 |     0     0     0     0    0.0% |      64 | est   11.5 evm   12.8 pilot  0.019 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    13.0 |     0     0     0     0    0.0% |      64 | est   13.9 evm   15.2 pilot  0.011 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    14.5 |     0     0     0     0    0.0% |      64 | est   15.2 evm   16.9 pilot  0.012 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    16.0 |     0     0     0     0    0.0% |      64 | est   15.9 evm   17.5 pilot  0.011 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    17.5 |     0     0     0     0    0.0% |      64 | est   16.3 evm   17.9 pilot  0.011 |    60B air  14.5 ovh  74% good    4.1
+MID     M5      -9.5    19.0 |     0     0     0     0    0.0% |      64 | est   17.1 evm   19.4 pilot  0.012 |    60B air  14.5 ovh  74% good    4.1
+FAIL: MID M5 @ -9.5 dB FER=33.0%
+== 1 conformance failures ==

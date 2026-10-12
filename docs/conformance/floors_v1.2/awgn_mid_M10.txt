@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M10      4.5     1.5 |     0     0     0   200  100.0% |    1467 | est    0.9 evm  -99.0 pilot -1.000 |   300B air   2.7 ovh  46% good    0.0
+MID     M10      4.5     2.0 |     0     0     0   181   90.5% |    1467 | est    1.4 evm    6.2 pilot  0.019 |   300B air   2.7 ovh  46% good   10.4
+MID     M10      4.5     2.5 |     0     0     0    54   27.0% |    1467 | est    1.9 evm    6.6 pilot  0.011 |   300B air   2.7 ovh  46% good   79.8
+MID     M10      4.5     3.0 |     0     0     0     9    4.5% |    1467 | est    2.5 evm    7.1 pilot  0.011 |   300B air   2.7 ovh  46% good  104.5
+MID     M10      4.5     3.5 |     0     0     0     2    1.0% |    1467 | est    3.1 evm    7.6 pilot  0.010 |   300B air   2.7 ovh  46% good  108.3
+MID     M10      4.5     4.0 |     0     0     0     0    0.0% |    1467 | est    3.6 evm    8.1 pilot  0.010 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     4.5 |     0     0     0     0    0.0% |    1467 | est    4.2 evm    8.6 pilot  0.010 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     5.0 |     0     0     0     0    0.0% |    1467 | est    4.8 evm    9.0 pilot  0.009 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     5.5 |     0     0     0     0    0.0% |    1467 | est    5.3 evm    9.5 pilot  0.009 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     6.0 |     0     0     0     0    0.0% |    1467 | est    6.0 evm   10.1 pilot  0.009 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     6.5 |     0     0     0     0    0.0% |    1467 | est    6.5 evm   10.5 pilot  0.009 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     7.0 |     0     0     0     0    0.0% |    1467 | est    7.1 evm   11.0 pilot  0.008 |   300B air   2.7 ovh  46% good  109.4
+MID     M10      4.5     7.5 |     0     0     0     0    0.0% |    1467 | est    7.7 evm   11.4 pilot  0.008 |   300B air   2.7 ovh  46% good  109.4
+FAIL: MID M10 @ 1.5 dB FER=100.0%
+FAIL: MID M10 @ 2.0 dB FER=90.5%
+FAIL: MID M10 @ 2.5 dB FER=27.0%
+== 3 conformance failures ==

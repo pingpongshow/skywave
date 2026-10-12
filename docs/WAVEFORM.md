@@ -165,16 +165,16 @@ ordered strictly by robustness.
 
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
-| `M4` | 257 | 128 | −8.0 dB |
-| `M5` | 514 | 257 | −5.5 dB |
-| `M6` | 1027 | 514 | −3.0 dB |
-| `M7` | 2054 | 1027 | −0.5 dB |
-| `M8` | 4109 | 2054 | +2.5 dB |
-| `M9` | 4109 | 3082 | +5.5 dB |
-| `M10` | 8218 | 4109 | +8.5 dB |
-| `M11` | 8218 | 6163 | +12.5 dB |
-| `M12` | 12326 | 8218 | +16.5 dB |
-| `M13` | 12326 | 10272 | +20.5 dB |
+| `M4` | 257 | 128 | −11.0 dB |
+| `M5` | 514 | 257 | −8.5 dB |
+| `M6` | 1027 | 514 | −5.5 dB |
+| `M7` | 2054 | 1027 | −3.0 dB |
+| `M8` | 4109 | 2054 | +1.0 dB |
+| `M9` | 4109 | 3082 | +3.5 dB |
+| `M10` | 8218 | 4109 | +6.0 dB |
+| `M11` | 8218 | 6163 | +10.0 dB |
+| `M12` | 12326 | 8218 | +14.0 dB |
+| `M13` | 12326 | 10272 | +17.5 dB |
 
 (ULTRA floors sit 0.5 dB above WIDE's at each rung — same Eb/N0, more bits
 per second in the 3 kHz reference bandwidth.)
@@ -183,7 +183,9 @@ per second in the 3 kHz reference bandwidth.)
 
 NET = post-FEC payload rate; GROSS = uncoded rate. Floors are the design
 entry SNR on **AWGN** (3 kHz noise reference, ≤10% FER target) and are
-the `kFloors` table in `core/constants.hpp`. The CCIR fading floors are a
+the `kFloors` table in `core/constants.hpp` (re-measured for v1.2.0,
+1.5–3 dB below the v1.1.0 values; campaign in
+`docs/conformance/floors_v1.2/`). The CCIR fading floors are a
 separate and much higher table (`kFadingFloors`, "Measured FADING floors"
 below) — the AMC keys off those by default. AMC adds hysteresis margins
 on top of whichever table is active
@@ -196,46 +198,46 @@ without re-running `bertool` breaks it.
 
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
-| `M4` | 228 | 114 | −8.5 dB |
-| `M5` | 457 | 228 | −6.0 dB |
-| `M6` | 913 | 457 | −3.5 dB |
-| `M7` | 1826 | 913 | −1.0 dB |
-| `M8` | 3652 | 1826 | +2.0 dB |
-| `M9` | 3652 | 2739 | +5.0 dB |
-| `M10` | 7305 | 3652 | +8.0 dB |
-| `M11` | 7305 | 5478 | +12.0 dB |
-| `M12` | 10957 | 7305 | +16.0 dB |
-| `M13` | 10957 | 9131 | +20.0 dB |
+| `M4` | 228 | 114 | −11.0 dB |
+| `M5` | 457 | 228 | −8.5 dB |
+| `M6` | 913 | 457 | −6.0 dB |
+| `M7` | 1826 | 913 | −3.0 dB |
+| `M8` | 3652 | 1826 | +0.5 dB |
+| `M9` | 3652 | 2739 | +3.0 dB |
+| `M10` | 7305 | 3652 | +5.5 dB |
+| `M11` | 7305 | 5478 | +9.5 dB |
+| `M12` | 10957 | 7305 | +13.5 dB |
+| `M13` | 10957 | 9131 | +17.0 dB |
 
 ### MID Rates and Floors
 
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
-| `M4` | 96 | 48 | −12.0 dB |
-| `M5` | 193 | 96 | −9.5 dB |
-| `M6` | 385 | 193 | −7.0 dB |
-| `M7` | 770 | 385 | −4.5 dB |
-| `M8` | 1540 | 770 | −1.5 dB |
-| `M9` | 1540 | 1155 | +1.5 dB |
-| `M10` | 3079 | 1540 | +4.5 dB |
-| `M11` | 3079 | 2309 | +8.5 dB |
-| `M12` | 4619 | 3079 | +12.5 dB |
-| `M13` | 4619 | 3849 | +16.5 dB |
+| `M4` | 96 | 48 | −15.0 dB |
+| `M5` | 193 | 96 | −13.0 dB |
+| `M6` | 385 | 193 | −10.0 dB |
+| `M7` | 770 | 385 | −7.5 dB |
+| `M8` | 1540 | 770 | −3.5 dB |
+| `M9` | 1540 | 1155 | −0.5 dB |
+| `M10` | 3079 | 1540 | +2.0 dB |
+| `M11` | 3079 | 2309 | +6.0 dB |
+| `M12` | 4619 | 3079 | +9.5 dB |
+| `M13` | 4619 | 3849 | +13.5 dB |
 
 ### NARROW Rates and Floors
 
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
-| `M4` | 46 | 23 | −15.0 dB * |
-| `M5` | 93 | 46 | −12.5 dB * |
-| `M6` | 186 | 93 | −10.0 dB |
-| `M7` | 371 | 186 | −7.5 dB |
-| `M8` | 742 | 371 | −3.5 dB |
-| `M9` | 742 | 557 | +0.5 dB |
-| `M10` | 1484 | 742 | +1.5 dB |
-| `M11` | 1484 | 1113 | +5.5 dB |
-| `M12` | 2226 | 1484 | +9.5 dB |
-| `M13` | 2226 | 1855 | +13.5 dB |
+| `M4` | 46 | 23 | −17.5 dB |
+| `M5` | 93 | 46 | −16.0 dB |
+| `M6` | 186 | 93 | −13.0 dB |
+| `M7` | 371 | 186 | −10.5 dB |
+| `M8` | 742 | 371 | −6.5 dB |
+| `M9` | 742 | 557 | −3.5 dB |
+| `M10` | 1484 | 742 | −1.0 dB |
+| `M11` | 1484 | 1113 | +2.5 dB |
+| `M12` | 2226 | 1484 | +6.5 dB |
+| `M13` | 2226 | 1855 | +10.5 dB |
 
 `*` Narrow-family decode floors below ~−12 dB exceed the chirp acquisition
 floor; in practice connection establishment limits `NARROW` to ~−12 dB, with
@@ -596,8 +598,29 @@ therefore separate, **measured** values (`kFadingFloors` in
 - **NARROW, all modes:** CCIR Good — a 500 Hz band sees a 2-path channel
   as flat Rayleigh (no frequency diversity); Moderate-Doppler operation
   relies on link-layer ARQ
-- **WIDE M13 and NARROW M13:** no fading conformance point (near-flat
-  outage tail); AWGN/near-static only, gated by AMC
+- **NARROW M13:** no designated fading point below 30 dB; since v1.2.0
+  WIDE, MID and ULTRA M13 have one (25.0 / 23.0 / 26.0 dB)
+
+**Per-class tables (v1.2.0).** Every mode is also measured on CCIR
+Moderate (`kModerateFloors`) and CCIR Poor (`kPoorFloors`); the AMC uses
+the table of the channel class the classifier reports (LINK_ADAPTATION.md)
+instead of the v1.1.0 hard caps. On those tables `kFadingNA` means the
+mode never reaches 15% FER on that channel inside the measured range
+(up to AWGN floor + 28.5 dB) and is ineligible there:
+
+| Family | Moderate M4…M13 (dB) | Poor M4…M13 (dB) |
+|---|---|---|
+| WIDE | −5.5 −3.0 −0.5 4.0 10.0 13.5 14.0 19.0 22.0 28.5 | −4.0 −2.5 0.5 2.0 11.5 19.0 NA NA NA NA |
+| MID | −9.0 −7.5 −5.0 −2.5 4.5 7.5 10.5 14.5 17.0 24.5 | −8.0 −6.5 −4.5 0.0 NA NA NA NA NA NA |
+| NARROW | −10.0 −9.5 −6.5 −5.0 3.5 6.5 8.5 13.0 16.0 NA | −10.0 −9.0 −7.0 −5.0 10.5 NA NA NA NA NA |
+| ULTRA | −5.0 −2.5 1.0 2.5 8.5 12.5 15.0 19.0 22.5 26.5 | −4.0 −1.5 0.0 3.5 12.5 20.0 NA NA NA NA |
+
+All fading tables use FER ≤ 15% at the floor (the conformance base),
+measured with `tools/floor_campaign.sh` (100 trials per 1.5 dB) and
+derived by `tools/floor_tables.py`, which also requires the measured
+curve to meet the sweep's gate levels at floor+1 and floor+3 without
+statistical slack (an outage-limited plateau, like M10 on Poor,
+otherwise yields a floor from one lucky point).
 
 Targets at the fading floors: ≤ 10% FER at floor, ≤ ~10% at floor + 3
 (outage decays gently, unlike the AWGN waterfall), both with one-sided

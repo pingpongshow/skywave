@@ -16,20 +16,16 @@
 namespace skw {
 
 struct AmcConfig {
-  // Highest mode allowed once the channel is classified SEVERE
-  // (CCIR-Poor-like). Measured 2026-08-17: on Poor, MID closes only
-  // M4-M6 and NARROW only M4-M7, while WIDE never closes at any mode.
-  // The robust tier is the only thing that works, so promoting past it
-  // is guaranteed waste.
-  uint8_t severeMaxMode = 7;
-  // Highest mode once the channel is classified MODERATE (CCIR-Moderate
-  // Doppler): the fast tier's fading floors are measured on CCIR Good
-  // (WAVEFORM annex) and it fails 25-75% on Moderate at any SNR; M8 is
-  // the last rung that closes there (bertool: 6% FER at 20 dB). With
-  // the first, EMA-driven verdict the cap was a wash on the seed spread
-  // and cost the coupled schedule 8.8 KB; re-enabled with the median
-  // verdict (chanclass.hpp moderatePilotMin) and re-measured.
-  uint8_t moderateMaxMode = 8;
+  // Optional hard caps per channel class (operator overrides; 13 = off).
+  // Until v1.2.0 these encoded measurements - Severe at M7 ("nothing
+  // above the robust tier closes on CCIR Poor") and Moderate at M8 ("the
+  // fast tier fails 25-75% on Moderate at any SNR"). The v1.2.0 receiver
+  // closes WIDE M10 on Poor and M13 on Moderate, so the classes now
+  // select MEASURED tables instead (constants.hpp kModerateFloors /
+  // kPoorFloors, Amc::operatingFloorDb), where kFadingNA marks the modes
+  // that genuinely never close on that channel.
+  uint8_t severeMaxMode = 13;
+  uint8_t moderateMaxMode = 13;
   Family family = Family::Wide;
   uint8_t maxMode = 13;
   // Bottom rung: kFirstMode (M4) normally, 0 when the session

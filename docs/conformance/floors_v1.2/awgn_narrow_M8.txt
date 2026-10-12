@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M8      -3.5    -6.5 |     0     0    30   160   95.0% |     352 | est   -7.5 evm    1.2 pilot  0.023 |   300B air   8.4 ovh  27% good    1.8
+NARROW  M8      -3.5    -6.0 |     0     0    26    45   35.5% |     352 | est   -6.9 evm    1.2 pilot  0.030 |   300B air   8.4 ovh  27% good   23.0
+NARROW  M8      -3.5    -5.5 |     0     0    12     8   10.0% |     352 | est   -6.4 evm    1.7 pilot  0.026 |   300B air   8.4 ovh  27% good   32.1
+NARROW  M8      -3.5    -5.0 |     0     0    12     1    6.5% |     352 | est   -5.9 evm    2.2 pilot  0.030 |   300B air   8.4 ovh  27% good   33.3
+NARROW  M8      -3.5    -4.5 |     0     0    10     0    5.0% |     352 | est   -5.5 evm    2.6 pilot  0.029 |   300B air   8.4 ovh  27% good   33.9
+NARROW  M8      -3.5    -4.0 |     0     0     3     0    1.5% |     352 | est   -4.6 evm    3.3 pilot  0.023 |   300B air   8.4 ovh  27% good   35.1
+NARROW  M8      -3.5    -3.5 |     0     0     3     0    1.5% |     352 | est   -4.2 evm    3.7 pilot  0.022 |   300B air   8.4 ovh  27% good   35.1
+NARROW  M8      -3.5    -3.0 |     0     0     1     0    0.5% |     352 | est   -3.6 evm    4.2 pilot  0.022 |   300B air   8.4 ovh  27% good   35.5
+NARROW  M8      -3.5    -2.5 |     0     0     0     0    0.0% |     352 | est   -3.1 evm    4.8 pilot  0.022 |   300B air   8.4 ovh  27% good   35.6
+NARROW  M8      -3.5    -2.0 |     0     0     1     0    0.5% |     352 | est   -2.5 evm    5.2 pilot  0.022 |   300B air   8.4 ovh  27% good   35.5
+NARROW  M8      -3.5    -1.5 |     0     0     0     0    0.0% |     352 | est   -2.1 evm    5.7 pilot  0.023 |   300B air   8.4 ovh  27% good   35.6
+NARROW  M8      -3.5    -1.0 |     0     0     1     0    0.5% |     352 | est   -1.4 evm    6.2 pilot  0.019 |   300B air   8.4 ovh  27% good   35.5
+NARROW  M8      -3.5    -0.5 |     0     0     0     0    0.0% |     352 | est   -0.8 evm    6.7 pilot  0.017 |   300B air   8.4 ovh  27% good   35.6
+FAIL: NARROW M8 @ -6.5 dB FER=95.0%
+FAIL: NARROW M8 @ -6.0 dB FER=35.5%
+== 2 conformance failures ==

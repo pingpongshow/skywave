@@ -1,0 +1,18 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M10      8.0     5.0 |     0     0     0   200  100.0% |    3354 | est    4.3 evm  -99.0 pilot -1.000 |   300B air   1.4 ovh  55% good    0.0
+WIDE    M10      8.0     5.5 |     0     0     0   194   97.0% |    3354 | est    4.9 evm    6.2 pilot  0.005 |   300B air   1.4 ovh  55% good    6.3
+WIDE    M10      8.0     6.0 |     0     0     0    94   47.0% |    3354 | est    5.5 evm    6.5 pilot  0.008 |   300B air   1.4 ovh  55% good  111.7
+WIDE    M10      8.0     6.5 |     0     0     0    10    5.0% |    3354 | est    6.1 evm    6.9 pilot  0.005 |   300B air   1.4 ovh  55% good  200.1
+WIDE    M10      8.0     7.0 |     0     0     0     2    1.0% |    3354 | est    6.6 evm    7.4 pilot  0.005 |   300B air   1.4 ovh  55% good  208.6
+WIDE    M10      8.0     7.5 |     0     0     0     0    0.0% |    3354 | est    7.2 evm    7.9 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0     8.0 |     0     0     0     0    0.0% |    3354 | est    7.7 evm    8.3 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0     8.5 |     0     0     0     0    0.0% |    3354 | est    8.3 evm    8.8 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0     9.0 |     0     0     0     0    0.0% |    3354 | est    8.9 evm    9.3 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0     9.5 |     0     0     0     0    0.0% |    3354 | est    9.5 evm    9.8 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    10.0 |     0     0     0     0    0.0% |    3354 | est   10.1 evm   10.3 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    10.5 |     0     0     0     0    0.0% |    3354 | est   10.7 evm   10.8 pilot  0.004 |   300B air   1.4 ovh  55% good  210.7
+WIDE    M10      8.0    11.0 |     0     0     0     0    0.0% |    3354 | est   11.3 evm   11.2 pilot  0.005 |   300B air   1.4 ovh  55% good  210.7
+FAIL: WIDE M10 @ 5.0 dB FER=100.0%
+FAIL: WIDE M10 @ 5.5 dB FER=97.0%
+FAIL: WIDE M10 @ 6.0 dB FER=47.0%
+== 3 conformance failures ==

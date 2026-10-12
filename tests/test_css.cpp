@@ -157,14 +157,16 @@ TEST_CASE(css_payload_clean_channel_all_modes_families) {
 
 TEST_CASE(css_cfo_tolerance) {
   // Non-coherent dechirp: a CFO shifts the post-FFT tone by cfo/binHz
-  // bins. WIDE SF8 bins are ~9.4 Hz apart; the connected-preamble capture
-  // spec (kCfoCaptureConnHz = 5 Hz) must decode after gray+Hamming absorb
-  // the occasional adjacent-bin hit. Test at moderate SNR, both signs.
-  for (double cfo : {-kCfoCaptureConnHz / 2.0, 2.0, kCfoCaptureConnHz / 2.0}) {
+  // bins. WIDE SF8 bins are ~9.4 Hz apart; a residual of a few Hz (what
+  // the preamble estimate leaves at this aligned modem layer) must decode
+  // after gray+Hamming absorb the occasional adjacent-bin hit. Test at
+  // moderate SNR, both signs.
+  constexpr double kResidualHz = 5.0;
+  for (double cfo : {-kResidualHz / 2.0, 2.0, kResidualHz / 2.0}) {
     CHECK(cssTrial(Family::Wide, 0, 0.0, 4242, 24, cfo));
   }
-  // SF5 bins are 8x wider; full capture-range CFO is harmless.
-  CHECK(cssTrial(Family::Wide, 3, 5.0, 777, 24, kCfoCaptureConnHz));
+  // SF5 bins are 8x wider; the full residual is harmless.
+  CHECK(cssTrial(Family::Wide, 3, 5.0, 777, 24, kResidualHz));
 }
 
 // --- ROADMAP 6.1 gate: FER vs SNR down to -14 dB -----------------------------

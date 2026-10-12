@@ -92,10 +92,14 @@ double Amc::operatingFloorDb(uint8_t k) const {
   // but costs a measured 61% of achievable throughput on static paths
   // (ROADMAP 3.11). kFadingNA rungs become ordinary rungs here - that
   // sentinel means "no fading point", not "unusable".
-  if (chanClass_ == ChannelClass::Static) {
-    return floorDb(cfg_.family, int(k));
+  switch (chanClass_) {
+    case ChannelClass::Static: return floorDb(cfg_.family, int(k));
+    // The class-specific tables (v1.2.0): every mode measured on the
+    // channel the classifier sees. kFadingNA there = never closes.
+    case ChannelClass::Moderate: return moderateFloorDb(cfg_.family, int(k));
+    case ChannelClass::Severe: return poorFloorDb(cfg_.family, int(k));
+    default: return fadingFloorDb(cfg_.family, int(k));
   }
-  return fadingFloorDb(cfg_.family, int(k));
 }
 
 // Next rung DOWN that can actually operate on a fading channel:
@@ -118,8 +122,7 @@ uint8_t Amc::demoteTarget(int steps) const {
 
 bool Amc::modeEligible(uint8_t k, double effSnr,
                        bool assumeProbeClean) const {
-  // SEVERE: nothing above the robust tier closes on a Poor-class
-  // channel at any SNR, so the ladder simply stops there.
+  // Optional operator caps (default off - the class tables decide).
   if (chanClass_ == ChannelClass::Severe && k > cfg_.severeMaxMode) {
     return false;
   }
@@ -128,6 +131,12 @@ bool Amc::modeEligible(uint8_t k, double effSnr,
   }
   const bool probeOk = probeClean_ || assumeProbeClean;
   const double floor = operatingFloorDb(k);
+  // On a MODERATE or SEVERE channel kFadingNA is a measurement - the mode
+  // never closes there - not the designated table's "static-only".
+  if (floor >= 90.0 && (chanClass_ == ChannelClass::Moderate ||
+                        chanClass_ == ChannelClass::Severe)) {
+    return false;
+  }
   if (floor >= 90.0) {
     // Near-static-only mode (kFadingNA): clean probe + AWGN-floor margin.
     if (!probeOk) return false;

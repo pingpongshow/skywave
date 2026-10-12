@@ -2846,7 +2846,7 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   if (res && fsm_.state() == FsmState::Connected &&
       (res->payloadOk || finalAttempt)) {
     chanClass_.onFrame(res->snrDb, res->delaySpreadMs, res->pilotStability,
-                       res->payloadOk);
+                       res->payloadOk, cfg_.policy.family);
     static const bool clsDbg = getenv("SKW_CHANCLASS_DEBUG") != nullptr;
     if (clsDbg) {
       // Per-frame classifier input: what the Moderate statistic has to

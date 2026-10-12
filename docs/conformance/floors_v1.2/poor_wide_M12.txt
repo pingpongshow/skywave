@@ -1,0 +1,31 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M12     16.0    16.0 |     0     0     0    85   85.0% |    5870 | est    5.5 evm   16.9 pilot  0.021 |   300B air   1.1 ovh  68% good   39.2
+WIDE    M12     16.0    17.5 |     0     0     0    75   75.0% |    5870 | est    6.5 evm   16.3 pilot  0.028 |   300B air   1.1 ovh  68% good   65.3
+WIDE    M12     16.0    19.0 |     0     0     0    68   68.0% |    5870 | est    6.7 evm   17.8 pilot  0.024 |   300B air   1.1 ovh  68% good   83.6
+WIDE    M12     16.0    20.5 |     0     0     0    64   64.0% |    5870 | est    7.5 evm   17.3 pilot  0.034 |   300B air   1.1 ovh  68% good   94.1
+WIDE    M12     16.0    22.0 |     0     0     1    65   66.0% |    5870 | est    7.8 evm   19.1 pilot  0.026 |   300B air   1.1 ovh  68% good   88.9
+WIDE    M12     16.0    23.5 |     0     0     0    54   54.0% |    5870 | est    8.7 evm   19.2 pilot  0.029 |   300B air   1.1 ovh  68% good  120.2
+WIDE    M12     16.0    25.0 |     0     0     1    63   64.0% |    5870 | est    7.2 evm   19.0 pilot  0.039 |   300B air   1.1 ovh  68% good   94.1
+WIDE    M12     16.0    26.5 |     0     0     0    58   58.0% |    5870 | est    7.6 evm   18.3 pilot  0.038 |   300B air   1.1 ovh  68% good  109.8
+WIDE    M12     16.0    28.0 |     0     0     1    43   44.0% |    5870 | est   10.2 evm   20.8 pilot  0.033 |   300B air   1.1 ovh  68% good  146.3
+WIDE    M12     16.0    29.5 |     0     0     1    53   54.0% |    5870 | est   10.4 evm   21.2 pilot  0.037 |   300B air   1.1 ovh  68% good  120.2
+WIDE    M12     16.0    31.0 |     0     0     0    50   50.0% |    5870 | est    9.1 evm   20.1 pilot  0.049 |   300B air   1.1 ovh  68% good  130.7
+WIDE    M12     16.0    32.5 |     0     0     2    54   56.0% |    5870 | est    8.8 evm   20.0 pilot  0.033 |   300B air   1.1 ovh  68% good  115.0
+WIDE    M12     16.0    34.0 |     0     0     0    54   54.0% |    5870 | est    9.5 evm   20.9 pilot  0.028 |   300B air   1.1 ovh  68% good  120.2
+WIDE    M12     16.0    35.5 |     0     0     1    54   55.0% |    5870 | est    9.1 evm   21.5 pilot  0.031 |   300B air   1.1 ovh  68% good  117.6
+WIDE    M12     16.0    37.0 |     0     0     0    48   48.0% |    5870 | est   10.0 evm   20.9 pilot  0.039 |   300B air   1.1 ovh  68% good  135.9
+WIDE    M12     16.0    38.5 |     0     0     0    48   48.0% |    5870 | est   10.1 evm   21.4 pilot  0.033 |   300B air   1.1 ovh  68% good  135.9
+WIDE    M12     16.0    40.0 |     0     0     0    52   52.0% |    5870 | est    8.7 evm   20.4 pilot  0.043 |   300B air   1.1 ovh  68% good  125.4
+WIDE    M12     16.0    41.5 |     0     0     0    59   59.0% |    5870 | est    8.7 evm   21.3 pilot  0.030 |   300B air   1.1 ovh  68% good  107.1
+WIDE    M12     16.0    43.0 |     0     0     1    43   44.0% |    5870 | est   10.2 evm   21.2 pilot  0.040 |   300B air   1.1 ovh  68% good  146.3
+WIDE    M12     16.0    44.5 |     0     0     0    45   45.0% |    5870 | est   10.6 evm   21.5 pilot  0.025 |   300B air   1.1 ovh  68% good  143.7
+FAIL: WIDE M12 @ 16.0 dB FER=85.0%
+FAIL: WIDE M12 @ 17.5 dB FER=75.0%
+FAIL: WIDE M12 @ 19.0 dB FER=68.0%
+FAIL: WIDE M12 @ 20.5 dB FER=64.0%
+FAIL: WIDE M12 @ 22.0 dB FER=66.0%
+FAIL: WIDE M12 @ 23.5 dB FER=54.0%
+FAIL: WIDE M12 @ 25.0 dB FER=64.0%
+FAIL: WIDE M12 @ 26.5 dB FER=58.0%
+FAIL: WIDE M12 @ 29.5 dB FER=54.0%
+== 9 conformance failures ==

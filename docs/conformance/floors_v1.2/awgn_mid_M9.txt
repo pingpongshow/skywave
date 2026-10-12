@@ -1,0 +1,19 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M9       1.5    -1.5 |     0     0     3   197  100.0% |     849 | est   -2.5 evm  -99.0 pilot -1.000 |   300B air   3.8 ovh  33% good    0.0
+MID     M9       1.5    -1.0 |     0     0     0   200  100.0% |     849 | est   -1.7 evm  -99.0 pilot -1.000 |   300B air   3.8 ovh  33% good    0.0
+MID     M9       1.5    -0.5 |     0     0     0   184   92.0% |     849 | est   -1.4 evm    3.7 pilot  0.019 |   300B air   3.8 ovh  33% good    6.3
+MID     M9       1.5     0.0 |     0     0     0    32   16.0% |     849 | est   -0.7 evm    4.2 pilot  0.013 |   300B air   3.8 ovh  33% good   66.0
+MID     M9       1.5     0.5 |     0     0     0     0    0.0% |     849 | est   -0.3 evm    4.6 pilot  0.014 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     1.0 |     0     0     0     0    0.0% |     849 | est    0.3 evm    5.1 pilot  0.011 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     1.5 |     0     0     0     0    0.0% |     849 | est    0.7 evm    5.6 pilot  0.014 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     2.0 |     0     0     0     0    0.0% |     849 | est    1.6 evm    6.2 pilot  0.010 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     2.5 |     0     0     0     0    0.0% |     849 | est    2.1 evm    6.6 pilot  0.010 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     3.0 |     0     0     0     0    0.0% |     849 | est    2.6 evm    7.1 pilot  0.012 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     3.5 |     0     0     0     0    0.0% |     849 | est    3.1 evm    7.6 pilot  0.011 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     4.0 |     0     0     0     0    0.0% |     849 | est    3.6 evm    8.1 pilot  0.011 |   300B air   3.8 ovh  33% good   78.6
+MID     M9       1.5     4.5 |     0     0     0     0    0.0% |     849 | est    4.2 evm    8.6 pilot  0.011 |   300B air   3.8 ovh  33% good   78.6
+FAIL: MID M9 @ -1.5 dB FER=100.0%
+FAIL: MID M9 @ -1.0 dB FER=100.0%
+FAIL: MID M9 @ -0.5 dB FER=92.0%
+FAIL: MID M9 @ 0.0 dB FER=16.0%
+== 4 conformance failures ==

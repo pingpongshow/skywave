@@ -1,0 +1,20 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M8       2.5    -0.5 |     0     0    17   183  100.0% |    1957 | est   -1.5 evm  -99.0 pilot -1.000 |   300B air   1.9 ovh  40% good    0.0
+ULTRA   M8       2.5     0.0 |     0     0     7   193  100.0% |    1957 | est   -0.9 evm  -99.0 pilot -1.000 |   300B air   1.9 ovh  40% good    0.0
+ULTRA   M8       2.5     0.5 |     0     0     2   197   99.5% |    1957 | est   -0.4 evm    1.2 pilot  0.000 |   300B air   1.9 ovh  40% good    0.8
+ULTRA   M8       2.5     1.0 |     0     0     0   143   71.5% |    1957 | est    0.1 evm    1.1 pilot  0.011 |   300B air   1.9 ovh  40% good   46.1
+ULTRA   M8       2.5     1.5 |     0     0     0    30   15.0% |    1957 | est    0.6 evm    1.6 pilot  0.006 |   300B air   1.9 ovh  40% good  137.6
+ULTRA   M8       2.5     2.0 |     0     0     0     1    0.5% |    1957 | est    1.1 evm    2.0 pilot  0.006 |   300B air   1.9 ovh  40% good  161.1
+ULTRA   M8       2.5     2.5 |     0     0     0     0    0.0% |    1957 | est    1.7 evm    2.5 pilot  0.006 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     3.0 |     0     0     0     0    0.0% |    1957 | est    2.3 evm    3.0 pilot  0.005 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     3.5 |     0     0     0     0    0.0% |    1957 | est    2.8 evm    3.5 pilot  0.004 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     4.0 |     0     0     0     0    0.0% |    1957 | est    3.3 evm    4.0 pilot  0.006 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     4.5 |     0     0     0     0    0.0% |    1957 | est    3.9 evm    4.5 pilot  0.005 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     5.0 |     0     0     0     0    0.0% |    1957 | est    4.5 evm    5.1 pilot  0.005 |   300B air   1.9 ovh  40% good  161.9
+ULTRA   M8       2.5     5.5 |     0     0     0     0    0.0% |    1957 | est    4.9 evm    5.5 pilot  0.005 |   300B air   1.9 ovh  40% good  161.9
+FAIL: ULTRA M8 @ -0.5 dB FER=100.0%
+FAIL: ULTRA M8 @ 0.0 dB FER=100.0%
+FAIL: ULTRA M8 @ 0.5 dB FER=99.5%
+FAIL: ULTRA M8 @ 1.0 dB FER=71.5%
+FAIL: ULTRA M8 @ 1.5 dB FER=15.0%
+== 5 conformance failures ==

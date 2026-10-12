@@ -1,0 +1,27 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+NARROW  M9       0.5     0.5 |     1     0     8    46   55.0% |     412 | est   -2.3 evm    7.5 pilot  0.030 |   300B air   7.5 ovh  30% good   17.9
+NARROW  M9       0.5     2.0 |     1     0     2    48   51.0% |     412 | est   -0.3 evm    9.5 pilot  0.020 |   300B air   7.5 ovh  30% good   19.5
+NARROW  M9       0.5     3.5 |     1     1     2    31   35.0% |     412 | est    1.4 evm    9.9 pilot  0.019 |   300B air   7.5 ovh  30% good   25.9
+NARROW  M9       0.5     5.0 |     0     0     5    22   27.0% |     412 | est    2.9 evm   11.0 pilot  0.029 |   300B air   7.5 ovh  30% good   29.1
+NARROW  M9       0.5     6.5 |     0     0     1    22   23.0% |     412 | est    4.0 evm   11.6 pilot  0.028 |   300B air   7.5 ovh  30% good   30.7
+NARROW  M9       0.5     8.0 |     0     0     0    14   14.0% |     412 | est    6.3 evm   13.6 pilot  0.016 |   300B air   7.5 ovh  30% good   34.3
+NARROW  M9       0.5     9.5 |     0     0     1     5    6.0% |     412 | est    8.9 evm   15.3 pilot  0.015 |   300B air   7.5 ovh  30% good   37.5
+NARROW  M9       0.5    11.0 |     0     0     0     8    8.0% |     412 | est    9.8 evm   16.3 pilot  0.013 |   300B air   7.5 ovh  30% good   36.7
+NARROW  M9       0.5    12.5 |     0     0     0     5    5.0% |     412 | est   10.8 evm   17.4 pilot  0.013 |   300B air   7.5 ovh  30% good   37.9
+NARROW  M9       0.5    14.0 |     0     0     0     1    1.0% |     412 | est   13.8 evm   19.9 pilot  0.012 |   300B air   7.5 ovh  30% good   39.5
+NARROW  M9       0.5    15.5 |     0     0     0     0    0.0% |     412 | est   13.8 evm   19.7 pilot  0.012 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    17.0 |     0     0     0     0    0.0% |     412 | est   15.9 evm   21.8 pilot  0.009 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    18.5 |     0     0     0     0    0.0% |     412 | est   17.5 evm   23.3 pilot  0.005 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    20.0 |     0     0     0     1    1.0% |     412 | est   17.9 evm   23.8 pilot  0.007 |   300B air   7.5 ovh  30% good   39.5
+NARROW  M9       0.5    21.5 |     1     0     0     0    1.0% |     412 | est   19.9 evm   25.7 pilot  0.004 |   300B air   7.5 ovh  30% good   39.5
+NARROW  M9       0.5    23.0 |     0     0     0     0    0.0% |     412 | est   20.4 evm   26.6 pilot  0.005 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    24.5 |     0     0     0     0    0.0% |     412 | est   22.6 evm   28.9 pilot  0.002 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    26.0 |     0     0     0     0    0.0% |     412 | est   22.7 evm   29.8 pilot  0.003 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    27.5 |     0     0     0     0    0.0% |     412 | est   23.4 evm   30.7 pilot  0.003 |   300B air   7.5 ovh  30% good   39.9
+NARROW  M9       0.5    29.0 |     0     0     0     0    0.0% |     412 | est   25.0 evm   32.3 pilot  0.002 |   300B air   7.5 ovh  30% good   39.9
+FAIL: NARROW M9 @ 0.5 dB FER=55.0%
+FAIL: NARROW M9 @ 2.0 dB FER=51.0%
+FAIL: NARROW M9 @ 3.5 dB FER=35.0%
+FAIL: NARROW M9 @ 5.0 dB FER=27.0%
+FAIL: NARROW M9 @ 6.5 dB FER=23.0%
+== 5 conformance failures ==

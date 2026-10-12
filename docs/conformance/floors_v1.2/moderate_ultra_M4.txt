@@ -1,0 +1,24 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+ULTRA   M4      -8.0    -8.0 |     5     1    36    17   59.0% |      72 | est  -10.6 evm   -8.9 pilot  0.007 |    60B air   7.4 ovh  56% good    3.3
+ULTRA   M4      -8.0    -6.5 |     1     0    17    13   31.0% |      72 | est   -9.1 evm   -7.9 pilot  0.036 |    60B air   7.4 ovh  56% good    5.6
+ULTRA   M4      -8.0    -5.0 |     1     0     6     2    9.0% |      72 | est   -8.3 evm   -7.6 pilot  0.014 |    60B air   7.4 ovh  56% good    7.3
+ULTRA   M4      -8.0    -3.5 |     1     0     1     0    2.0% |      72 | est   -6.1 evm   -5.5 pilot  0.014 |    60B air   7.4 ovh  56% good    7.9
+ULTRA   M4      -8.0    -2.0 |     2     0     1     0    3.0% |      72 | est   -4.0 evm   -3.5 pilot  0.019 |    60B air   7.4 ovh  56% good    7.8
+ULTRA   M4      -8.0    -0.5 |     1     0     1     0    2.0% |      72 | est   -2.6 evm   -2.3 pilot  0.015 |    60B air   7.4 ovh  56% good    7.9
+ULTRA   M4      -8.0     1.0 |     1     0     0     0    1.0% |      72 | est   -1.0 evm   -1.0 pilot  0.017 |    60B air   7.4 ovh  56% good    8.0
+ULTRA   M4      -8.0     2.5 |     0     0     0     0    0.0% |      72 | est    1.5 evm    1.4 pilot  0.010 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0     4.0 |     0     0     0     0    0.0% |      72 | est    2.7 evm    2.4 pilot  0.017 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0     5.5 |     0     0     0     0    0.0% |      72 | est    4.7 evm    4.0 pilot  0.013 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0     7.0 |     0     0     1     0    1.0% |      72 | est    6.9 evm    5.7 pilot  0.016 |    60B air   7.4 ovh  56% good    8.0
+ULTRA   M4      -8.0     8.5 |     0     0     0     0    0.0% |      72 | est    8.5 evm    6.6 pilot  0.012 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    10.0 |     0     0     0     0    0.0% |      72 | est   10.4 evm    7.8 pilot  0.010 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    11.5 |     0     0     0     0    0.0% |      72 | est   12.3 evm    9.0 pilot  0.006 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    13.0 |     0     0     0     0    0.0% |      72 | est   14.1 evm   10.1 pilot  0.004 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    14.5 |     0     0     0     0    0.0% |      72 | est   15.9 evm   11.2 pilot  0.004 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    16.0 |     0     0     0     0    0.0% |      72 | est   17.6 evm   12.9 pilot  0.003 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    17.5 |     0     0     0     0    0.0% |      72 | est   19.3 evm   14.7 pilot  0.004 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    19.0 |     0     0     0     0    0.0% |      72 | est   20.6 evm   16.1 pilot  0.003 |    60B air   7.4 ovh  56% good    8.1
+ULTRA   M4      -8.0    20.5 |     0     0     0     0    0.0% |      72 | est   21.5 evm   17.3 pilot  0.004 |    60B air   7.4 ovh  56% good    8.1
+FAIL: ULTRA M4 @ -8.0 dB FER=59.0%
+FAIL: ULTRA M4 @ -6.5 dB FER=31.0%
+== 2 conformance failures ==

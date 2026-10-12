@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M13     16.5    16.5 |     0     0     0    65   65.0% |    2516 | est   15.1 evm   20.8 pilot  0.005 |   300B air   2.1 ovh  60% good   49.3
+MID     M13     16.5    18.0 |     0     0     0    49   49.0% |    2516 | est   15.8 evm   20.9 pilot  0.007 |   300B air   2.1 ovh  60% good   71.9
+MID     M13     16.5    19.5 |     0     0     0    39   39.0% |    2516 | est   16.8 evm   21.5 pilot  0.007 |   300B air   2.1 ovh  60% good   85.9
+MID     M13     16.5    21.0 |     0     0     0    30   30.0% |    2516 | est   17.8 evm   22.6 pilot  0.006 |   300B air   2.1 ovh  60% good   98.6
+MID     M13     16.5    22.5 |     0     0     0    20   20.0% |    2516 | est   17.6 evm   22.8 pilot  0.010 |   300B air   2.1 ovh  60% good  112.7
+MID     M13     16.5    24.0 |     0     0     0    17   17.0% |    2516 | est   18.9 evm   23.8 pilot  0.007 |   300B air   2.1 ovh  60% good  116.9
+MID     M13     16.5    25.5 |     0     0     0     4    4.0% |    2516 | est   19.8 evm   24.7 pilot  0.008 |   300B air   2.1 ovh  60% good  135.3
+MID     M13     16.5    27.0 |     0     0     0    11   11.0% |    2516 | est   19.8 evm   25.5 pilot  0.009 |   300B air   2.1 ovh  60% good  125.4
+MID     M13     16.5    28.5 |     0     0     0     6    6.0% |    2516 | est   20.4 evm   26.4 pilot  0.008 |   300B air   2.1 ovh  60% good  132.4
+MID     M13     16.5    30.0 |     0     0     0     5    5.0% |    2516 | est   20.1 evm   26.3 pilot  0.009 |   300B air   2.1 ovh  60% good  133.8
+MID     M13     16.5    31.5 |     0     0     0     3    3.0% |    2516 | est   20.9 evm   27.4 pilot  0.008 |   300B air   2.1 ovh  60% good  136.7
+MID     M13     16.5    33.0 |     0     0     0     4    4.0% |    2516 | est   20.8 evm   27.5 pilot  0.008 |   300B air   2.1 ovh  60% good  135.3
+MID     M13     16.5    34.5 |     0     0     0     6    6.0% |    2516 | est   20.5 evm   27.3 pilot  0.009 |   300B air   2.1 ovh  60% good  132.4
+MID     M13     16.5    36.0 |     0     0     0     2    2.0% |    2516 | est   21.1 evm   27.8 pilot  0.007 |   300B air   2.1 ovh  60% good  138.1
+MID     M13     16.5    37.5 |     0     0     0     2    2.0% |    2516 | est   21.0 evm   28.3 pilot  0.009 |   300B air   2.1 ovh  60% good  138.1
+MID     M13     16.5    39.0 |     0     0     0     5    5.0% |    2516 | est   20.9 evm   28.2 pilot  0.006 |   300B air   2.1 ovh  60% good  133.8
+MID     M13     16.5    40.5 |     0     0     0     6    6.0% |    2516 | est   21.3 evm   29.0 pilot  0.008 |   300B air   2.1 ovh  60% good  132.4
+MID     M13     16.5    42.0 |     0     0     0     4    4.0% |    2516 | est   21.7 evm   29.1 pilot  0.007 |   300B air   2.1 ovh  60% good  135.3
+MID     M13     16.5    43.5 |     0     0     0     2    2.0% |    2516 | est   21.3 evm   28.6 pilot  0.007 |   300B air   2.1 ovh  60% good  138.1
+MID     M13     16.5    45.0 |     0     0     0     3    3.0% |    2516 | est   20.8 evm   28.0 pilot  0.008 |   300B air   2.1 ovh  60% good  136.7
+FAIL: MID M13 @ 16.5 dB FER=65.0%
+FAIL: MID M13 @ 18.0 dB FER=49.0%
+FAIL: MID M13 @ 19.5 dB FER=39.0%
+FAIL: MID M13 @ 21.0 dB FER=30.0%
+== 4 conformance failures ==

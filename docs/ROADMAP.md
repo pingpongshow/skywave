@@ -970,11 +970,51 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   Next design must separate CFO from timing physically: two-SF joint
   estimate (pilot vs payload peak motion) or a coherent pilot-phase FLL,
   investigated on its own before implementation.
-- [ ] **8.9 Re-measure + recalibrate** — AWGN/fading floors + new Poor
+- [x] **8.9 Re-measure + recalibrate** — AWGN/fading floors + new Poor
   rows, chanclass thresholds, `kOfdmSnrCalDb`, `severeMaxMode`; correct
   poor_findings.md, WAVEFORM/DSP CFO text; delete dead `kCfoCapture*`.
   *Gate: all conformance sweeps pass; M3 ramp; soak not worse than
   v1.1.0.*
+  ✓ 2026-10-11 — `tools/floor_campaign.sh` measured every family x
+  M4-M13 on AWGN (200 trials / 0.5 dB) and CCIR Good, Moderate and Poor
+  (100 trials / 1.5 dB, swept from the AWGN floor so kFadingNA modes are
+  covered); `tools/floor_tables.py` derives the tables with the existing
+  definitions AND the sweep's own floor+1/floor+3 gates; data in
+  `conformance/floors_v1.2/`. AWGN floors 1.5-3 dB lower (WIDE M4 -8.5
+  -> -11.0), designated fading 2-7 dB lower (WIDE M7 11.0 -> 4.0), and
+  WIDE/MID/ULTRA M13 gained a fading floor. Conformance on fresh seeds:
+  every AWGN, designated, Moderate and Poor row passes (after the M10
+  correction below). Soak, v1.2 receiver with the OLD tables+caps vs
+  the new tables: churn 3 seeds 235 -> 270 KB, blackout 69.7 -> 74.1 KB,
+  Poor floor 6 seeds 35.6 -> 48.3 KB @9 dB (the old run also had one
+  session failure) and 73.1 -> 83.7 KB @15 dB, Moderate floor equal;
+  all PASS. Full suite green; M3 ramp green.
+  DESIGN CHANGE (LINK_ADAPTATION.md, WAVEFORM.md annex): the Moderate
+  and Severe classes select per-channel measured tables
+  (`kModerateFloors`, `kPoorFloors`; kFadingNA there = never closes =
+  ineligible) instead of the v1.1.0 caps (M8 / M7), whose premise -
+  "the fast tier never closes there" - the new receiver broke; the caps
+  remain as operator overrides defaulting off. Classifier pilot
+  thresholds are now PER FAMILY and re-measured (the old Severe 1.20
+  could no longer fire; the old Moderate 0.007 read NARROW's AWGN as
+  Moderate). `kOfdmSnrCalDb` 4.0/8.0/11.0/3.5 -> 3.5/7.5/10.5/3.0 (the
+  estimate read 0.6-0.8 dB low; rounded to never over-read).
+  DEVIATIONS: (1) a first-crossing derivation gave Poor WIDE M10 22.5 dB
+  from one dip in a 13-25% outage plateau and failed conformance. The
+  derivation now also requires the campaign curve to meet the sweep's
+  gate LEVELS at floor+1/floor+3 with no slack (fresh-seed sweeps keep
+  the slack): Poor WIDE M9 19.0, M10 NA; Poor NARROW M8 10.5; Poor ULTRA
+  M9 20.0, M10 NA; Moderate ULTRA M12 22.5. One manual override,
+  documented in constants.hpp: Moderate NARROW M13 NA (10-23% plateau
+  from 27 to 46 dB). Verification: every Moderate and Poor row passes on
+  seeds 5000 and 7000; one 2.2-sigma miss on seed 9000 (NARROW M12 at
+  floor+1, 23% of 100) re-measured at 400 trials on two seeds gives
+  16.0% / 12.8% - the floor stands (a sweep of ~80 points at 2-sigma
+  gates expects such a miss now and then). (2) test_harq's operating points
+  are anchored to the floor table: after the re-measure its original
+  offsets are correct again; the IR case now anchors to M8's floor (the
+  M8-M9 gap narrowed to 2.5 dB). (3) soak_st2 gained SKW_SOAK_PRESET=3
+  (Poor) - nothing exercised the Severe class at link level before.
 - [ ] **8.10 Release gates + v1.2.0 notes** — RELEASE.md 1–7.
 
 ---

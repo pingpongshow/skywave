@@ -1,0 +1,24 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+WIDE    M6      -3.5    -3.5 |     4     1     4    49   58.0% |     326 | est   -7.6 evm   -3.9 pilot  0.115 |    60B air   4.9 ovh  85% good    5.2
+WIDE    M6      -3.5    -2.0 |     2     0     3    29   34.0% |     326 | est   -5.8 evm   -3.0 pilot  0.181 |    60B air   4.9 ovh  85% good    8.1
+WIDE    M6      -3.5    -0.5 |     1     0     1    20   22.0% |     326 | est   -4.3 evm   -1.9 pilot  0.150 |    60B air   4.9 ovh  85% good    9.6
+WIDE    M6      -3.5     1.0 |     2     0     0     4    6.0% |     326 | est   -2.1 evm   -0.5 pilot  0.145 |    60B air   4.9 ovh  85% good   11.6
+WIDE    M6      -3.5     2.5 |     0     0     0     5    5.0% |     326 | est   -0.2 evm    1.5 pilot  0.135 |    60B air   4.9 ovh  85% good   11.7
+WIDE    M6      -3.5     4.0 |     0     0     0     0    0.0% |     326 | est    1.2 evm    2.5 pilot  0.140 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5     5.5 |     0     0     0     0    0.0% |     326 | est    2.9 evm    4.0 pilot  0.115 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5     7.0 |     0     0     0     0    0.0% |     326 | est    5.0 evm    5.8 pilot  0.095 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5     8.5 |     0     0     0     0    0.0% |     326 | est    6.8 evm    7.4 pilot  0.084 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    10.0 |     0     0     0     0    0.0% |     326 | est    8.6 evm    8.6 pilot  0.066 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    11.5 |     0     0     0     0    0.0% |     326 | est    8.6 evm    8.6 pilot  0.105 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    13.0 |     0     0     0     0    0.0% |     326 | est   11.3 evm   10.6 pilot  0.057 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    14.5 |     0     0     0     0    0.0% |     326 | est   11.5 evm   11.0 pilot  0.063 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    16.0 |     0     0     0     0    0.0% |     326 | est   13.1 evm   12.6 pilot  0.049 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    17.5 |     0     0     0     0    0.0% |     326 | est   14.6 evm   14.4 pilot  0.035 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    19.0 |     0     0     0     0    0.0% |     326 | est   15.2 evm   15.3 pilot  0.043 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    20.5 |     0     0     0     0    0.0% |     326 | est   15.0 evm   15.1 pilot  0.048 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    22.0 |     0     0     0     0    0.0% |     326 | est   15.9 evm   17.1 pilot  0.045 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    23.5 |     0     0     0     0    0.0% |     326 | est   15.8 evm   17.2 pilot  0.063 |    60B air   4.9 ovh  85% good   12.3
+WIDE    M6      -3.5    25.0 |     0     0     0     0    0.0% |     326 | est   16.7 evm   18.2 pilot  0.034 |    60B air   4.9 ovh  85% good   12.3
+FAIL: WIDE M6 @ -3.5 dB FER=58.0%
+FAIL: WIDE M6 @ -2.0 dB FER=34.0%
+== 2 conformance failures ==

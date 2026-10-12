@@ -25,7 +25,9 @@ constexpr double kEmaAlpha = 0.15;
 }  // namespace
 
 void ChannelClassifier::onFrame(double snrDb, double spreadMs,
-                                double pilotStability, bool decodeOk) {
+                                double pilotStability, bool decodeOk,
+                                Family family) {
+  family_ = family;
   ++frames_;
   if (!decodeOk) {
     ++failures_;
@@ -118,7 +120,9 @@ ChannelClass ChannelClassifier::classifyNow() const {
   if (spreadEma_ >= cfg_.severeSpreadMsMin) ++severe;
   if (fer >= cfg_.severeFerMin) ++severe;
   const double pilot = pilotMedian();  // -1 with no samples yet
-  if (pilotN_ > 0 && pilot >= cfg_.severePilotStabMin) ++severe;
+  if (pilotN_ > 0 && pilot >= cfg_.severePilotStabMin[size_t(family_)]) {
+    ++severe;
+  }
   if (severe >= 2) return ChannelClass::Severe;
 
   // MODERATE: channel motion beyond CCIR Good, read from the pilot
@@ -126,7 +130,7 @@ ChannelClass ChannelClassifier::classifyNow() const {
   // SNR proxy). Checked before STATIC: a Moderate channel at high SNR
   // can look quiet on every other signal.
   if (pilotN_ >= cfg_.moderatePilotMinSamples &&
-      pilot >= cfg_.moderatePilotMin) {
+      pilot >= cfg_.moderatePilotMin[size_t(family_)]) {
     return ChannelClass::Moderate;
   }
 

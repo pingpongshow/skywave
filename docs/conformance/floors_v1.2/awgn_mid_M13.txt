@@ -1,0 +1,17 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+MID     M13     16.5    13.5 |     0     0     0   149   74.5% |    2516 | est   14.4 evm   16.5 pilot  0.004 |   300B air   2.1 ovh  60% good   35.9
+MID     M13     16.5    14.0 |     0     0     0    44   22.0% |    2516 | est   15.0 evm   16.8 pilot  0.004 |   300B air   2.1 ovh  60% good  109.9
+MID     M13     16.5    14.5 |     0     0     0     7    3.5% |    2516 | est   15.8 evm   17.2 pilot  0.003 |   300B air   2.1 ovh  60% good  136.0
+MID     M13     16.5    15.0 |     0     0     0     0    0.0% |    2516 | est   16.3 evm   17.6 pilot  0.003 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    15.5 |     0     0     0     0    0.0% |    2516 | est   16.9 evm   18.0 pilot  0.003 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    16.0 |     0     0     0     0    0.0% |    2516 | est   17.5 evm   18.5 pilot  0.003 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    16.5 |     0     0     0     0    0.0% |    2516 | est   18.1 evm   18.9 pilot  0.002 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    17.0 |     0     0     0     0    0.0% |    2516 | est   18.7 evm   19.3 pilot  0.002 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    17.5 |     0     0     0     0    0.0% |    2516 | est   19.2 evm   19.7 pilot  0.002 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    18.0 |     0     0     0     0    0.0% |    2516 | est   19.6 evm   20.2 pilot  0.002 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    18.5 |     0     0     0     0    0.0% |    2516 | est   20.2 evm   20.7 pilot  0.001 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    19.0 |     0     0     0     0    0.0% |    2516 | est   20.7 evm   21.1 pilot  0.001 |   300B air   2.1 ovh  60% good  140.9
+MID     M13     16.5    19.5 |     0     0     0     0    0.0% |    2516 | est   21.0 evm   21.5 pilot  0.001 |   300B air   2.1 ovh  60% good  140.9
+FAIL: MID M13 @ 13.5 dB FER=74.5%
+FAIL: MID M13 @ 14.0 dB FER=22.0%
+== 2 conformance failures ==
