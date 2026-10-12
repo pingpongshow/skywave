@@ -54,6 +54,9 @@ struct Telemetry {
   uint64_t rxSamplesTotal = 0;
   uint64_t rxCapturesOpened = 0;   // detections that opened a capture
   uint64_t rxCapturesDropped = 0;  // captures evicted by the backlog cap
+  uint64_t rxDecodeCalls = 0;      // receive attempts (capture ladder)
+  uint64_t rxDecodeUsTotal = 0;    // their summed wall time, us
+  uint64_t rxDecodeUsMax = 0;      // slowest single attempt, us
   uint64_t txSamplesTotal = 0;
   float rxLevelDbfs = -120.0f;
   float txLevelDbfs = -120.0f;
@@ -188,6 +191,7 @@ class ModemWorker : public ControlBackend {
   void rebuildEngine();          // IDLE-only reconfiguration
   void pumpRxLocked(double now);
   bool ingestChunkLocked(double now);   // one chunk: convert, meter, detect
+  bool timedRxBurst(std::span<const cfloat> win, double now, bool final);
   void decodePendingLocked(double now);  // capture ladder, bounded budget
   void pumpTxLocked(double now);
   void drainEngineOutputsLocked();
@@ -248,6 +252,7 @@ class ModemWorker : public ControlBackend {
   // than it could work through; sustained growth means it is shedding.
   uint64_t rxCapturesDropped_ = 0;
   uint64_t rxCapturesOpened_ = 0;
+  uint64_t rxDecodeCalls_ = 0, rxDecodeUsTotal_ = 0, rxDecodeUsMax_ = 0;
   uint64_t lastDroppedDbg_ = 0;
   std::vector<ChirpDetection> dets_;
   // Acquisition for the next-narrower family. A chirp sweep is

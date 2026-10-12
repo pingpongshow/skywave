@@ -1030,8 +1030,19 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   `SKW_AMC_PROMOTE_MARGIN`/`_DEMOTE_MARGIN` added for the follow-up. (2)
   `rel_good_narrow` missed NARROW M5 floor+1 at 40 trials (27.5%);
   400 trials: 14.0% - archived at 200 trials. (3) The 2 h soak ran
-  1791 cycles vs v1.1.0's 2012 (4.03 vs 3.58 s/cycle), 0 drops - OPEN,
-  not investigated (candidate: per-frame decode cost of 8.2/8.5).
+  1791 cycles vs v1.1.0's 2012 (4.03 vs 3.58 s/cycle), 0 drops.
+  CLOSED 2026-10-12 - NOT A REGRESSION. Evidence: (a) worker decode
+  accounting (new: telemetry rxDecode*, logged at shutdown) - all decode
+  attempts take ~1.4% of wall time; the Phase 8 stages add ~8 ms per
+  attempt (RTS smoothing dominant), ~15 ms per 512 B cycle against a
+  ~400 ms apparent gap; (b) per-stage real-device A/B (stages on: 78/87/
+  90 cycles per 300 s; off: 84/78/101) - no difference beyond run noise;
+  (c) `tests/cycle_st2` (the soak loop in simulated time) on v1.1.0 and
+  each Phase 8 commit, 3 seeds x 900 sim-s: 298-316 cycles, median 2.51
+  s for every build; (d) alternating 600 s real-device soaks: v1.1.0
+  180/181/177/145, HEAD 182/151, 8.1-only 170/182 - the SAME binary
+  swings 20% between runs an hour apart. The 12% figure compared single
+  soaks from different days. Use cycle_st2 for cycle-rate comparisons.
 
 ---
 

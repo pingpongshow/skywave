@@ -215,6 +215,10 @@ idle or dead. The floor hid the ST3 kill/resume failure for two releases
 off. FakeClock also hides CPU cost, so worker-overload effects (RX ring
 overrun) only show at ST3.
 
+Cycle rate: `cycle_st2` replays the ST3 soak loop (512 B A->B, wait,
+repeat) in simulated time - deterministic, so builds can be compared
+without the ±10-20% run-to-run swing of real-device soaks.
+
 Frequency scenarios: `cfo_st2` runs one-way bulk while B's LO is offset
 (`CFO0`), stepped (`STEP` at `STEP_AT`) or drifting (`DRIFT` Hz/s), and
 fails on a drop or on fewer than `MIN_BYTES` delivered. Registered as
@@ -234,9 +238,11 @@ drift, real buffer timing, real underruns). Requirements:
   device loop)
 - `st3_killresume`: five SIGKILL/relaunch cycles, all must reconnect;
   logs are numbered per launch (`st3_<call>_NN.log` under
-  `SKW_ST3_LOGDIR`) and the modem logs `rx overrun=N samples` at
-  shutdown - nonzero means the worker fell behind real time and audio
-  was lost. The harness waits for each relaunched modem's ports rather
+  `SKW_ST3_LOGDIR`) and the modem logs `rx overrun=N samples` and the
+  receive-decode load (`rx decode N attempts, T s total, mean/max ms`)
+  at shutdown - nonzero overrun means the worker fell behind real time
+  and audio was lost; the decode total against wall time is the RX CPU
+  budget a slower host must fit. The harness waits for each relaunched modem's ports rather
   than assuming a fixed start-up time.
 
 #### ST4 - On-air readiness (gate: pre-release, attended)

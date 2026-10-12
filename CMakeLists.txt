@@ -236,6 +236,9 @@ if(BUILD_TESTS)
   # must deliver >= ~85% of the no-offset volume (~65 KB).
   add_executable(cfo_st2 tests/cfo_st2.cpp)
   target_link_libraries(cfo_st2 PRIVATE skywave_core)
+  # Deterministic soak cycle-rate harness (not registered).
+  add_executable(cycle_st2 tests/cycle_st2.cpp)
+  target_link_libraries(cycle_st2 PRIVATE skywave_core)
   function(skw_cfo_st2 name scenario)
     add_test(NAME cfo_st2_${name} COMMAND cfo_st2)
     set_tests_properties(cfo_st2_${name} PROPERTIES

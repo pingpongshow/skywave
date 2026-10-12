@@ -317,6 +317,12 @@ int main(int argc, char** argv) {
            (unsigned long long)t.rxSamplesTotal,
            (unsigned long long)t.txSamplesTotal,
            (unsigned long long)rxRing.dropped());
+  SKW_INFO("shutdown: rx decode %llu attempts, %.1f s total, mean %.1f ms, "
+           "max %.1f ms",
+           (unsigned long long)t.rxDecodeCalls, double(t.rxDecodeUsTotal) * 1e-6,
+           t.rxDecodeCalls ? double(t.rxDecodeUsTotal) / double(t.rxDecodeCalls) * 1e-3
+                           : 0.0,
+           double(t.rxDecodeUsMax) * 1e-3);
 
   if (!pre.configPath.empty()) cfg.save(pre.configPath);
   return 0;

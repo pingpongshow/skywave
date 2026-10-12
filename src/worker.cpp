@@ -465,6 +465,25 @@ void ModemWorker::pumpRxLocked(double now) {
   decodePendingLocked(now);
 }
 
+// Every receive attempt runs synchronously in the worker: its wall time
+// delays this station's next action (ACK, turn handover) one-for-one,
+// and summed over the capture ladder it is the RX CPU budget a slower
+// host must fit in real time. Counted per attempt; reported in
+// telemetry and at shutdown.
+bool ModemWorker::timedRxBurst(std::span<const cfloat> win, double now,
+                               bool final) {
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool ok = engine_->rxBurst(win, now, final);
+  const uint64_t us = uint64_t(std::chrono::duration_cast<
+                                   std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - t0)
+                                   .count());
+  ++rxDecodeCalls_;
+  rxDecodeUsTotal_ += us;
+  rxDecodeUsMax_ = std::max(rxDecodeUsMax_, us);
+  return ok;
+}
+
 bool ModemWorker::ingestChunkLocked(double now) {
   // 48 kHz audio -> baseband, metering + channel power on the way.
   size_t got = rx_.read(chunk_);
@@ -644,7 +663,7 @@ void ModemWorker::decodePendingLocked(double now) {
                   cfg_.callsign.c_str(), now, it->airtimeSec, it->tries);
         }
         --decodeBudget;
-        if (engineEligible) engine_->rxBurst(win, now, /*final=*/true);
+        if (engineEligible) timedRxBurst(win, now, /*final=*/true);
         runMonitorLocked(win);
         done = true;
       }
@@ -671,7 +690,7 @@ void ModemWorker::decodePendingLocked(double now) {
         const bool engineEligible =
             listen_ || engine_->state() != FsmState::Idle;
         --decodeBudget;
-        if (engineEligible && engine_->rxBurst(win, now, false)) {
+        if (engineEligible && timedRxBurst(win, now, false)) {
           // The burst-end fast path used to return without ever running
           // the monitor, so every frame it caught was invisible to
           // MONITOR clients.
@@ -694,7 +713,7 @@ void ModemWorker::decodePendingLocked(double now) {
           listen_ || engine_->state() != FsmState::Idle;
       const bool decoded =
           engineEligible
-              ? engine_->rxBurst(win, now, it->tries == kRxTries - 1)
+              ? timedRxBurst(win, now, it->tries == kRxTries - 1)
               : false;
       --decodeBudget;
       ++it->tries;
@@ -998,6 +1017,9 @@ size_t ModemWorker::processChunk() {
   working_.rxSamplesTotal = rxTotal_;
   working_.rxCapturesOpened = rxCapturesOpened_;
   working_.rxCapturesDropped = rxCapturesDropped_;
+  working_.rxDecodeCalls = rxDecodeCalls_;
+  working_.rxDecodeUsTotal = rxDecodeUsTotal_;
+  working_.rxDecodeUsMax = rxDecodeUsMax_;
   working_.txSamplesTotal = txTotal_;
   working_.rxLevelDbfs = rxLevel_;
   working_.txLevelDbfs = txLevel_;
