@@ -77,6 +77,7 @@ class FlexBackend:
         self.set_min_power = set_min_power
         self.rfpower = None   # from `transmit` status; None = not yet known
         self.status = asyncio.Event()
+        self.on_power_violation = None  # set by the Bridge: force RX
 
     async def connect(self):
         self.reader, self.writer = await asyncio.wait_for(
@@ -126,6 +127,10 @@ class FlexBackend:
                             log(f"flex: rfpower changed to {new}")
                         self.rfpower = new
                         self.status.set()
+                        # Power raised WHILE keyed (a GUI profile load,
+                        # a slider): drop the key at once.
+                        if new > self.max_rfpower and self.on_power_violation:
+                            asyncio.ensure_future(self.on_power_violation(new))
                 m = re.match(r"R(\d+)\|([0-9A-Fa-f]+)\|?(.*)", line)
                 if m and int(m.group(2), 16) != 0:
                     log(f"flex: command {m.group(1)} FAILED "
@@ -196,6 +201,15 @@ class Bridge:
         self.keyed_at = 0.0
         self.lock = asyncio.Lock()
         self.tripped = False
+        if isinstance(backend, FlexBackend):
+            backend.on_power_violation = self.power_violation
+
+    async def power_violation(self, rfpower):
+        if self.keyed:
+            log(f"POWER GUARD: rfpower rose to {rfpower} while keyed - "
+                "forcing RX; clients must UNKEY before keying again")
+            self.tripped = True
+            await self.update()
 
     async def update(self):
         want = bool(self.holders) and not self.tripped
