@@ -104,6 +104,12 @@ class ModemWorker : public ControlBackend {
   // Thread-safe: copy the latest consistent telemetry snapshot.
   Telemetry telemetry() const;
 
+  // Thread-safe: the audio stream's output latency (AudioBackend::
+  // outputLatencySec). PTT stays keyed this long - plus a margin - after
+  // the TX ring drains, so the burst tail still in the driver/DAC buffer
+  // actually airs. Set by the audio owner after every stream (re)start.
+  void setOutputLatencySec(double s) { outLatencySec_.store(s); }
+
   // --- data-port bridge (thread-safe) -----------------------------------
   void submitAppData(std::span<const uint8_t> bytes);
   std::vector<uint8_t> takeAppData();
@@ -283,6 +289,10 @@ class ModemWorker : public ControlBackend {
   std::unique_ptr<PttDriver> ptt_;
   bool pttKeyed_ = false;
   double pttKeyedAt_ = 0.0;
+  // Time the TX ring was first seen empty with PTT still keyed (< 0: not
+  // draining). Release waits outLatencySec_ + kPttPlayoutMarginSec past it.
+  double txDrainedAt_ = -1.0;
+  std::atomic<double> outLatencySec_{0.0};
   bool txWatchdogTripped_ = false;
   // True when the busy channel is (or may still be) a station rather
   // than noise; only this defers transmission.

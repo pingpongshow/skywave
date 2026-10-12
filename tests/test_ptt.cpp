@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <string>
 #include <thread>
 #include <vector>
@@ -216,6 +217,55 @@ TEST_CASE(tx_watchdog_quiet_when_idle) {
     CHECK(note.rfind("EVT:TX_WATCHDOG", 0) != 0);
   }
   CHECK(!worker.telemetry().ptt);
+}
+
+// PTT release vs output latency (2026-10, pre-on-air review): "TX done"
+// used to mean "the TX ring is empty", but the samples the audio
+// callback already took still sit in the driver/DAC buffer - 10-100+ ms
+// on real hardware - and unkeying then cut the burst's last OFDM symbols
+// off the air. With a reported output latency the key must stay down for
+// that long (plus margin) past the last sample handed to the device; with
+// none (virtual cables, file backends) release stays prompt.
+namespace {
+// Returns (PTT release time - last time the device took audio), seconds.
+double releaseLagSec(double outputLatencySec) {
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = false;
+  cfg.pttMethod = PttMethod::Vox;
+  cfg.cwId = false;
+  FakeClock clock{1'000'000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+  worker.setOutputLatencySec(outputLatencySec);
+  CHECK_EQ(worker.control("TXTEST 1"), std::string("TXTEST 1"));
+  const double step = 0.005;
+  std::vector<float> sink(size_t(kFsAudio * step));
+  double t = 0.0, lastAudio = -1.0, released = -1.0;
+  bool keyed = false;
+  for (int i = 0; i < 2000 && released < 0.0; ++i) {
+    worker.runOnce();
+    if (txRing.read(sink) > 0) lastAudio = t;  // the "device" consumes
+    const bool ptt = worker.telemetry().ptt;
+    if (ptt) keyed = true;
+    if (keyed && !ptt) released = t;
+    clock.advanceSec(step);
+    t += step;
+  }
+  CHECK(keyed);
+  CHECK(released >= 0.0);
+  return released - lastAudio;
+}
+}  // namespace
+
+TEST_CASE(ptt_release_waits_for_output_latency) {
+  const double lag80 = releaseLagSec(0.080);
+  const double lag0 = releaseLagSec(0.0);
+  std::printf("ptt release lag: latency 80 ms -> %.0f ms, 0 ms -> %.0f ms\n",
+              lag80 * 1e3, lag0 * 1e3);
+  CHECK(lag80 >= 0.080 + 0.010 - 0.0051);  // latency + margin (one step slack)
+  CHECK(lag80 <= 0.080 + 0.010 + 0.0200);  // and not wildly late
+  CHECK(lag0 <= 0.0151);                   // no latency: prompt as before
 }
 
 SKYTEST_MAIN

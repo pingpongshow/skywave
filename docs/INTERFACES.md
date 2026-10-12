@@ -247,14 +247,21 @@ The modem owns burst-accurate keying only:
 | `TCP` | send `KEY\n` / `UNKEY\n` to a companion-app PTT server (`PTTPORT host[:port]`, default port 4532) |
 
 The key is asserted just before the first sample of a burst enters an empty
-TX ring and released once the ring has drained, so `ptt_lead_ms` covers the
-rig's keying latency and `ptt_tail_ms` protects the final symbol. A serial
+TX ring and released once the ring has drained **and** the audio driver has
+had time to play what it already took: the release waits the stream's
+output latency as PortAudio reports it (logged at start-up as `output
+latency N ms`) plus 10 ms. `ptt_lead_ms` covers the rig's keying latency
+and `ptt_tail_ms` adds trailing silence on top. (Before 2026-10 the key
+dropped as soon as the ring was empty, cutting up to the driver latency
+- 10-100+ ms on real interfaces - off the end of every burst; virtual
+cables hid it.) A serial
 port or PTT server that cannot be opened is reported and the modem runs
 **without keying** rather than refusing to start — losing the radio is
 better than losing the modem.
 
 Sequence per burst: assert → wait `ptt_lead_ms` (default 50) → audio →
-wait `ptt_tail_ms` (default 20) → release. A TX watchdog
+wait `ptt_tail_ms` (default 20) → wait the output latency + 10 ms →
+release. A TX watchdog
 ([DSP.md](DSP.md)) force-releases PTT if any transmission exceeds
 `tx_watchdog_s` (default 120 s), discards the staged audio, and emits
 `EVT:TX_WATCHDOG`. It is a safety net against a wedged modem holding a

@@ -26,6 +26,8 @@ class DeviceBackend final : public AudioBackend {
 
   ~DeviceBackend() override { stop(); }
 
+  double outputLatencySec() const override { return outLatencySec_; }
+
   bool start() override {
     PaError err = Pa_Initialize();
     if (err != paNoError) {
@@ -63,8 +65,12 @@ class DeviceBackend final : public AudioBackend {
       SKW_ERROR("portaudio start: %s", Pa_GetErrorText(err));
       return false;
     }
-    SKW_INFO("audio: duplex stream running (in=%d out=%d, %d Hz)", inP.device,
-             outP.device, kFsAudio);
+    if (const PaStreamInfo* si = Pa_GetStreamInfo(stream_)) {
+      outLatencySec_ = si->outputLatency;
+    }
+    SKW_INFO("audio: duplex stream running (in=%d out=%d, %d Hz, output "
+             "latency %.1f ms)",
+             inP.device, outP.device, kFsAudio, outLatencySec_ * 1e3);
     return true;
   }
 
@@ -112,6 +118,7 @@ class DeviceBackend final : public AudioBackend {
   SampleRing& tx_;
   float inGain_;
   float outGain_;
+  double outLatencySec_ = 0.0;
   PaStream* stream_ = nullptr;
   bool paUp_ = false;
 };

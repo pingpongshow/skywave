@@ -2167,8 +2167,8 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       // Shadow computes and logs only; assist applies single-step
       // influence when confidence clears the per-domain floor. Never
       // touches handshake mode selection or voice.
-      if (advisor_.mode() != AdvisorMode::Off) {
-        advisor_.onSnr(amc_->effectiveSnrDb(now), now);
+      if (advisor_.mode() != AdvisorMode::Off && advisorDue_) {
+        advisorDue_ = false;
         const auto amcAdv = advisor_.adviseAmc(amc_->retryRatio());
         const auto cfoAdv = advisor_.adviseCfo(now);
         const auto maskAdv = advisor_.adviseMask(now);
@@ -2991,7 +2991,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
 
   probeGate_.onFrameObserved();
   if (amc_ && fsm_.state() == FsmState::Connected) {
-    if (q.snrTrusted) amc_->onLocalSnr(q.snrDb);
+    if (q.snrTrusted) {
+      amc_->onLocalSnr(q.snrDb);
+      // One advisor sample and one evaluation per new measurement (see
+      // Advisor::onSnr): the tick-rate feed starved the trend fit.
+      advisor_.onSnr(amc_->effectiveSnrDb(now), now);
+      advisorDue_ = true;
+    }
     advisor_.onCfo(q.cfoHz, now);
   }
   switch (f.env.type) {

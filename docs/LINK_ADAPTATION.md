@@ -264,6 +264,11 @@ closed-form least-squares trends over short bounded histories:
 - control: environment variables only (`SKW_ADVISOR=off|shadow|assist`,
   per-domain confidence floors); default `shadow` until validated in
   hardware, then `assist`
+- cadence: one SNR sample and one evaluation per NEW trusted link
+  measurement (a decoded frame). Until 2026-10 the engine fed and
+  evaluated it on every tick (~7 ms): the 8-sample history spanned
+  ~50 ms of identical values, so the AMC trend could never form, and the
+  shadow log ran at ~147 lines/s (112 MB per 2 h at debug level)
 
 ## Channel Character (floor-table selection)
 

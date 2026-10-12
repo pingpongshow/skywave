@@ -9,6 +9,10 @@
 
 #include "link/advisor.hpp"
 #include "link/amc.hpp"
+#include "link/engine.hpp"
+#include "sim/chansim.hpp"
+#include "core/constants.hpp"
+#include <cstdio>
 #include "skytest.hpp"
 
 using namespace skw;
@@ -201,6 +205,54 @@ TEST_CASE(advisor_off_vs_shadow_equivalence) {
     return modes;
   };
   CHECK(runSeq(AdvisorMode::Off) == runSeq(AdvisorMode::Shadow));
+}
+
+// Engine wiring (2026-10, pre-on-air log review): the engine fed the
+// advisor's SNR history on EVERY tick (~7 ms) and logged an evaluation
+// each time - 147 debug lines/s, 112 MB per 2 h soak - while the 8-sample
+// history spanned ~50 ms of identical values, so the AMC trend could
+// never form. It is now fed once per new trusted measurement: over two
+// minutes of traffic the history must span real time.
+TEST_CASE(advisor_engine_feed_spans_real_time) {
+  EngineConfig ca, cb;
+  ca.policy.ownCall = "W1AW";
+  cb.policy.ownCall = "K6XYZ";
+  LinkEngine a(ca), b(cb);
+  double now = 0.0;
+  uint64_t sc = 1;
+  auto pass = [&](LinkEngine& from, LinkEngine& to) {
+    auto burst = from.tick(now);
+    double dt = 0.05;
+    if (burst) {
+      dt += double(burst->size()) / kFsBaseband;
+      std::vector<cfloat> x(1500, cfloat(0, 0));
+      x.insert(x.end(), burst->begin(), burst->end());
+      x.insert(x.end(), 2000, cfloat(0, 0));
+      ChansimParams ch;
+      ch.fading = false;
+      ch.snr3kDb = 20.0;
+      ch.seed = 77 + (sc++) * 7919;
+      to.rxBurst(Chansim::run(ch, x), now);
+    }
+    now += dt;
+  };
+  a.connectTo("K6XYZ", now);
+  for (int i = 0; i < 600 && a.state() != FsmState::Connected; ++i) {
+    pass(a, b);
+    pass(b, a);
+  }
+  CHECK(a.state() == FsmState::Connected);
+  std::vector<uint8_t> chunk(1500, 0x5A);
+  const double end = now + 120.0;
+  while (now < end) {
+    if (a.txBacklog() < 4000) a.sendData(chunk);
+    pass(a, b);
+    pass(b, a);
+    b.takeReceivedData();
+  }
+  const double span = a.advisor().snrHistorySpanSec();
+  std::printf("advisor SNR history span after 120 s: %.1f s\n", span);
+  CHECK(span >= 10.0);
 }
 
 SKYTEST_MAIN

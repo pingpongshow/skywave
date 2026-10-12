@@ -159,6 +159,7 @@ int main(int argc, char** argv) {
 
   skw::SteadyClock clock;
   skw::ModemWorker worker(cfg, clock, rxRing, txRing);
+  worker.setOutputLatencySec(audio->outputLatencySec());
 
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
@@ -281,6 +282,7 @@ int main(int argc, char** argv) {
                                           cfg.inputGainDb, cfg.outputGainDb},
                                          rxRing, txRing);
           if (audio->start()) {
+            worker.setOutputLatencySec(audio->outputLatencySec());
             cfg.inputDevice = req->first;    // persists via --config save
             cfg.outputDevice = req->second;
             gui->noteAudio("OK: stream running on in=" +
@@ -294,6 +296,7 @@ int main(int argc, char** argv) {
                                             cfg.outputGainDb},
                                            rxRing, txRing);
             const bool back = audio->start();
+            if (back) worker.setOutputLatencySec(audio->outputLatencySec());
             gui->noteAudio(back ? "FAILED: kept previous devices"
                                 : "FAILED: previous devices also refused "
                                   "- audio is DOWN");

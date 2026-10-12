@@ -33,6 +33,10 @@ class AudioBackend {
   // File backends: true when the replay source is exhausted AND the TX ring
   // has been fully drained. Device backends: always false.
   virtual bool finished() = 0;
+  // Time from a sample leaving the TX ring (the audio callback consumed
+  // it) to it leaving the DAC, as the driver reports it. PTT release
+  // waits this long after the ring drains. File backends: 0.
+  virtual double outputLatencySec() const { return 0.0; }
 };
 
 struct AudioConfig {

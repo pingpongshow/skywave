@@ -36,8 +36,12 @@ class Advisor {
   const AdvisorConfig& config() const { return cfg_; }
 
   // --- AMC domain: SNR-trend step bias -----------------------------------
-  // Feed the effective SNR each evaluation; advice is a single-step bias
-  // (+1 leans one evaluation toward promotion, -1 toward demotion).
+  // Feed the effective SNR once per NEW link measurement (a decoded
+  // frame's trusted SNR) - never per engine tick: the history holds 8
+  // samples, and fed every ~7 ms tick it spanned ~50 ms of identical
+  // values, so no trend could ever form (2026-10). Advice is a
+  // single-step bias (+1 leans one evaluation toward promotion, -1
+  // toward demotion).
   struct AmcAdvice {
     int stepBias = 0;         // in {-1, 0, +1}
     double confidence = 0.0;  // [0, 1]
@@ -77,6 +81,11 @@ class Advisor {
   }
 
   void reset();
+
+  // Time span (s) of the SNR history the AMC trend is fitted over.
+  double snrHistorySpanSec() const {
+    return snr_.size() < 2 ? 0.0 : snr_.back().t - snr_.front().t;
+  }
 
  private:
   struct Sample {

@@ -64,7 +64,7 @@ depends on it.)
 | `target` | empty | serial path or `host[:port]` |
 | `baud` | `38400` | serial baud |
 | `lead_ms` | `50` | key → audio |
-| `tail_ms` | `20` | audio → unkey |
+| `tail_ms` | `20` | trailing silence after the burst; the release additionally waits the device's reported output latency + 10 ms |
 
 ### `[modem]`
 

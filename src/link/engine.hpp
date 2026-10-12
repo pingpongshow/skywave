@@ -143,6 +143,7 @@ class LinkEngine {
   void unpinMode();
   bool modePinned() const;
   double txShiftHz() const { return txShiftHz_; }
+  const Advisor& advisor() const { return advisor_; }
   CpMode cpMode() const { return cpMode_; }
   double lastRxCfoHz() const { return lastRxQuality_.cfoHz; }
 
@@ -250,6 +251,7 @@ class LinkEngine {
   ArqRx arqRx_;
   std::optional<Amc> amc_;
   Advisor advisor_{AdvisorConfig::fromEnv()};
+  bool advisorDue_ = false;  // a new SNR sample awaits one evaluation
   double lastCfoAssistAt_ = 0.0;
   HarqChase harq_;  // chase soft-combining across retransmissions
   ProbeGate probeGate_;

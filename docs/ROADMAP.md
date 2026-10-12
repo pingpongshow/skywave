@@ -1044,6 +1044,42 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   swings 20% between runs an hour apart. The 12% figure compared single
   soaks from different days. Use cycle_st2 for cycle-rate comparisons.
 
+### Pre-on-air review (2026-10-12, after v1.2.0)
+
+A sweep of every log from ~15 h of real-device runs (53 modem logs):
+zero WARN/ERROR lines, every shutdown `rx overrun=0`, 0 soak drops. Two
+defects found by reading the code behind the logs, both fixed:
+
+- **PTT released before the audio played (the RIA failure class).** The
+  key dropped when the TX ring emptied, while the samples the audio
+  callback had taken still sat in the driver/DAC buffer; the 20 ms tail
+  padding was the only cover, against output latencies of 10-20 ms
+  (macOS), 20-100+ ms (Windows, USB codecs). Virtual cables hid it.
+  `AudioBackend::outputLatencySec()` now reports PortAudio's stream
+  latency (logged at start-up: BlackHole 16.0 ms), and the worker holds
+  PTT that long + 10 ms after the ring drains (no margin when no latency
+  is reported: file backends, simulated worlds). Test
+  `ptt_release_waits_for_output_latency`: 80 ms declared -> released
+  100 ms after the last sample (was ~5 ms); 0 ms -> 5 ms as before.
+- **Advisor evaluated every engine tick.** ~147 debug lines/s (112 MB
+  per 2 h soak at debug level), and its 8-sample SNR history spanned
+  ~50 ms of identical values, so the AMC trend advice could never form
+  (harmless only because the default is `shadow`). Now one sample and
+  one evaluation per new trusted measurement. Test
+  `advisor_engine_feed_spans_real_time`: history spans 21 s after 120 s
+  of traffic; real-device log 18 advisor lines in 97 s.
+
+**Deep-queue goodput (open since v1.1.0) - CLOSED, not reproduced on
+v1.2.0.** 4 KiB vs 64 KiB feed window, simulated time
+(`soak_st2 SKW_SOAK_WINDOW`), v1.1.0 vs v1.2.0, bytes:
+churn 3 seeds x 900 s 199.5K -> 205.5K (v1.1.0) / 264.6K -> 357.7K
+(v1.2.0, +35% with the deep queue); one-way bulk static 25 dB
+627K -> 643K / 815K -> 824K; CCIR Good 20 dB 302K -> 301K / 264K -> 310K.
+The original "3.3x" schedule (coupled churn, 400 s) reproduces v1.1.0's
+collapse only on its historical seed (103K -> 26K); over seeds 11-14
+v1.1.0 loses 31% and v1.2.0 11%, inside the 48-122K spread of these
+short runs. No fix needed.
+
 ---
 
 ## Standing Gates (every phase)

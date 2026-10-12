@@ -22,6 +22,9 @@ namespace {
 // Worker hop: ~one OFDM symbol of audio keeps latency bounded and gives
 // the DSP a natural processing granule (fixed size; profile-agnostic).
 constexpr size_t kChunkSamples = size_t(kFftAudio) + 192;
+// Extra hold after the reported output latency before PTT release
+// (driver-reported latency excludes some USB/DAC pipeline stages).
+constexpr double kPttPlayoutMarginSec = 0.010;
 
 // RX capture-window retry ladder (baseband seconds after the detected
 // preamble start): the frame length is unknown until the self-describing
@@ -257,6 +260,7 @@ void ModemWorker::pttKeyLocked(double now) {
 }
 
 void ModemWorker::pttUnkeyLocked() {
+  txDrainedAt_ = -1.0;
   if (!pttKeyed_) return;
   pttKeyed_ = false;
   if (ptt_ && !ptt_->unkey()) {
@@ -857,6 +861,7 @@ void ModemWorker::pumpTxLocked(double now) {
   }
   // Drain staged audio into the ring as space frees up.
   if (txPendingOff_ < txPending_.size()) {
+    txDrainedAt_ = -1.0;  // more audio: not draining any more
     // Key BEFORE the first sample enters the ring. An empty ring means the
     // audio callback starts consuming within one callback period, so the
     // burst's own lead-silence padding is what actually covers the rig's
@@ -876,8 +881,23 @@ void ModemWorker::pumpTxLocked(double now) {
   } else {
     txLevel_ = -120.0f;
     // Everything staged has been handed to the ring; release the key only
-    // once the ring itself has drained, or the tail would be cut off.
-    if (pttKeyed_ && tx_.readAvailable() == 0) pttUnkeyLocked();
+    // once the ring has drained AND the driver has played what the audio
+    // callback already took from it. An empty ring means the samples sit
+    // in the PortAudio/driver output buffer - 10-20 ms on macOS, 20-100+
+    // ms on Windows and USB codecs - and unkeying then cut the burst's
+    // last OFDM symbols off the air (virtual cables have ~0 latency, so
+    // no test saw it; the failure class that sank the RIA modem on air).
+    if (pttKeyed_ && tx_.readAvailable() == 0) {
+      if (txDrainedAt_ < 0.0) txDrainedAt_ = now;
+      // The margin covers pipeline stages a real driver's latency figure
+      // omits; with no reported latency (file backends, the simulated
+      // test worlds) there is no device pipeline and none is added.
+      const double lat = outLatencySec_.load();
+      if (now - txDrainedAt_ >= (lat > 0.0 ? lat + kPttPlayoutMarginSec : 0.0)) {
+        pttUnkeyLocked();
+        txDrainedAt_ = -1.0;
+      }
+    }
   }
   pttWatchdogLocked(now);
 }
