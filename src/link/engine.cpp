@@ -1232,6 +1232,13 @@ void LinkEngine::drainFsmActions(double now) {
         ac.maxMode = cfg_.policy.maxMode;
         // CAP_CSS_TIER extends the AMC ladder into M0-M3.
         ac.minMode = (sessionCaps_ & kCapCssTier) ? 0 : uint8_t(kFirstMode);
+        // Measurement overrides (diagnostic A/B, CONFIGURATION.md).
+        if (const char* e = getenv("SKW_AMC_PROMOTE_MARGIN")) {
+          ac.promoteMarginDb = atof(e);
+        }
+        if (const char* e = getenv("SKW_AMC_DEMOTE_MARGIN")) {
+          ac.demoteMarginDb = atof(e);
+        }
         amc_.emplace(ac, uint8_t(mode_), 0.0);
         // Seed with the handshake measurement the initial mode was chosen
         // from (a robust-header frame, so it converged the tracker): the

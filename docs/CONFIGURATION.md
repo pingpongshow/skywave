@@ -200,6 +200,23 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_RXBAND_MARGIN_HZ` | `50` | RX band-edge margin |
 | `SKW_TXBAND_MARGIN_HZ` | `40` | TX band-edge margin |
 | `SKW_TX_IMPAIR` | (unset) | Injects transmit impairments for testing |
+| `SKW_MAX_PENDING_RX` | `8` | Capture backlog cap (oldest evicted first) |
+| `SKW_AMC_PROMOTE_MARGIN` / `SKW_AMC_DEMOTE_MARGIN` | `-1.5` / `-3.5` | AMC margins relative to the active floor table (measurement A/B) |
+
+Phase 8 receiver stages (v1.2.0, GAP_CLOSURE_PLAN.md). Each is ON by
+default; setting it to `0` restores the v1.1.0 behaviour for A/B
+measurement - never needed in operation:
+
+| Variable | Stage |
+|---|---|
+| `SKW_CFO_BRANCH` | CFO branch search over ±55 Hz, header-verified (R1) |
+| `SKW_MULTIPATH_MARGIN` | FFT window backoff + tracker taps ahead of the window (R4) |
+| `SKW_QNORM` | Kalman process noise from frame-mean channel power (R5) |
+| `SKW_RTS` | RTS smoothing over each buffered walk (R6) |
+| `SKW_FLL` | In-frame FLL; `SKW_FLL_GAIN_FAST` / `SKW_FLL_GAIN_ROBUST` override the 0.2 / 0.1 gains (R2) |
+
+Test-harness only: `SKW_ST2_AMBIENT` (ST2 ambient floor amplitude, `0` =
+digital silence), `SKW_ST3_LOGDIR` (ST3 log directory).
 
 ### Debug logging
 
@@ -210,7 +227,8 @@ to any value. They are read once and cost nothing when unset.
 `SKW_CP_DEBUG`, `SKW_CSS_DEBUG`, `SKW_DELIV_DEBUG`, `SKW_EMIT_DEBUG`,
 `SKW_EQ_DEBUG`, `SKW_FRAME_DEBUG`, `SKW_MASK_DEBUG`, `SKW_MODE_DEBUG`,
 `SKW_PROTO_DEBUG`, `SKW_PUMP_DEBUG`, `SKW_REPLAY_DEBUG`, `SKW_RX_DEBUG`,
-`SKW_RXLADDER_DEBUG`, `SKW_TURN_DEBUG`, `SKW_TX_DEBUG`, `SKW_TXA_DEBUG`.
+`SKW_RXLADDER_DEBUG`, `SKW_TURN_DEBUG`, `SKW_TX_DEBUG`, `SKW_TXA_DEBUG`,
+`SKW_CFO_DEBUG` (per-frame CFO branch candidates).
 
 `SKW_REPLAY_DEBUG` traces the peer-restart replay bookkeeping: how many
 message-end sequences are outstanding, how many messages are held

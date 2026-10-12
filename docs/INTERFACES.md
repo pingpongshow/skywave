@@ -147,8 +147,11 @@ MASK=<count> VOICE=<off|state> TXBUF=<bytes> FOK=<n> FFAIL=<n>
 ```
 
 `CFO` is the current TX frequency-alignment correction
-([PROTOCOL.md](PROTOCOL.md)); a persistently large value means the dial
-needs retuning (an `EVT:CFO_WARN` fires past ±40 Hz).
+([PROTOCOL.md](PROTOCOL.md)): the offset of the path this station
+transmits on, clamped ±50 Hz and reset at every session end. Frames
+decode anywhere within ±55 Hz regardless (since v1.2.0); a persistently
+large value means the dial needs retuning before that margin runs out,
+and an `EVT:CFO_WARN` fires past ±40 Hz.
 
 `STATUS JSON` carries the same keys lower-cased in one JSON object — the
 GUI and companion app consume this form.

@@ -10,11 +10,13 @@ Every item below comes from a measured root cause, not a hypothesis. The investi
 
 ## Status (2026-10-11)
 
-8.0-8.7 landed; per-step results, gate numbers and deviations are in the
-ROADMAP Phase 8 entries, final sweeps in `conformance/gap_final/`
-(compared against `gap_base/`). 8.8 (CSS drift) was re-planned after two
-measured designs failed on fading - see its ROADMAP entry. 8.9
-(re-measure floors, recalibrate) and 8.10 (release gates) remain.
+8.0-8.7, 8.9 and 8.10 landed (released as v1.2.0); per-step results,
+gate numbers and deviations are in the ROADMAP Phase 8 entries, final
+sweeps in `conformance/gap_final/` (compared against `gap_base/`) and
+`conformance/floors_v1.2/`. 8.8 (CSS drift) was re-planned after two
+measured designs failed on fading - see its ROADMAP entry. Open items
+carried forward: 8.8, the AMC not capturing the receiver gain on Good
+ramps, and the soak cycle-rate drop (ROADMAP 8.10).
 
 ## Rules for this phase
 

@@ -3,6 +3,7 @@
 // whole traversal with zero drops and deliver >= 75% of what a genie
 // (best-mode-pinned per segment) achieves under identical conditions.
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "link/engine.hpp"
@@ -147,16 +148,36 @@ RampResult runRamp(bool genie, uint64_t seed, bool staticChannel = false) {
 }  // namespace
 
 TEST_CASE(m3_snr_ramp_gate) {
-  RampResult amc = runRamp(false, 4200);
-  RampResult gen = runRamp(true, 4200);
-  CHECK(amc.connected);
-  CHECK(gen.connected);
+  // Three fixed seeds, gated on the ratio of SUMMED bytes. On identical
+  // code a single seed spans 0.70-0.90 (v1.2.0, seeds 4200-4700), so a
+  // one-seed gate reads luck as regression; the summed ratio over
+  // 4200/4300/4400 measured 0.80 (v1.2.0) and 0.88 (v1.1.0).
+  // SKW_RAMP_SEED runs one seed (measurement).
+  std::vector<uint64_t> seeds = {4200, 4300, 4400};
+  if (const char* e = getenv("SKW_RAMP_SEED")) {
+    seeds = {strtoull(e, nullptr, 10)};
+  }
+  size_t amcBytes = 0, genBytes = 0;
+  int drops = 0;
+  for (uint64_t seed : seeds) {
+    RampResult amc = runRamp(false, seed);
+    RampResult gen = runRamp(true, seed);
+    CHECK(amc.connected);
+    CHECK(gen.connected);
+    std::printf("M3 ramp seed %llu: amc=%zu B genie=%zu B ratio=%.2f drops=%d\n",
+                (unsigned long long)seed, amc.bytes, gen.bytes,
+                gen.bytes > 0 ? double(amc.bytes) / double(gen.bytes) : 0.0,
+                amc.drops);
+    amcBytes += amc.bytes;
+    genBytes += gen.bytes;
+    drops += amc.drops;
+  }
   const double ratio =
-      gen.bytes > 0 ? double(amc.bytes) / double(gen.bytes) : 0.0;
+      genBytes > 0 ? double(amcBytes) / double(genBytes) : 0.0;
   std::printf("M3 ramp: amc=%zu B genie=%zu B ratio=%.2f drops=%d\n",
-              amc.bytes, gen.bytes, ratio, amc.drops);
-  CHECK_EQ(amc.drops, 0);       // zero session drops across the traversal
-  CHECK(ratio >= 0.75);         // >= 75%% of oracle throughput
+              amcBytes, genBytes, ratio, drops);
+  CHECK_EQ(drops, 0);       // zero session drops across the traversals
+  CHECK(ratio >= 0.75);     // >= 75%% of oracle throughput
 }
 
 // The channel-character classifier's reason to exist. On a genuinely
@@ -165,8 +186,11 @@ TEST_CASE(m3_snr_ramp_gate) {
 // With the classifier switching floor tables the AMC must close most of
 // that gap - and still never drop the session.
 TEST_CASE(m3_static_channel_ramp_uses_awgn_floors) {
-  RampResult amc = runRamp(false, 7700, /*staticChannel=*/true);
-  RampResult gen = runRamp(true, 7700, /*staticChannel=*/true);
+  const uint64_t seed =
+      getenv("SKW_RAMP_SEED") ? strtoull(getenv("SKW_RAMP_SEED"), nullptr, 10) + 3500
+                              : 7700;
+  RampResult amc = runRamp(false, seed, /*staticChannel=*/true);
+  RampResult gen = runRamp(true, seed, /*staticChannel=*/true);
   CHECK(amc.connected);
   CHECK(gen.connected);
   const double ratio =
