@@ -171,6 +171,9 @@ if(BUILD_TOOLS)
   target_link_libraries(bertool PRIVATE skywave_core)
   add_executable(fuzztool tools/fuzztool.cpp)
   target_link_libraries(fuzztool PRIVATE skywave_core)
+  # On-air test tooling (docs/ONAIR_TEST_PLAN.md): kept out of the modem.
+  add_executable(onair_sounder tools/onair/sounder.cpp)
+  target_link_libraries(onair_sounder PRIVATE skywave_core)
 endif()
 
 # --- tests --------------------------------------------------------------------

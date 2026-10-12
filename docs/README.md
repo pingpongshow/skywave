@@ -40,6 +40,7 @@ These decisions were made deliberately and are binding unless revisited:
 | [BUILD_PLAN.md](BUILD_PLAN.md) | Dependencies, build options, **phased construction plan with milestones** |
 | [ROADMAP.md](ROADMAP.md) | **Execution tracker**: ordered session-sized build steps with per-step test gates and checkboxes |
 | [GAP_CLOSURE_PLAN.md](GAP_CLOSURE_PLAN.md) | Phase 8 reference: measured root causes and gates for fading, CFO tolerance, kill/resume |
+| [ONAIR_TEST_PLAN.md](ONAIR_TEST_PLAN.md) | ST4 with one transmitter: bench and one-way skywave stages, `tools/onair/` tooling, what each run feeds |
 | [TESTING.md](TESTING.md) | Test strategy: unit, loopback, channel-simulator, two-modem, conformance |
 | [RELEASE.md](RELEASE.md) | Release gate sequence, how to cut a release, and the open blockers |
 | [../THIRD_PARTY.md](../THIRD_PARTY.md) | Every linked or vendored component, with licenses (repository root) |

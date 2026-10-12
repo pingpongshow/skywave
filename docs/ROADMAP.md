@@ -1080,6 +1080,24 @@ collapse only on its historical seed (103K -> 26K); over seeds 11-14
 v1.1.0 loses 31% and v1.2.0 11%, inside the 48-122K spread of these
 short runs. No fix needed.
 
+**On-air tooling and plan (2026-10-12).** Hardware on hand: one
+FlexRadio (the only HF TX), a Web-888, public KiwiSDRs. So ST4 starts
+one-way: [ONAIR_TEST_PLAN.md](ONAIR_TEST_PLAN.md), tooling in
+`tools/onair/` (outside the modem). Building it found a modem defect
+that blocks on-air use:
+
+- [ ] **TX audio clips on real interfaces.** Unit-RMS baseband with an
+  8 dB PAPR allowance upconverts to ~+9 dBFS peaks at
+  `output_gain_db = 0`; virtual cables pass floats > 1.0, so ST3 never
+  saw it. A clipped 16-bit loopback lost every M12/M13 frame. Needs a
+  fixed TX scale (peak <= -1 dBFS).
+- [ ] **`output_gain_db` applied twice** (worker TX staging and the
+  device callback).
+- [ ] Stage 1 bench (dummy load): drive/ALC knee, ladder at high SNR,
+  PTT lead, output latency, ppm, CPU.
+- [ ] Stage 2 one-way skywave runs, feeding the AMC Good-channel tuning
+  and 8.8 drift rates.
+
 ---
 
 ## Standing Gates (every phase)

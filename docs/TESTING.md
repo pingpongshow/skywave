@@ -251,6 +251,9 @@ drift, real buffer timing, real underruns). Requirements:
 - ALC/drive procedure per INTERFACES.md TX Drive Calibration
 - attended two-station RF checklist: handshake at distance, mode ladder
   behavior, disconnect paths, monitor station copy
+- one-station form (no second transmitter): bench and one-way skywave
+  stages with `tools/onair/` (`onair_sounder` gen/play/score, `flexptt.py`),
+  procedure and criteria in [ONAIR_TEST_PLAN.md](ONAIR_TEST_PLAN.md)
 
 ## Failure Artifacts
 
