@@ -8,8 +8,18 @@ alongside SmartSDR for Mac: the API accepts several clients, and this one
 only ever sends `xmit`. TX audio still comes from SmartSDR's DAX TX
 device - select DAX as the transmit source in SmartSDR first.
 
-Clients: the modem (`PTTMETHOD TCP`, `PTTPORT 127.0.0.1:4532`) and
-`onair_sounder play --ptt 127.0.0.1:4532`. The radio stays keyed while
+KEYING PATH MATTERS. A Flex takes transmit audio from the client that
+keys it: `xmit 1` from this bridge's own API connection keys the radio
+with NO audio (it owns no DAX TX stream), so DIGU radiates nothing
+(observed 2026-10-12: keyed, zero output). With a GUI client running
+(AetherSDR, SmartSDR), key THROUGH it: --rigctl 127.0.0.1:4532 sends
+hamlib `T 1`/`T 0` to the client's CAT port, so the transmission carries
+the client's DAX TX audio. The Flex API connection stays open for the
+power guard (status only).
+
+Clients: the modem (`PTTMETHOD TCP`, `PTTPORT 127.0.0.1:4600`) and
+`onair_sounder play --ptt 127.0.0.1:4600`. (Not 4532: that is hamlib's
+rigctld port, which AetherSDR itself listens on.) The radio stays keyed while
 ANY client holds a key; a client that disconnects releases its key.
 
 Safety:
@@ -22,7 +32,7 @@ Safety:
 
 Usage:
   tools/onair/flexptt.py --discover
-  tools/onair/flexptt.py --radio 192.0.2.182 --set-min-power
+  tools/onair/flexptt.py --radio 192.0.2.182 --rigctl 127.0.0.1:4532
   tools/onair/flexptt.py --kenwood 127.0.0.1:4533   # generic Kenwood TCP CAT
   tools/onair/flexptt.py --dry-run                  # log only, key nothing
 """
@@ -69,8 +79,12 @@ class FlexBackend:
 
     name = "flex"
 
-    def __init__(self, host, max_rfpower, set_min_power):
+    def __init__(self, host, max_rfpower, set_min_power, rigctl=None,
+                 rig_ptt="1"):
         self.host = host
+        self.rig_ptt = rig_ptt        # hamlib T arg: 1 PTT, 2 mic, 3 data
+        self.rigctl = rigctl          # (host, port) of the GUI client's CAT
+        self.rig_reader = self.rig_writer = None
         self.reader = self.writer = None
         self.seq = 0
         self.max_rfpower = max_rfpower
@@ -148,7 +162,23 @@ class FlexBackend:
                 f"power guard: rfpower={self.rfpower}, limit "
                 f"{self.max_rfpower} - lower RF power in SmartSDR (or "
                 "restart with --set-min-power)")
-        await self._cmd(f"xmit {1 if on else 0}")
+        if self.rigctl:
+            await self._rig_ptt(on)
+        else:
+            await self._cmd(f"xmit {1 if on else 0}")
+
+    async def _rig_ptt(self, on):
+        if self.rig_writer is None:
+            self.rig_reader, self.rig_writer = await asyncio.wait_for(
+                asyncio.open_connection(*self.rigctl), 5)
+            log(f"rigctl: keying through {self.rigctl[0]}:{self.rigctl[1]}")
+        self.rig_writer.write(f"T {self.rig_ptt if on else 0}\n".encode())
+        await self.rig_writer.drain()
+        reply = await asyncio.wait_for(self.rig_reader.readline(), 3)
+        if not reply.startswith(b"RPRT 0"):
+            self.rig_writer = None
+            raise ConnectionError(f"rigctl T {self.rig_ptt if on else 0}: "
+                                  f"{reply.decode(errors='replace').strip()}")
 
     def connected(self):
         return self.writer is not None
@@ -291,7 +321,12 @@ async def main_async(args):
     elif args.kenwood:
         backend = KenwoodBackend(args.kenwood)
     else:
-        backend = FlexBackend(args.radio, args.max_rfpower, args.set_min_power)
+        rig = None
+        if args.rigctl:
+            h, _, prt = args.rigctl.rpartition(":")
+            rig = (h or "127.0.0.1", int(prt))
+        backend = FlexBackend(args.radio, args.max_rfpower,
+                              args.set_min_power, rig, args.rigctl_ptt)
     await backend.connect()
     bridge = Bridge(backend, args.max_key)
     server = await asyncio.start_server(bridge.client, args.listen, args.port)
@@ -313,6 +348,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--radio", help="FlexRadio IP address (SmartSDR API)")
+    ap.add_argument("--rigctl", metavar="HOST:PORT",
+                    help="with --radio: key through the GUI client's hamlib "
+                         "CAT port (AetherSDR: 127.0.0.1:4532) so the "
+                         "transmission carries its DAX TX audio")
+    ap.add_argument("--rigctl-ptt", default="1", choices=["1", "2", "3"],
+                    help="hamlib PTT type for --rigctl: 1 PTT, 2 mic, "
+                         "3 data (DAX)")
     ap.add_argument("--kenwood", metavar="HOST:PORT",
                     help="key through a Kenwood-style TCP CAT port instead")
     ap.add_argument("--dry-run", action="store_true",
@@ -325,8 +367,8 @@ def main():
     ap.add_argument("--set-min-power", action="store_true",
                     help="set the radio's RF power to 0 on connect")
     ap.add_argument("--listen", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=4532,
-                    help="PTT server port (modem default 4532)")
+    ap.add_argument("--port", type=int, default=4600,
+                    help="PTT server port (point the modem's PTTPORT here)")
     ap.add_argument("--max-key", type=float, default=45.0,
                     help="watchdog: longest continuous TX, seconds")
     args = ap.parse_args()

@@ -14,7 +14,7 @@ on by default).
 ```bash
 # 1. PTT server (find the radio first)
 tools/onair/flexptt.py --discover
-tools/onair/flexptt.py --radio 192.0.2.182 --set-min-power
+tools/onair/flexptt.py --radio 192.0.2.182 --rigctl 127.0.0.1:4532 --max-rfpower 1
 
 # 2. Build a sounding: WIDE M4-M13, 5 rounds, CW ID
 build/onair_sounder gen --call N0CALL --reps 5 --out snd.wav
@@ -22,7 +22,7 @@ build/onair_sounder gen --call N0CALL --reps 5 --out snd.wav
 # 3. Start the receiver recording(s), then transmit
 tools/onair/kiwirec.py --host 192.0.2.210 --freq 14105.0 --seconds 240 --out kiwi_rec.wav &
 build/onair_sounder devices
-build/onair_sounder play --wav snd.wav --device "AetherSDR TX" --ptt 127.0.0.1:4532
+build/onair_sounder play --wav snd.wav --device "AetherSDR TX" --ptt 127.0.0.1:4600
 
 # 4. Score each recording
 build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.csv \
@@ -57,4 +57,4 @@ build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.
   `xmit 1/0`), which runs alongside SmartSDR for Mac. `--kenwood
   host:port` speaks a generic Kenwood TCP CAT (`TX;`/`RX;`). `--dry-run`
   only logs. The modem can use the same server: `PTTMETHOD TCP`,
-  `PTTPORT 127.0.0.1:4532`.
+  `PTTPORT 127.0.0.1:4600`.

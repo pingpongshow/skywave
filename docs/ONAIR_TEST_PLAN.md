@@ -36,8 +36,11 @@ modem:
    client (it shows up as the `AetherSDR TX` device). Set the transmit
    source to DAX. `onair_sounder devices` lists the device names.
 4. **PTT.** `tools/onair/flexptt.py --discover`, then
-   `flexptt.py --radio <ip>`. It listens on 127.0.0.1:4532, the modem's
-   default TCP PTT port, with a 45 s TX watchdog.
+   `flexptt.py --radio <ip>`. It listens on 127.0.0.1:4600 (4532 is
+   rigctld's, which AetherSDR uses), with a 45 s TX watchdog. With
+   AetherSDR/SmartSDR running, add `--rigctl 127.0.0.1:4532`: a Flex takes
+   TX audio from the client that keys it, so keying over the bridge's own
+   API connection radiates nothing in DIGU.
 5. **Receiver settings** (Web-888 / KiwiSDR):
    - USB, dial frequency = the Flex's dial frequency.
    - Passband covering the family. `gen` prints it; WIDE is 300–2700 Hz.
@@ -100,7 +103,7 @@ each one is an independent path.
 1. `gen --call <CALL> --reps 5` (WIDE M4–M13, about 3.5 min). Repeat
    with `--family narrow` and `--family mid` when time allows.
 2. Start the recordings, then `play --wav ... --device "<TX device>"
-   --ptt 127.0.0.1:4532`.
+   --ptt 127.0.0.1:4600`.
 3. `score --wav <recording> --manifest <manifest> --csv <out>.csv` for
    each receiver.
 4. Archive under `docs/conformance/onair/<date>_<band>_<rx>/`. Keep the

@@ -366,7 +366,7 @@ class PttClient {
  public:
   explicit PttClient(const std::string& target) {
     if (target.empty()) return;
-    std::string host = "127.0.0.1", port = "4532";  // kPttTcpDefaultPort
+    std::string host = "127.0.0.1", port = "4600";  // flexptt.py default (4532 is rigctld's)
     const size_t c = target.rfind(':');
     if (c != std::string::npos) {
       if (c > 0) host = target.substr(0, c);
