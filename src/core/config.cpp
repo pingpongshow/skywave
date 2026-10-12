@@ -31,6 +31,23 @@ bool parseBool(const std::string& v, bool& out) {
   return false;
 }
 
+bool parseInt(const std::string& v, int& out);
+
+}  // namespace
+
+void parseAudioDevice(const std::string& v, int& index, std::string& name) {
+  int x = 0;
+  if (parseInt(v, x)) {
+    index = x;
+    name.clear();
+  } else {
+    index = -1;
+    name = v;
+  }
+}
+
+namespace {
+
 bool parseInt(const std::string& v, int& out) {
   try {
     size_t pos = 0;
@@ -189,8 +206,8 @@ bool Config::load(const std::string& path) {
     if (full == "station.callsign") callsign = val;
     else if (full == "station.cw_id") okv = parseBool(val, cwId);
     else if (full == "station.cw_wpm") okv = parseInt(val, cwWpm);
-    else if (full == "audio.input_device") okv = parseInt(val, inputDevice);
-    else if (full == "audio.output_device") okv = parseInt(val, outputDevice);
+    else if (full == "audio.input_device") parseAudioDevice(val, inputDevice, inputDeviceName);
+    else if (full == "audio.output_device") parseAudioDevice(val, outputDevice, outputDeviceName);
     else if (full == "audio.input_gain_db") okv = parseDouble(val, inputGainDb);
     else if (full == "audio.output_gain_db") okv = parseDouble(val, outputGainDb);
     else if (full == "tcp.data_port") { int p; okv = parseInt(val, p); if (okv) dataPort = uint16_t(p); }
@@ -263,8 +280,13 @@ bool Config::save(const std::string& path) const {
     << "cw_wpm = " << cwWpm << "\n";
   unknown("station");
   o << "\n[audio]\n"
-    << "input_device = " << inputDevice << "\n"
-    << "output_device = " << outputDevice << "\n"
+    << "input_device = "
+    << (inputDeviceName.empty() ? std::to_string(inputDevice) : inputDeviceName)
+    << "\n"
+    << "output_device = "
+    << (outputDeviceName.empty() ? std::to_string(outputDevice)
+                                 : outputDeviceName)
+    << "\n"
     << "input_gain_db = " << inputGainDb << "\n"
     << "output_gain_db = " << outputGainDb << "\n";
   unknown("audio");

@@ -853,8 +853,27 @@ void ModemWorker::pumpTxLocked(double now) {
       }
       std::vector<float> audio;
       up_.process(padded, audio);
-      const float g = float(std::pow(10.0, cfg_.outputGainDb / 20.0));
-      for (auto& v : audio) v *= g;
+      // TX level: fixed scale to kTxTargetRms, then the operator trim.
+      // Applied HERE only (the device backend used to apply
+      // output_gain_db a second time), so --record WAVs carry the level
+      // the radio gets. The upconverter's real output of a unit-RMS
+      // baseband burst has RMS 1/sqrt(2).
+      const float g = float(kTxTargetRms * std::sqrt(2.0) *
+                            std::pow(10.0, cfg_.outputGainDb / 20.0));
+      size_t clipped = 0;
+      for (auto& v : audio) {
+        v *= g;
+        if (std::fabs(v) > 1.0f) {
+          v = v > 0.0f ? 1.0f : -1.0f;
+          ++clipped;
+        }
+      }
+      if (clipped > 0 && now - lastClipWarnAt_ > 10.0) {
+        lastClipWarnAt_ = now;
+        SKW_WARN("tx: %zu samples clipped at full scale - lower "
+                 "output_gain_db (now %.1f dB)",
+                 clipped, cfg_.outputGainDb);
+      }
       txPending_ = std::move(audio);
       txPendingOff_ = 0;
     }

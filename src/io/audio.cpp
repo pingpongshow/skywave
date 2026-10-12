@@ -21,8 +21,7 @@ class DeviceBackend final : public AudioBackend {
  public:
   DeviceBackend(const AudioConfig& cfg, SampleRing& rx, SampleRing& tx)
       : cfg_(cfg), rx_(rx), tx_(tx),
-        inGain_(dbToLinear(cfg.inputGainDb)),
-        outGain_(dbToLinear(cfg.outputGainDb)) {}
+        inGain_(dbToLinear(cfg.inputGainDb)) {}
 
   ~DeviceBackend() override { stop(); }
 
@@ -41,6 +40,25 @@ class DeviceBackend final : public AudioBackend {
                                        : Pa_GetDefaultInputDevice();
     outP.device = cfg_.outputDevice >= 0 ? cfg_.outputDevice
                                          : Pa_GetDefaultOutputDevice();
+    // By name: resolved NOW, because indices shift as devices come and go.
+    // A missing named device is an error, never a silent fallback - the
+    // default output is the speakers, not the radio.
+    if (!cfg_.inputName.empty()) {
+      inP.device = findAudioDevice(cfg_.inputName, /*input=*/true);
+      if (inP.device < 0) {
+        SKW_ERROR("audio: input device '%s' not found",
+                  cfg_.inputName.c_str());
+        return false;
+      }
+    }
+    if (!cfg_.outputName.empty()) {
+      outP.device = findAudioDevice(cfg_.outputName, /*input=*/false);
+      if (outP.device < 0) {
+        SKW_ERROR("audio: output device '%s' not found",
+                  cfg_.outputName.c_str());
+        return false;
+      }
+    }
     if (inP.device == paNoDevice || outP.device == paNoDevice) {
       SKW_ERROR("portaudio: no input/output device");
       return false;
@@ -68,9 +86,11 @@ class DeviceBackend final : public AudioBackend {
     if (const PaStreamInfo* si = Pa_GetStreamInfo(stream_)) {
       outLatencySec_ = si->outputLatency;
     }
-    SKW_INFO("audio: duplex stream running (in=%d out=%d, %d Hz, output "
-             "latency %.1f ms)",
-             inP.device, outP.device, kFsAudio, outLatencySec_ * 1e3);
+    SKW_INFO("audio: duplex stream running (in=%d '%s' out=%d '%s', %d Hz, "
+             "output latency %.1f ms)",
+             inP.device, Pa_GetDeviceInfo(inP.device)->name, outP.device,
+             Pa_GetDeviceInfo(outP.device)->name, kFsAudio,
+             outLatencySec_ * 1e3);
     return true;
   }
 
@@ -105,8 +125,9 @@ class DeviceBackend final : public AudioBackend {
       self->rx_.write({scaled, n});
     }
     if (out) {
+      // output_gain_db is applied once, by the worker when it stages the
+      // burst (it used to be applied here as well: -5 dB gave -10 dB).
       size_t got = self->tx_.read({out, size_t(frames)});
-      for (size_t i = 0; i < got; ++i) out[i] *= self->outGain_;
       // Ring underrun -> silence, never garbage.
       std::memset(out + got, 0, (frames - got) * sizeof(float));
     }
@@ -117,7 +138,6 @@ class DeviceBackend final : public AudioBackend {
   SampleRing& rx_;
   SampleRing& tx_;
   float inGain_;
-  float outGain_;
   double outLatencySec_ = 0.0;
   PaStream* stream_ = nullptr;
   bool paUp_ = false;
@@ -207,6 +227,20 @@ std::vector<AudioDeviceInfo> listAudioDevices() {
   }
   Pa_Terminate();
   return out;
+}
+
+int findAudioDevice(const std::string& name, bool input) {
+  const auto devs = listAudioDevices();
+  auto usable = [&](const AudioDeviceInfo& d) {
+    return input ? d.maxInputChannels > 0 : d.maxOutputChannels > 0;
+  };
+  for (const auto& d : devs) {
+    if (usable(d) && d.name == name) return d.index;
+  }
+  for (const auto& d : devs) {
+    if (usable(d) && d.name.rfind(name, 0) == 0) return d.index;
+  }
+  return -1;
 }
 
 std::unique_ptr<AudioBackend> makeDeviceBackend(const AudioConfig& cfg,

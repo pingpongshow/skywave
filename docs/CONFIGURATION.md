@@ -41,8 +41,8 @@ given.
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `input_device` / `output_device` | `-1` | PortAudio index, −1 = default |
-| `input_gain_db` / `output_gain_db` | `0.0` | trims |
+| `input_device` / `output_device` | `-1` | device **name** (preferred, e.g. `AetherSDR TX`; exact match, else the first name starting with it) or PortAudio index (−1 = default). Indices shift whenever any audio device appears or disappears, so a saved index can silently point at another device; a name is resolved each time the stream opens, and a missing named device stops start-up instead of falling back. The GUI saves its choice by name. |
+| `input_gain_db` / `output_gain_db` | `0.0` | trims. At `output_gain_db = 0` a data burst leaves at 0.22 RMS (−13.2 dBFS) with peaks near −1 dBFS; positive trims clip (samples are limited at full scale and a `tx: ... clipped` warning is logged). Set drive with the radio, not by raising this. Applied once, by the worker (before 2026-10 the device backend applied it a second time). |
 
 (Sample rate is fixed at 48000 and not configurable — the numerology
 depends on it.)
@@ -130,8 +130,8 @@ callsign = W1AW
 cw_id = true
 
 [audio]
-input_device = 1
-output_device = 2
+input_device = DAX RX 1
+output_device = DAX TX
 
 [tcp]
 data_port = 9100

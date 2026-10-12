@@ -42,9 +42,19 @@ class AudioBackend {
 struct AudioConfig {
   int inputDevice = -1;   // -1 = default
   int outputDevice = -1;
+  // Non-empty: open the device with this name (Config::inputDeviceName),
+  // resolved at start(); the stream refuses to start if it is missing
+  // rather than falling back to some other device.
+  std::string inputName;
+  std::string outputName;
   double inputGainDb = 0.0;
-  double outputGainDb = 0.0;
+  double outputGainDb = 0.0;  // informational: the worker applies it (once)
 };
+
+// Current PortAudio index of the device called `name` that has input
+// (input=true) or output channels: exact name first, then the first name
+// that starts with it. -1 when there is none.
+int findAudioDevice(const std::string& name, bool input);
 
 // Real-time duplex PortAudio stream at kFsAudio.
 std::unique_ptr<AudioBackend> makeDeviceBackend(const AudioConfig& cfg,

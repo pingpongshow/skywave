@@ -37,8 +37,8 @@ void printHelp() {
       "  --data-port <n>          TCP data port (default %u)\n"
       "  --ctrl-port <n>          TCP control port (default %u)\n"
       "  --voice-port <n>         TCP voice port (default %u)\n"
-      "  --audio-in <index>       PortAudio input device\n"
-      "  --audio-out <index>      PortAudio output device\n"
+      "  --audio-in <index|name>  PortAudio input device (name preferred)\n"
+      "  --audio-out <index|name> PortAudio output device (name preferred)\n"
       "  --list-audio             list audio devices and exit\n"
       "  --replay <wav>           feed RX from WAV file (test mode)\n"
       "  --record <wav>           record TX audio to WAV file\n"
@@ -88,8 +88,8 @@ CliArgs parseCli(int argc, char** argv, skw::Config& cfg) {
     else if (!std::strcmp(s, "--data-port")) { if (auto* v = need(i, s)) cfg.dataPort = uint16_t(atoi(v)); }
     else if (!std::strcmp(s, "--ctrl-port")) { if (auto* v = need(i, s)) cfg.ctrlPort = uint16_t(atoi(v)); }
     else if (!std::strcmp(s, "--voice-port")) { if (auto* v = need(i, s)) cfg.voicePort = uint16_t(atoi(v)); }
-    else if (!std::strcmp(s, "--audio-in")) { if (auto* v = need(i, s)) cfg.inputDevice = atoi(v); }
-    else if (!std::strcmp(s, "--audio-out")) { if (auto* v = need(i, s)) cfg.outputDevice = atoi(v); }
+    else if (!std::strcmp(s, "--audio-in")) { if (auto* v = need(i, s)) skw::parseAudioDevice(v, cfg.inputDevice, cfg.inputDeviceName); }
+    else if (!std::strcmp(s, "--audio-out")) { if (auto* v = need(i, s)) skw::parseAudioDevice(v, cfg.outputDevice, cfg.outputDeviceName); }
     else if (!std::strcmp(s, "--log-level")) { if (auto* v = need(i, s)) cfg.logLevel = atoi(v); }
     else if (!std::strcmp(s, "--log-file")) { if (auto* v = need(i, s)) cfg.logFile = v; }
     else {
@@ -98,6 +98,20 @@ CliArgs parseCli(int argc, char** argv, skw::Config& cfg) {
     }
   }
   return a;
+}
+
+// Name of the device at a PortAudio index ("" if none): the GUI picks by
+// index, the config stores by name.
+std::string deviceNameAt(int index) {
+  for (const auto& d : skw::listAudioDevices()) {
+    if (d.index == index) return d.name;
+  }
+  return "";
+}
+
+// Index to show as selected: a configured name, resolved now.
+int selectedDevice(const std::string& name, int index, bool input) {
+  return name.empty() ? index : skw::findAudioDevice(name, input);
 }
 
 }  // namespace
@@ -152,8 +166,9 @@ int main(int argc, char** argv) {
                    ? skw::makeFileBackend(pre.replayPath, pre.recordPath,
                                           rxRing, txRing)
                    : skw::makeDeviceBackend(
-                         {cfg.inputDevice, cfg.outputDevice, cfg.inputGainDb,
-                          cfg.outputGainDb},
+                         {cfg.inputDevice, cfg.outputDevice,
+                          cfg.inputDeviceName, cfg.outputDeviceName,
+                          cfg.inputGainDb, cfg.outputGainDb},
                          rxRing, txRing);
   if (!audio->start()) return 1;
 
@@ -213,7 +228,9 @@ int main(int argc, char** argv) {
         SKW_WARN("gui: no window available; continuing headless");
         gui.reset();
       } else {
-        gui->setAudioSelection(cfg.inputDevice, cfg.outputDevice);
+        gui->setAudioSelection(
+            selectedDevice(cfg.inputDeviceName, cfg.inputDevice, true),
+            selectedDevice(cfg.outputDeviceName, cfg.outputDevice, false));
         gui->setPortInfo(cfg.dataPort, cfg.ctrlPort, cfg.voicePort);
       }
     }
@@ -278,13 +295,17 @@ int main(int argc, char** argv) {
         // rings just pause while the stream is down.
         if (auto req = gui->takeAudioRequest(); req && !fileMode) {
           audio->stop();
-          audio = skw::makeDeviceBackend({req->first, req->second,
+          audio = skw::makeDeviceBackend({req->first, req->second, "", "",
                                           cfg.inputGainDb, cfg.outputGainDb},
                                          rxRing, txRing);
           if (audio->start()) {
             worker.setOutputLatencySec(audio->outputLatencySec());
-            cfg.inputDevice = req->first;    // persists via --config save
+            // Persists via --config save, BY NAME: the index is only
+            // valid until the next device comes or goes.
+            cfg.inputDevice = req->first;
             cfg.outputDevice = req->second;
+            cfg.inputDeviceName = deviceNameAt(req->first);
+            cfg.outputDeviceName = deviceNameAt(req->second);
             gui->noteAudio("OK: stream running on in=" +
                            std::to_string(req->first) + " out=" +
                            std::to_string(req->second));
@@ -292,6 +313,8 @@ int main(int argc, char** argv) {
             SKW_WARN("gui: audio device change failed; reverting");
             audio = skw::makeDeviceBackend({cfg.inputDevice,
                                             cfg.outputDevice,
+                                            cfg.inputDeviceName,
+                                            cfg.outputDeviceName,
                                             cfg.inputGainDb,
                                             cfg.outputGainDb},
                                            rxRing, txRing);
@@ -300,7 +323,9 @@ int main(int argc, char** argv) {
             gui->noteAudio(back ? "FAILED: kept previous devices"
                                 : "FAILED: previous devices also refused "
                                   "- audio is DOWN");
-            gui->setAudioSelection(cfg.inputDevice, cfg.outputDevice);
+            gui->setAudioSelection(
+            selectedDevice(cfg.inputDeviceName, cfg.inputDevice, true),
+            selectedDevice(cfg.outputDeviceName, cfg.outputDevice, false));
           }
         }
         continue;                  // vsync paces the loop

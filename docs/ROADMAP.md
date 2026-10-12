@@ -1086,13 +1086,25 @@ one-way: [ONAIR_TEST_PLAN.md](ONAIR_TEST_PLAN.md), tooling in
 `tools/onair/` (outside the modem). Building it found a modem defect
 that blocks on-air use:
 
-- [ ] **TX audio clips on real interfaces.** Unit-RMS baseband with an
+- [x] **TX audio clips on real interfaces.** Unit-RMS baseband with an
   8 dB PAPR allowance upconverts to ~+9 dBFS peaks at
   `output_gain_db = 0`; virtual cables pass floats > 1.0, so ST3 never
   saw it. A clipped 16-bit loopback lost every M12/M13 frame. Needs a
-  fixed TX scale (peak <= -1 dBFS).
-- [ ] **`output_gain_db` applied twice** (worker TX staging and the
-  device callback).
+  fixed TX scale (peak <= -1 dBFS). FIXED: bursts at kTxTargetRms 0.22
+  (defined since Phase 1, never applied), peak 0.85; full-scale limiter
+  with a rate-limited WARN.
+- [x] **`output_gain_db` applied twice** (worker TX staging and the
+  device callback). FIXED: worker only. Test
+  `tx_level_fits_full_scale_and_gain_applies_once` (RMS 0.220, -6 dB
+  trim -> -6.0 dB).
+- [x] **Audio devices by index only.** PortAudio indices shift when any
+  device appears (the Flex client's DAX devices, a Continuity mic); a
+  saved `input_device`/`output_device` index then opens another device -
+  TX audio to the speakers, or a deaf modem. Found as an st3_killresume
+  failure: B relaunched on stale indices. FIXED: devices by name in the
+  config, CLI and GUI save, resolved at each stream open, missing name =
+  start-up error; the ST3 harness passes names. Test
+  `config_audio_device_by_name`.
 - [ ] Stage 1 bench (dummy load): drive/ALC knee, ladder at high SNR,
   PTT lead, output latency, ppm, CPU.
 - [ ] Stage 2 one-way skywave runs, feeding the AMC Good-channel tuning

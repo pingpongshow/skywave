@@ -314,6 +314,7 @@ class ModemWorker : public ControlBackend {
   std::deque<float> floorBlocks_;  // 15 s of block levels (floor = min)
   uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed
   double lastTxDropAt_ = 0.0;  // SKW_TX_IMPAIR dropout scheduler
+  double lastClipWarnAt_ = -1e9;  // rate limit for the TX clip warning
   size_t txPendingOff_ = 0;
   double txTestUntil_ = 0.0;
 

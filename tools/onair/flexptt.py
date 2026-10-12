@@ -12,13 +12,17 @@ Clients: the modem (`PTTMETHOD TCP`, `PTTPORT 127.0.0.1:4532`) and
 `onair_sounder play --ptt 127.0.0.1:4532`. The radio stays keyed while
 ANY client holds a key; a client that disconnects releases its key.
 
-Safety: a watchdog unkeys the radio after --max-key seconds of continuous
-transmission, and every exit path (Ctrl-C, SIGTERM, a lost client) sends
-`xmit 0`.
+Safety:
+- POWER GUARD: the bridge subscribes to the radio's transmit status and
+  refuses to key unless it reports `rfpower` <= --max-rfpower (default 0,
+  the radio's lowest setting). --set-min-power sets rfpower=0 on connect.
+- a watchdog unkeys the radio after --max-key seconds of continuous
+  transmission;
+- every exit path (Ctrl-C, SIGTERM, a lost client) sends `xmit 0`.
 
 Usage:
   tools/onair/flexptt.py --discover
-  tools/onair/flexptt.py --radio 192.0.2.10
+  tools/onair/flexptt.py --radio 192.0.2.182 --set-min-power
   tools/onair/flexptt.py --kenwood 127.0.0.1:4533   # generic Kenwood TCP CAT
   tools/onair/flexptt.py --dry-run                  # log only, key nothing
 """
@@ -65,10 +69,14 @@ class FlexBackend:
 
     name = "flex"
 
-    def __init__(self, host):
+    def __init__(self, host, max_rfpower, set_min_power):
         self.host = host
         self.reader = self.writer = None
         self.seq = 0
+        self.max_rfpower = max_rfpower
+        self.set_min_power = set_min_power
+        self.rfpower = None   # from `transmit` status; None = not yet known
+        self.status = asyncio.Event()
 
     async def connect(self):
         self.reader, self.writer = await asyncio.wait_for(
@@ -84,6 +92,23 @@ class FlexBackend:
                 banner.append(line)
         log(f"flex: connected to {self.host} ({' '.join(banner)})")
         asyncio.ensure_future(self._drain())
+        self.status.clear()
+        if self.set_min_power:
+            await self._cmd("transmit set rfpower=0")
+        await self._cmd("sub tx all")
+        try:
+            await asyncio.wait_for(self.status.wait(), 5)
+        except asyncio.TimeoutError:
+            log("flex: no transmit status yet - keying stays refused until "
+                "rfpower is known")
+        if self.rfpower is not None:
+            log(f"flex: rfpower={self.rfpower} "
+                f"(keying allowed only at <= {self.max_rfpower})")
+
+    async def _cmd(self, text):
+        self.seq += 1
+        self.writer.write(f"C{self.seq}|{text}\n".encode())
+        await self.writer.drain()
 
     async def _drain(self):
         # Replies to our commands; status messages are not subscribed.
@@ -93,6 +118,14 @@ class FlexBackend:
                 if not line:
                     break
                 line = line.decode("ascii", "replace").strip()
+                if "|transmit " in line:
+                    p = re.search(r"\brfpower=(\d+)", line)
+                    if p:
+                        new = int(p.group(1))
+                        if new != self.rfpower and self.rfpower is not None:
+                            log(f"flex: rfpower changed to {new}")
+                        self.rfpower = new
+                        self.status.set()
                 m = re.match(r"R(\d+)\|([0-9A-Fa-f]+)\|?(.*)", line)
                 if m and int(m.group(2), 16) != 0:
                     log(f"flex: command {m.group(1)} FAILED "
@@ -105,9 +138,12 @@ class FlexBackend:
     async def set_tx(self, on):
         if self.writer is None:
             await self.connect()
-        self.seq += 1
-        self.writer.write(f"C{self.seq}|xmit {1 if on else 0}\n".encode())
-        await self.writer.drain()
+        if on and (self.rfpower is None or self.rfpower > self.max_rfpower):
+            raise PermissionError(
+                f"power guard: rfpower={self.rfpower}, limit "
+                f"{self.max_rfpower} - lower RF power in SmartSDR (or "
+                "restart with --set-min-power)")
+        await self._cmd(f"xmit {1 if on else 0}")
 
     def connected(self):
         return self.writer is not None
@@ -168,6 +204,9 @@ class Bridge:
         async with self.lock:
             try:
                 await self.backend.set_tx(want)
+            except PermissionError as e:
+                log(f"REFUSED KEY: {e}")
+                return
             except (OSError, asyncio.TimeoutError, ConnectionError) as e:
                 log(f"{self.backend.name}: {'KEY' if want else 'UNKEY'} "
                     f"failed: {e}")
@@ -238,7 +277,7 @@ async def main_async(args):
     elif args.kenwood:
         backend = KenwoodBackend(args.kenwood)
     else:
-        backend = FlexBackend(args.radio)
+        backend = FlexBackend(args.radio, args.max_rfpower, args.set_min_power)
     await backend.connect()
     bridge = Bridge(backend, args.max_key)
     server = await asyncio.start_server(bridge.client, args.listen, args.port)
@@ -266,6 +305,11 @@ def main():
                     help="log KEY/UNKEY without touching a radio")
     ap.add_argument("--discover", action="store_true",
                     help="list FlexRadios broadcasting on the LAN and exit")
+    ap.add_argument("--max-rfpower", type=int, default=0,
+                    help="refuse to key above this RF power setting "
+                         "(0-100; default 0 = the radio's lowest)")
+    ap.add_argument("--set-min-power", action="store_true",
+                    help="set the radio's RF power to 0 on connect")
     ap.add_argument("--listen", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=4532,
                     help="PTT server port (modem default 4532)")

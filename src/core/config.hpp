@@ -20,8 +20,14 @@ struct Config {
   bool cwId = false;
   int cwWpm = 20;
   // [audio]
+  // A device is chosen by NAME (preferred: PortAudio indices shift
+  // whenever any device comes or goes - an SDR client's virtual DAX
+  // devices, a Continuity microphone) or by index. A non-empty name wins
+  // and is resolved to the current index each time the stream opens.
   int inputDevice = -1;
   int outputDevice = -1;
+  std::string inputDeviceName;
+  std::string outputDeviceName;
   double inputGainDb = 0.0;
   double outputGainDb = 0.0;
   // [tcp]
@@ -96,6 +102,10 @@ std::string toString(HarqMode m);
 std::optional<HarqMode> harqModeFromString(std::string s);
 std::string toString(Family f);
 std::optional<Family> familyFromString(std::string s);
+// `input_device` / `output_device` / --audio-in / --audio-out: an integer
+// is a PortAudio index (-1 = default) and clears the name; anything else
+// is a device name and resets the index to -1.
+void parseAudioDevice(const std::string& v, int& index, std::string& name);
 std::string toString(Band b);
 std::optional<Band> bandFromString(std::string s);
 bool callsignValid(const std::string& call);

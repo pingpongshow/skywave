@@ -44,6 +44,8 @@ def main():
     if fwd is None or rev is None:
         print("killresume skip: loopback devices missing")
         return SKIP
+    # Present now; launch() re-resolves the names at every (re)launch.
+    fwd, rev = "BlackHole 2ch", "VB-Cable"
     logdir = os.environ.get("SKW_ST3_LOGDIR", ".")
 
     a_proc, a_log = launch(binary, "W1AW", rev, fwd, 9200, 9201, logdir)

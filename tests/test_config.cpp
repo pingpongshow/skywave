@@ -101,6 +101,39 @@ TEST_CASE(config_unknown_keys_preserved) {
   std::remove(path.c_str());
 }
 
+// Audio devices by NAME (PortAudio indices shift as devices come and go):
+// a name survives save/load verbatim, spaces included; a number is still
+// an index and clears any name.
+TEST_CASE(config_audio_device_by_name) {
+  auto path = tmpPath("audioname");
+  {
+    std::ofstream f(path);
+    f << "[audio]\ninput_device = VB-Cable\noutput_device = AetherSDR TX\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK_EQ(c.inputDeviceName, std::string("VB-Cable"));
+  CHECK_EQ(c.outputDeviceName, std::string("AetherSDR TX"));
+  CHECK_EQ(c.inputDevice, -1);
+  CHECK(c.save(path));
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.outputDeviceName, std::string("AetherSDR TX"));
+  CHECK_EQ(d.inputDeviceName, std::string("VB-Cable"));
+
+  int idx = 7;
+  std::string name = "old";
+  parseAudioDevice("3", idx, name);
+  CHECK_EQ(idx, 3);
+  CHECK(name.empty());
+  parseAudioDevice("-1", idx, name);
+  CHECK_EQ(idx, -1);
+  parseAudioDevice("BlackHole 2ch", idx, name);
+  CHECK_EQ(idx, -1);
+  CHECK_EQ(name, std::string("BlackHole 2ch"));
+  std::remove(path.c_str());
+}
+
 TEST_CASE(config_bad_values_keep_defaults) {
   auto path = tmpPath("bad");
   {

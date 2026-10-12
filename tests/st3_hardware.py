@@ -115,6 +115,12 @@ def launch(binary, call, in_dev, out_dev, data_port, ctrl_port, logdir,
     while os.path.exists(os.path.join(logdir, f"st3_{call}_{n:02d}.log")):
         n += 1
     log = open(os.path.join(logdir, f"st3_{call}_{n:02d}.log"), "w")
+    # Devices are passed by NAME: the modem resolves them when it opens
+    # the stream. Indices shift when any device comes or goes (an iPhone
+    # Continuity microphone, an SDR client's virtual DAX devices), and a
+    # relaunch with indices listed minutes earlier opened the wrong devices
+    # (2026-10-12: st3_killresume's relaunched B came up on BlackHole 16ch
+    # / AetherSDR TX, deaf and mute, and never reconnected).
     env = dict(os.environ)
     if impair:
         # SKW_TX_IMPAIR: each modem impairs its OWN transmit audio
@@ -173,6 +179,8 @@ def main():
               ", ".join(d["name"] for d in devs))
         return SKIP
     print(f"ST3: forward device idx {fwd}, reverse device idx {rev}")
+    # launch() re-resolves the names at every launch (indices shift).
+    fwd, rev = "BlackHole 2ch", "VB-Cable"
 
     logdir = os.environ.get("SKW_ST3_LOGDIR", ".")
     # A transmits into the forward device and listens on the reverse one;

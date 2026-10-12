@@ -473,6 +473,11 @@ inline constexpr uint32_t kSeedSpreadPhase  = 0x5EA5CAFEu;
 inline constexpr uint32_t kSeedPilotPhase   = 0x0FD1E5EDu;
 
 // ------------------------------------------------------------------ TX levels
+// Passband RMS of a data burst at output_gain_db = 0 (-13.2 dBFS). The PHY
+// emits unit-RMS baseband with an 8 dB PAPR allowance; its real upconverted
+// form has ~12 dB crest, so 0.22 RMS peaks near -1 dBFS. (Until 2026-10
+// this was defined but unused: bursts went out at ~0.7 RMS, +9 dBFS peaks,
+// which real interfaces clip and virtual cables pass untouched.)
 inline constexpr double kTxTargetRms       = 0.22;
 inline constexpr double kTxScaleMin        = 0.30;
 inline constexpr double kTxScaleMax        = 1.15;

@@ -19,6 +19,7 @@ modem:
 | `onair_sounder play` | plays it to the radio's TX audio device and keys PTT per segment |
 | `onair_sounder score` | decodes a received recording against the manifest. Reports FER per mode; SNR, EVM, CFO, delay spread and pilot stability per frame; CFO drift; and the clock offset |
 | `flexptt.py` | TCP PTT server. Speaks the modem's `KEY`/`UNKEY` protocol and keys the Flex through the SmartSDR API |
+| `kiwirec.py` | records a Web-888/KiwiSDR to WAV, receive-only, with AGC off and compression off |
 
 ## Prerequisites
 
@@ -42,28 +43,37 @@ modem:
    - Passband covering the family. `gen` prints it; WIDE is 300–2700 Hz.
    - **AGC off, manual gain**, so the signal never pumps.
    - Audio compression off if offered.
-   - Record WAV with the web UI's recorder or `kiwirecorder.py`
-     (kiwiclient), using `--agc-gain` for manual gain and `--tlimit` for
-     length. Check `--help` on your version.
+   - Record with `tools/onair/kiwirec.py --host <rx> --freq <dial kHz>
+     --seconds N --out rec.wav`. It sets all of the above (USB, AGC off
+     with manual gain, compression off) and writes the receiver's true
+     sample rate to `rec.rate`. It needs only the Python standard library.
+     The web UI's recorder also works if you set the same things by hand.
 
-## Known issue to fix before stage 1
+## TX level (fixed 2026-10-12)
 
-**The modem's TX audio clips on any real interface.** The PHY emits
-unit-RMS baseband with an 8 dB PAPR allowance, which upconverts to peaks
-of about +9 dBFS at `output_gain_db = 0`. BlackHole passes float samples
-above 1.0 untouched, which is why ST3 never showed it. DAX, a USB codec,
-or a 16-bit WAV clips them. In a clean loopback through a 16-bit WAV,
-every M12/M13 frame and some robust frames failed until the level came
-down 10 dB.
+Building this tooling found that the modem's TX audio clipped on every
+real interface. At `output_gain_db = 0` bursts left at about 0.7 RMS,
+with peaks of about +9 dBFS. BlackHole passes float samples above 1.0
+untouched, which is why ST3 never showed it. In a clean loopback through
+a 16-bit WAV, every M12/M13 frame failed. `output_gain_db` was also
+applied twice.
 
-Separately, `output_gain_db` is applied **twice**
-([worker.cpp:856](../src/worker.cpp) and [audio.cpp:109](../src/io/audio.cpp)),
-so a −5 dB setting gives −10 dB.
+Both are fixed: bursts now go out at `kTxTargetRms` = 0.22 RMS (peaks
+about −1 dBFS), the trim is applied once, and samples are limited at
+full scale with a `tx: ... clipped` warning
+(`tx_level_fits_full_scale_and_gain_applies_once`). The sounder's
+default `--gain-db -10` gives the same level as the modem, so the
+stage 1 drive setting carries over to the modem unchanged.
 
-The sounder defaults to `--gain-db -10` (peak about −1 dBFS), so stage 1
-and stage 2 are unaffected. The modem itself needs a fixed TX scale
-before it goes on air. Until then, `output_gain_db = -5` (−10 dB
-effective) is the workaround.
+## This station (found on the LAN 2026-10-12)
+
+| Device | Address | State read back (read-only) |
+|---|---|---|
+| FLEX-6700, firmware 4.1.5 | 192.0.2.182 (API 4992) | callsign N0CALL; `rfpower=0`; TX slice at 13.98698 MHz DIGU (out of band: retune before any on-air TX); `dax=0` (TX source MIC: set DAX); no GUI client connected, so no slices and `tx_allowed=0`; TCXO, no GPSDO |
+| Web-888 | 192.0.2.210:8073 | KiwiSDR-compatible, 24 kHz audio; `ant_connected=0`, GPS not locked |
+
+**Operator rule: any over-the-air transmission from the Flex runs at the
+lowest RF power (`rfpower=0`), checked before every key-up.**
 
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 

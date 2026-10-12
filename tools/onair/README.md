@@ -14,23 +14,26 @@ on by default).
 ```bash
 # 1. PTT server (find the radio first)
 tools/onair/flexptt.py --discover
-tools/onair/flexptt.py --radio 192.0.2.10
+tools/onair/flexptt.py --radio 192.0.2.182 --set-min-power
 
 # 2. Build a sounding: WIDE M4-M13, 5 rounds, CW ID
 build/onair_sounder gen --call N0CALL --reps 5 --out snd.wav
 
 # 3. Start the receiver recording(s), then transmit
+tools/onair/kiwirec.py --host 192.0.2.210 --freq 14105.0 --seconds 240 --out kiwi_rec.wav &
 build/onair_sounder devices
 build/onair_sounder play --wav snd.wav --device "AetherSDR TX" --ptt 127.0.0.1:4532
 
 # 4. Score each recording
-build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.csv
+build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.csv \
+    --rate $(cat kiwi_rec.rate)
 ```
 
 ## Notes
 
 - **Level.** `gen` defaults to `--gain-db -10`, which puts the peak at
-  about −1 dBFS. Set drive with the radio's DAX TX gain and RF power, not
+  about −1 dBFS: the same level the modem transmits at
+  `output_gain_db = 0`. Set drive with the radio's DAX TX gain and RF power, not
   by raising this: above 0 dBFS the interface clips.
 - **Segments.** Frames are grouped into keyed segments (`--segment 30`
   s) with unkeyed pauses (`--pause 3` s). This bounds continuous key-down
@@ -46,6 +49,10 @@ build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.
 - **Clock figure.** Fitted within keyed segments, because the player's
   PTT waits add time between segments that the WAV doesn't contain.
   Expect ±5–15 ppm resolution per run.
+- **`kiwirec.py`** is receive-only and uses only the Python standard
+  library. It tunes USB at the dial frequency with AGC off (`--gain`,
+  default 50) and compression off, and writes the true sample rate to
+  `<out>.rate`.
 - **`flexptt.py` backends.** `--radio` uses the SmartSDR API (TCP 4992,
   `xmit 1/0`), which runs alongside SmartSDR for Mac. `--kenwood
   host:port` speaks a generic Kenwood TCP CAT (`TX;`/`RX;`). `--dry-run`

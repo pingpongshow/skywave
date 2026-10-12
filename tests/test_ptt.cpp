@@ -268,4 +268,53 @@ TEST_CASE(ptt_release_waits_for_output_latency) {
   CHECK(lag0 <= 0.0151);                   // no latency: prompt as before
 }
 
+// TX level (ROADMAP "On-air tooling and plan"): a data-like burst goes out
+// at kTxTargetRms with peaks inside full scale, and output_gain_db trims
+// it ONCE (the device backend used to apply it a second time). Before the
+// fix TXTEST left the worker at ~0.7 RMS with +9 dBFS peaks, which every
+// real interface clips.
+namespace {
+struct TxLevel { double rms; double peak; };
+TxLevel txtestLevel(double outputGainDb) {
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = false;
+  cfg.pttMethod = PttMethod::Vox;
+  cfg.cwId = false;
+  cfg.outputGainDb = outputGainDb;
+  FakeClock clock{1'000'000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+  CHECK_EQ(worker.control("TXTEST 2"), std::string("TXTEST 2"));
+  std::vector<float> sink(size_t(kFsAudio / 100)), all;
+  for (int i = 0; i < 600; ++i) {
+    worker.runOnce();
+    const size_t n = txRing.read(sink);
+    all.insert(all.end(), sink.begin(), sink.begin() + long(n));
+    clock.advanceSec(0.01);
+  }
+  // RMS over the burst proper: skip the lead/tail silence and edges.
+  double pow = 0.0, peak = 0.0;
+  size_t cnt = 0;
+  for (float v : all) {
+    peak = std::max(peak, double(std::fabs(v)));
+    if (std::fabs(v) > 1e-4f) { pow += double(v) * v; ++cnt; }
+  }
+  CHECK(cnt > size_t(kFsAudio));  // at least a second of signal
+  return {std::sqrt(pow / double(std::max<size_t>(cnt, 1))), peak};
+}
+}  // namespace
+
+TEST_CASE(tx_level_fits_full_scale_and_gain_applies_once) {
+  const TxLevel l0 = txtestLevel(0.0);
+  const TxLevel l6 = txtestLevel(-6.0);
+  std::printf("tx level: 0 dB rms %.3f peak %.3f; -6 dB rms %.3f peak %.3f\n",
+              l0.rms, l0.peak, l6.rms, l6.peak);
+  CHECK(l0.peak <= 1.0);                      // never past full scale
+  CHECK(l0.peak > 0.5);                       // ...but uses the range
+  CHECK_NEAR(l0.rms, kTxTargetRms, 0.04);     // the documented level
+  // -6 dB trim gives -6 dB, not -12 (one application of the gain).
+  CHECK_NEAR(20.0 * std::log10(l6.rms / l0.rms), -6.0, 0.3);
+}
+
 SKYTEST_MAIN
