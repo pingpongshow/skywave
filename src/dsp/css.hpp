@@ -108,9 +108,20 @@ std::vector<cfloat> cssBaseChirp(Family f, int sf);
 // remains the header transport (short, duplicated) and the aligned
 // modem-layer API.
 std::vector<uint16_t> cssMapCodedBits(std::span<const uint8_t> bits, int sf);
+// Where the decided symbol's correlation peak actually sits: `offset` is
+// in baseband samples relative to the lag the demod read it at (on the
+// strongest tap), sub-sample by parabolic interpolation over +-1 chip;
+// `ratio` is the decided score over the mean score (decision quality).
+// A steady non-zero offset is payload misalignment - from sample-clock
+// drift OR from residual CFO, which a chirp cannot tell apart (8.8).
+struct CssPeakInfo {
+  float offset = 0.0f;
+  float ratio = 0.0f;
+};
 void cssSoftDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
                         std::span<const CssTap> taps,
-                        std::vector<float>& llr);
+                        std::vector<float>& llr,
+                        CssPeakInfo* peak = nullptr);
 
 // --- bit layer (Hamming(7,4) + interleave + gray) ------------------------------
 // Payload bytes -> CSS symbols (full-message row-column interleave).

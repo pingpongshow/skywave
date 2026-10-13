@@ -954,8 +954,26 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   converge), so it needs a no-reports guard; in one-way flows the quiet
   direction keeps its post-step offset, decoded by 8.2's ±55 Hz capture.
   Deferred with the DATA-borne report.
-- [ ] **8.8 CSS AFC** — *Gate: CSS M0–M3 at 0.1 Hz/s drift within
-  floor+3 spec.* RE-PLANNED 2026-10-11 (not landed). Mechanism confirmed:
+- [x] **8.8 CSS AFC** — *Gate: CSS M0–M3 at 0.1 Hz/s drift within
+  floor+3 spec.* ✓ 2026-10-13, design (c): a DRIFT SEARCH after a failed
+  payload. The preamble already measures CFO at t=0, so the residual is
+  one number, the drift rate r. On a pass-1 failure the receiver
+  derotates the payload span's quadratic phase (pi*r*t^2) for r in
+  ±0.2 Hz/s (0.02 steps, then ±0.01 around the best), re-runs the
+  pilot/tap/demod pass on each, decodes the candidate whose symbols
+  correlate best, and lets the CRC arbitrate. A frame that decodes today
+  never reaches it, so it cannot regress one. AWGN floor+3 at 0.1 Hz/s:
+  MID M2/M3 100% -> 0%, NARROW M0-M3 88-100% -> 0-4%; ±0.1 and 0.05
+  pass; WIDE unchanged (0%); AWGN without drift identical on/off; CCIR
+  Moderate without drift equal or better at every point (WIDE M1 20 -> 10%,
+  MID M2 15 -> 7.5%). Cost ~1 s CPU per failing NARROW M2 frame (64 s on
+  air), worker-thread time. Test `css_frame_lo_drift` (36/36; 4/36 with
+  `SKW_CSS_DRIFT_SEARCH=0`). LIMITS: NARROW at 0.2 Hz/s still fails
+  32-68% (edge of the search range; twice the gate); MID M0 on CCIR
+  Moderate fails floor+1 (27.5%) with and without the search - a
+  pre-existing CSS fading-floor issue, not in the release gate (CSS is
+  gated on AWGN only). Follow-up: FFT-based pilot correlation would cut
+  the search cost. Original record: Mechanism confirmed:
   a chirp's delay-Doppler coupling makes SF8 pilots see LO drift 2^(8-SF)
   times larger than SF5-SF7 payload symbols, so pilot-derived taps
   mis-time the payload (NARROW M1-M3 85-100% FER from 0.05 Hz/s; WIDE
@@ -1116,7 +1134,7 @@ that blocks on-air use:
 Every open item re-measured on current code; passes are closed here so
 they are not re-raised. Commands are the original measurements.
 
-- [ ] **8.8 CSS under LO drift - STILL OPEN (NARROW, MID).**
+- [x] **8.8 CSS under LO drift - CLOSED 2026-10-13 (drift search, see 8.8).**
   `bertool --css-frames --preset awgn --offsets 3 --trials 25`:
   WIDE M0-M3 0% at 0.05 Hz/s; MID 0% at 0.05 Hz/s but M2/M3 100% (M1 8%)
   at the 0.1 Hz/s gate; NARROW M1-M3 88-100% at 0.05 Hz/s. The 2026-10-12

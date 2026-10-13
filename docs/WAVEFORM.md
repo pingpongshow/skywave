@@ -512,6 +512,13 @@ The original forward estimate ("floors −9 → −14 dB") predates the
 per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`
 (FER ≈ 0 at −14 dB). CFO tolerance: ±half the connected-preamble capture
 range (chirp CFO↔delay coupling; the sync symbols absorb the residual).
+**LO drift:** the receiver removes the preamble CFO once, so drift leaves
+a residual r·t, and a chirp turns that into a timing offset proportional
+to 2^SF. The SF8 pilots move the RAKE taps 2^(8−SF) times further than an
+SF5–SF7 payload needs. If a payload fails, the receiver searches the drift
+rate (±0.2 Hz/s), derotating the payload's quadratic phase and re-running
+the pilot/demod pass, and decodes the best-correlating candidate under
+the CRC. MID/NARROW `M0–M3` hold floor+3 at ±0.1 Hz/s (ROADMAP 8.8).
 
 **Measured FADING floors** (one-shot FER ≤ ~10%, full frames, designated
 channels per the `kFadingFloors` convention — CCIR Moderate, NARROW on

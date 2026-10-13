@@ -566,115 +566,193 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // Payload: LDPC r1/2 over soft-demodulated CSS symbols (same pilot
   // cadence as the header sections), whitened, trailing CRC-16.
   const int sf = cssSf(hdr->mode);
-  {
-    const size_t symLen = cssSymbolSamples(family, sf);
-    const size_t codedBits = cssPayloadCodedBits(size_t(hdr->length));
-    const size_t nsym = (codedBits + size_t(sf) - 1) / size_t(sf);
-    const int PW = 3 * spc + 6;
-    std::vector<float> llr;
-    llr.reserve(nsym * size_t(sf));
-    bool samplesOk = true;
-    for (size_t s = 0; s < nsym && samplesOk; ++s) {
+  const size_t symLenP = cssSymbolSamples(family, sf);
+  const size_t codedBits = cssPayloadCodedBits(size_t(hdr->length));
+  const size_t nsymP = (codedBits + size_t(sf) - 1) / size_t(sf);
+  const int PWp = 3 * spc + 6;
+  const size_t payloadPos = pos;
+  const auto trackAtPayload = track;
+  const auto tapsAtPayload = taps;
+  // Demodulate the payload from `buf` (same indexing as rx) starting from
+  // the tap state the header left; returns false if samples run out.
+  // `ratioSum` accumulates each symbol's decided-score/mean - the drift
+  // search's figure of merit.
+  auto demodPayload = [&](const std::vector<cfloat>& buf,
+                          std::vector<float>& llr, double& ratioSum) {
+    track = trackAtPayload;
+    taps = tapsAtPayload;
+    size_t p = payloadPos;
+    llr.clear();
+    llr.reserve(nsymP * size_t(sf));
+    ratioSum = 0.0;
+    for (size_t s = 0; s < nsymP; ++s) {
       if (s % size_t(kCssPilotInterval) == 0) {
-        if (rx.size() < pos + size_t(2 * PW) + symH) {
-          samplesOk = false;
-          break;
-        }
-        std::vector<float> pp(size_t(2 * PW + 1), 0.0f);
-        for (int d = -PW; d <= PW; ++d) {
+        if (buf.size() < p + size_t(2 * PWp) + symH) return false;
+        std::vector<float> pp(size_t(2 * PWp + 1), 0.0f);
+        for (int d = -PWp; d <= PWp; ++d) {
           cfloat c(0, 0);
-          const cfloat* xr = rx.data() + long(pos) + d;
+          const cfloat* xr = buf.data() + long(p) + d;
           for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
-          pp[size_t(d + PW)] = float(std::abs(c));
+          pp[size_t(d + PWp)] = float(std::abs(c));
         }
         float pk = 0.0f;
         int dp = 0;
-        for (int d = -PW; d <= PW; ++d) {
-          if (pp[size_t(d + PW)] > pk) {
-            pk = pp[size_t(d + PW)];
+        for (int d = -PWp; d <= PWp; ++d) {
+          if (pp[size_t(d + PWp)] > pk) {
+            pk = pp[size_t(d + PWp)];
             dp = d;
           }
         }
         std::vector<float> ns;
-        for (int d = -PW; d <= PW; ++d) {
-          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
+        for (int d = -PWp; d <= PWp; ++d) {
+          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PWp)]);
         }
         std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
                          ns.end());
         const float nsMed = ns[ns.size() / 2];
         if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
-          updateTaps(pp, PW, 0, nsMed, false);
+          updateTaps(pp, PWp, 0, nsMed, false);
         }
-        pos += symH;
+        p += symH;
       }
-      if (rx.size() < pos + symLen) {
-        samplesOk = false;
-        break;
-      }
+      if (buf.size() < p + symLenP) return false;
+      CssPeakInfo pk;
       cssSoftDemodSymbol(family, sf,
-                         std::span<const cfloat>(rx).subspan(pos, symLen),
-                         taps, llr);
-      pos += symLen;
+                         std::span<const cfloat>(buf).subspan(p, symLenP),
+                         taps, llr, &pk);
+      ratioSum += double(pk.ratio);
+      p += symLenP;
     }
-    if (samplesOk && llr.size() >= codedBits) {
-      llr.resize(codedBits);  // drop the last symbol's pad bits
-      const size_t payBytes = size_t(hdr->length) + kCssPayloadCrcBytes;
-      std::vector<uint8_t> infoBits;
-      infoBits.reserve(payBytes * 8);
-      size_t remaining = payBytes * 8;
-      size_t off = 0;
-      bool ok = true;
-      const LdpcCode& pcode = LdpcCode::get(kLdpcNShort, {1, 2});
-      size_t cw = 0;
-      // Burst containers repack on retransmission (identical-codeword
-      // combining not guaranteed) - same HARQ bypass as the OFDM path.
-      if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
-      while (remaining > 0 && (ok || harq)) {
-        std::vector<float> cwLlr(llr.begin() + long(off),
-                                 llr.begin() + long(off + size_t(pcode.n())));
-        std::vector<uint8_t> info;
-        bool dec = decodeCodeword(pcode, cwLlr, info);
-        if (harq) {
-          // Chase: a deep-tier retransmission carries identical
-          // codewords, and the payload IS LDPC - soft-combine with
-          // earlier receptions (~3 dB per doubling at the floor).
-          const uint64_t key =
-              HarqChase::frameKey(hdr->frameType, hdr->seqLow, hdr->mode,
-                                  hdr->length, uint32_t(cw));
-          if (!dec) {
-            if (harq->combine(key, cwLlr) > 1) {
-              dec = decodeCodeword(pcode, cwLlr, info);
-            }
-            if (dec) harq->onDecodeSuccess(key);
-          } else {
-            harq->onDecodeSuccess(key);
-          }
-        }
+    return llr.size() >= codedBits;
+  };
+  // LDPC + CRC over one LLR set; fills res on success.
+  auto decodePayload = [&](std::vector<float> llr, HarqChase* h) -> bool {
+    llr.resize(codedBits);  // drop the last symbol's pad bits
+    const size_t payBytes = size_t(hdr->length) + kCssPayloadCrcBytes;
+    std::vector<uint8_t> infoBits;
+    infoBits.reserve(payBytes * 8);
+    size_t remaining = payBytes * 8;
+    size_t off = 0;
+    bool ok = true;
+    const LdpcCode& pcode = LdpcCode::get(kLdpcNShort, {1, 2});
+    size_t cw = 0;
+    // Burst containers repack on retransmission (identical-codeword
+    // combining not guaranteed) - same HARQ bypass as the OFDM path.
+    if (hdr->frameType == kBurstContainerFrameType) h = nullptr;
+    while (remaining > 0 && (ok || h)) {
+      std::vector<float> cwLlr(llr.begin() + long(off),
+                               llr.begin() + long(off + size_t(pcode.n())));
+      std::vector<uint8_t> info;
+      bool dec = decodeCodeword(pcode, cwLlr, info);
+      if (h) {
+        // Chase: a deep-tier retransmission carries identical
+        // codewords, and the payload IS LDPC - soft-combine with
+        // earlier receptions (~3 dB per doubling at the floor).
+        const uint64_t key =
+            HarqChase::frameKey(hdr->frameType, hdr->seqLow, hdr->mode,
+                                hdr->length, uint32_t(cw));
         if (!dec) {
-          ok = false;
-          if (!harq) break;
-        } else if (ok) {
-          const size_t want = std::min(remaining, size_t(pcode.k()));
-          infoBits.insert(infoBits.end(), info.begin(),
-                          info.begin() + long(want));
-        }
-        remaining -= std::min(remaining, size_t(pcode.k()));
-        off += size_t(pcode.n());
-        ++cw;
-      }
-      if (ok) {
-        auto white = bitsToBytes(infoBits);
-        white.resize(payBytes);
-        const uint16_t want =
-            uint16_t((white[payBytes - 2] << 8) | white[payBytes - 1]);
-        white.resize(size_t(hdr->length));
-        if (crc16(white) == want) {
-          Whitener wh;
-          wh.apply(white);
-          res.payload = std::move(white);
-          res.payloadOk = true;
+          if (h->combine(key, cwLlr) > 1) {
+            dec = decodeCodeword(pcode, cwLlr, info);
+          }
+          if (dec) h->onDecodeSuccess(key);
+        } else {
+          h->onDecodeSuccess(key);
         }
       }
+      if (!dec) {
+        ok = false;
+        if (!h) break;
+      } else if (ok) {
+        const size_t want = std::min(remaining, size_t(pcode.k()));
+        infoBits.insert(infoBits.end(), info.begin(),
+                        info.begin() + long(want));
+      }
+      remaining -= std::min(remaining, size_t(pcode.k()));
+      off += size_t(pcode.n());
+      ++cw;
+    }
+    if (!ok) return false;
+    auto white = bitsToBytes(infoBits);
+    white.resize(payBytes);
+    const uint16_t want =
+        uint16_t((white[payBytes - 2] << 8) | white[payBytes - 1]);
+    white.resize(size_t(hdr->length));
+    if (crc16(white) != want) return false;
+    Whitener wh;
+    wh.apply(white);
+    res.payload = std::move(white);
+    res.payloadOk = true;
+    return true;
+  };
+
+  std::vector<float> llr;
+  double ratio0 = 0.0;
+  const bool samplesOk = demodPayload(rx, llr, ratio0);
+  if (samplesOk) decodePayload(llr, harq);
+
+  // DRIFT SEARCH (ROADMAP 8.8). The receiver removes the preamble's CFO
+  // once; LO drift leaves a residual r*t that a chirp turns into a TIMING
+  // offset proportional to 2^SF - the SF8 pilots move the RAKE taps by
+  // 2^(8-SF) times what the SF5-SF7 payload needs (NARROW at 0.1 Hz/s: ~11
+  // samples of misplacement per Hz, ~2.5 chips by the end of a 64 s M2
+  // frame), and the moving pilot peak spawns spurious taps. Only after
+  // the ordinary pass FAILS: derotate the residual quadratic phase for a
+  // grid of drift rates, re-run the pilot/tap/demod pass on each, and
+  // decode the candidate whose symbols correlate best. The CRC arbitrates,
+  // so a frame that decodes today is untouched and a wrong candidate
+  // cannot pass. HARQ is not touched by the retry (its store holds
+  // pass 1's LLRs). SKW_CSS_DRIFT_SEARCH=0 disables it (A/B).
+  static const bool driftSearch = [] {
+    const char* e = getenv("SKW_CSS_DRIFT_SEARCH");
+    return !(e && std::string(e) == "0");
+  }();
+  if (!res.payloadOk && samplesOk && driftSearch) {
+    const double t0 = hit.startSample;  // drift is measured from the preamble
+    // Only the payload span is re-read: derotating the whole capture
+    // window (up to the 90 s ladder rung) doubled the cost for nothing.
+    const size_t pilotsP = (nsymP + size_t(kCssPilotInterval) - 1) /
+                           size_t(kCssPilotInterval);
+    const size_t spanLo = payloadPos > size_t(PWp) ? payloadPos - size_t(PWp) : 0;
+    const size_t spanHi = std::min(rx.size(), payloadPos + nsymP * symLenP +
+                                                  pilotsP * symH + size_t(PWp) + 1);
+    auto derotate = [&](double r) {
+      std::vector<cfloat> buf(rx.size());
+      for (size_t n = spanLo; n < spanHi; ++n) {
+        const double t = (double(region0) + double(n) - t0) / kFsBaseband;
+        const double ph = -M_PI * r * t * t;
+        buf[n] = rx[n] * cfloat(float(std::cos(ph)), float(std::sin(ph)));
+      }
+      return buf;
+    };
+    double bestR = 0.0, bestScore = ratio0;
+    std::vector<float> bestLlr;
+    auto tryRate = [&](double r) {
+      std::vector<float> l;
+      double sc = 0.0;
+      if (demodPayload(derotate(r), l, sc) && sc > bestScore) {
+        bestScore = sc;
+        bestR = r;
+        bestLlr = std::move(l);
+      }
+    };
+    // 0.02 Hz/s grid over +-0.2 Hz/s, then +-0.01 around the winner. (A
+    // 0.04 coarse grid lost the right neighbourhood: NARROW M2 at
+    // 0.1 Hz/s went 0% -> 60% FER - the figure of merit is too flat away
+    // from the true rate to steer a coarse search.)
+    for (double r = -0.20; r <= 0.2001; r += 0.02) {
+      if (std::abs(r) > 1e-9) tryRate(r);
+    }
+    {
+      const double c = bestR;
+      tryRate(c - 0.01);
+      tryRate(c + 0.01);
+    }
+    if (!bestLlr.empty()) decodePayload(bestLlr, nullptr);
+    if (getenv("SKW_RX_DEBUG")) {
+      fprintf(stderr, "skw-css drift search: best r=%.3f Hz/s score %.1f "
+              "(pass 1 %.1f) -> %s\n", bestR, bestScore, ratio0,
+              res.payloadOk ? "decoded" : "failed");
     }
   }
   return res;

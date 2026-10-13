@@ -119,7 +119,8 @@ namespace {
 // mean score (normalization reference for peak ratio and soft LLRs).
 double cssShiftScores(Family f, int sf, std::span<const cfloat> sym,
                       std::span<const CssTap> taps,
-                      std::vector<double>& scores) {
+                      std::vector<double>& scores,
+                      CssPeakInfo* peak = nullptr) {
   const CssPlan p = cssPlan(f);
   const int N = 1 << sf;
   const int spc = p.samplesPerChip;
@@ -168,6 +169,33 @@ double cssShiftScores(Family f, int sf, std::span<const cfloat> sym,
     scores[size_t(v)] = m;
     sumMag += m;
   }
+  if (peak) {
+    int best = 0;
+    for (int v = 1; v < N; ++v) {
+      if (scores[size_t(v)] > scores[size_t(best)]) best = v;
+    }
+    const CssTap* strongest = &taps[0];
+    for (const CssTap& t : taps) {
+      if (t.weight > strongest->weight) strongest = &t;
+    }
+    const long at = L - long(best) * spc + strongest->delay;
+    auto mag = [&](long d) { return std::abs(corr[size_t(((at + d) % L + L) % L)]); };
+    long dm = 0;
+    float vm = mag(0);
+    for (long d = -spc; d <= spc; ++d) {
+      const float v = mag(d);
+      if (v > vm) {
+        vm = v;
+        dm = d;
+      }
+    }
+    const float a = mag(dm - 1), b = vm, c = mag(dm + 1);
+    const float den = a - 2.0f * b + c;
+    const float frac = std::abs(den) > 1e-12f ? 0.5f * (a - c) / den : 0.0f;
+    peak->offset = float(dm) + std::clamp(frac, -0.5f, 0.5f);
+    const double meanScore = sumMag / N;
+    peak->ratio = meanScore > 1e-12 ? float(scores[size_t(best)] / meanScore) : 0.0f;
+  }
   return sumMag / N;
 }
 }  // namespace
@@ -211,14 +239,14 @@ std::vector<uint16_t> cssMapCodedBits(std::span<const uint8_t> bits, int sf) {
 
 void cssSoftDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
                         std::span<const CssTap> taps,
-                        std::vector<float>& llr) {
+                        std::vector<float>& llr, CssPeakInfo* peak) {
   // Dual-max soft metric: per coded bit, the margin between the best
   // shift carrying bit=0 and the best carrying bit=1, normalized by the
   // mean score (positive LLR = bit 0, the LDPC convention). A faded or
   // ambiguous symbol yields small margins - low confidence - instead of
   // hard wrong bits, which is what buys the coding gain over Hamming.
   std::vector<double> scores;
-  const double mean = cssShiftScores(f, sf, sym, taps, scores);
+  const double mean = cssShiftScores(f, sf, sym, taps, scores, peak);
   const int N = 1 << sf;
   std::vector<double> m0(size_t(sf), 0.0), m1(size_t(sf), 0.0);
   for (int v = 0; v < N; ++v) {

@@ -128,6 +128,29 @@ TEST_CASE(css_frame_cfo_clock_tolerance) {
   }
 }
 
+// 8.8 (ROADMAP): LO drift through a long deep-tier frame. The receiver
+// removes the preamble's CFO once; the residual r*t moves the SF8 pilots
+// 2^(8-SF) times further than the payload needs, and before the drift
+// search NARROW/MID M1-M3 failed 88-100% at 0.1 Hz/s. Floor + 3 dB, both
+// drift signs, the two families the coupling hurts.
+TEST_CASE(css_frame_lo_drift) {
+  int ok = 0, total = 0;
+  for (Family fam : {Family::Narrow, Family::Mid}) {
+    for (int mode : {1, 2, 3}) {
+      for (double drift : {0.1, -0.1}) {
+        for (uint64_t seed = 1; seed <= 3; ++seed) {
+          ChansimParams cp = awgn(floorDb(fam, mode) + 3.0, seed * 31 + uint64_t(mode));
+          cp.cfoDriftHzPerSec = drift;
+          ++total;
+          if (cssFrameTrial(fam, mode, cp, 60, seed).payloadOk) ++ok;
+        }
+      }
+    }
+  }
+  std::printf("css drift 0.1 Hz/s: %d/%d frames\n", ok, total);
+  CHECK(ok >= total - 2);  // floor+3 allows a stray loss; was ~0/36
+}
+
 TEST_CASE(css_frame_inverted_spectrum) {
   auto r = cssFrameTrial(Family::Wide, 1, awgn(10.0, 31), 40, 9, true);
   CHECK(r.payloadOk);
