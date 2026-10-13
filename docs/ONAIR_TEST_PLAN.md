@@ -15,7 +15,7 @@ modem:
 
 | Tool | Role |
 |---|---|
-| `onair_sounder gen` | builds a sounding WAV and manifest: real PHY frames at each mode, interleaved round-robin and grouped into keyed segments, with CW ID |
+| `onair_sounder gen` | builds a sounding WAV and manifest: real PHY frames at each mode, interleaved round-robin and grouped into keyed segments, with CW ID at the end (and every 10 min in long runs) |
 | `onair_sounder play` | plays it to the radio's TX audio device and keys PTT per segment |
 | `onair_sounder score` | decodes a received recording against the manifest. Reports FER per mode; SNR, EVM, CFO, delay spread and pilot stability per frame; CFO drift; and the clock offset |
 | `flexptt.py` | TCP PTT server. Speaks the modem's `KEY`/`UNKEY` protocol and keys the Flex through the SmartSDR API |
@@ -103,6 +103,28 @@ Measured once these were fixed:
   (4.5 ppm, no GPS lock on either), outside the modem's ±50 Hz
   acquisition. Record with `--freq` 0.063 kHz low. Residual CFO 0.1 Hz;
   clock +3 ± 9 ppm.
+
+### Stage 1 results (2026-10-12, 1 W into the dummy load, PTT lead 300 ms)
+
+| Run | Frames | Notes |
+|---|---|---|
+| Level sweep, M8/M13 at 0 to −12 dB, 4 frames per step | 40/40 | EVM SNR rises about 1.5 dB per 3 dB step up to −3 dB. At 0 dB M13 stops gaining (28.2 → 28.4 dB) while M8 still gains (30.9 → 32.0): possibly the start of compression; four frames per step is too few to call it. Keep the sounder's −10 dB default and set drive on the radio |
+| Full ladder M4-M13, 5 frames each | 49/50 | 33-36 dB SNR, 28-32 dB EVM SNR across the ladder; M13 28.3 dB, 11 dB over its 17 dB floor. The one loss (M7 header) coincides with a +16 ms timing jump |
+
+- **CFO** 0.06 Hz, no drift. **Clock** Flex audio vs Web-888 +4.4 ± 1.1
+  and +5.2 ± 1.2 ppm.
+- **Transmit underruns:** two +16/+21 ms jumps in 3 min of keying,
+  meaning silence inserted upstream of the transmitter. The likeliest
+  source is Wi-Fi delay bursts (ping 4 ms average, 11 ms peaks)
+  starving the radio's DAX TX buffer. Re-test with the Mac on Ethernet.
+  The scorer now reports jumps ("timing jumps inside keyed segments") and
+  fits the clock between them.
+- **Station config:** [`tools/onair/station-flex6700.ini`](../tools/onair/station-flex6700.ini)
+  (devices by name, PTT via `flexptt.py`, `lead_ms = 300`, CW ID on).
+- **CW ID:** the sounder now identifies at the end of the sequence, plus
+  at a segment boundary before each 10-minute mark in longer runs (FCC
+  §97.119). The modem already IDs after disconnect and every 10 min in
+  long sessions.
 
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 

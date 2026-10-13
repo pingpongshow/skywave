@@ -5,7 +5,7 @@
 //   gen    build a sounding: real Skywave PHY frames at a list of modes,
 //          round-robin interleaved (every mode sees the same propagation
 //          over the run), grouped into keyed segments with unkeyed pauses,
-//          CW ID at both ends. Writes a 48 kHz WAV plus a manifest.
+//          CW ID at the end (and every 10 min in longer runs). Writes a 48 kHz WAV plus a manifest.
 //   play   play the WAV to an audio device (SmartSDR DAX TX), keying the
 //          rig per segment through a TCP PTT server (flexptt.py, or any
 //          server speaking skywave's `KEY\n`/`UNKEY\n` protocol).
@@ -275,12 +275,18 @@ int cmdGen(const GenArgs& a) {
     if (!last) appendSilence(bb, a.pauseSec);
   };
 
-  segOpen();
-  if (!a.noId) {
-    auto id = renderMorseBaseband(a.call + " TEST", a.wpm);
+  // CW ID: at the END of the sequence (operator preference, matching the
+  // modem's post-disconnect ID), plus at the first segment boundary past
+  // each 10-minute mark - the longest a transmission may go unidentified
+  // (FCC 97.119; the modem IDs every 10 min in long sessions too).
+  constexpr double kIdIntervalSec = 600.0;
+  double lastIdSec = 0.0;
+  auto appendId = [&]() {
+    auto id = renderMorseBaseband(a.call, a.wpm);
     bb.insert(bb.end(), id.begin(), id.end());
-    appendSilence(bb, a.gapSec);
-  }
+    lastIdSec = double(bb.size()) / kFsBaseband;
+  };
+  segOpen();
   int seq = 0;
   for (const auto& p : order) {
     const size_t len = a.payloadLen > 0 ? size_t(std::min(a.payloadLen, 4095))
@@ -300,6 +306,12 @@ int cmdGen(const GenArgs& a) {
     const double segUsed =
         double(bb.size()) / kFsBaseband - m.segments.back().startSec;
     if (segUsed > a.leadSec + 0.01 && segUsed + air > a.segmentSec) {
+      // Identify before un-keying if this segment would otherwise carry
+      // the sequence past 10 minutes since the last ID.
+      if (!a.noId && double(bb.size()) / kFsBaseband - lastIdSec >
+                         kIdIntervalSec - a.segmentSec - a.pauseSec - 60.0) {
+        appendId();
+      }
       segClose(false);
       segOpen();
     }
@@ -317,10 +329,7 @@ int cmdGen(const GenArgs& a) {
     appendSilence(bb, a.gapSec);
     ++seq;
   }
-  if (!a.noId) {
-    auto id = renderMorseBaseband(a.call, a.wpm);
-    bb.insert(bb.end(), id.begin(), id.end());
-  }
+  if (!a.noId) appendId();
   segClose(true);
 
   // Upconvert in one pass; the chain's group delay shifts every frame by
@@ -728,6 +737,77 @@ int cmdScore(const ScoreArgs& a) {
   for (size_t i = 0; i < m.frames.size(); ++i) {
     if (sc[i].out == Outcome::Ok) txSeg.push_back(m.frames[i].segment);
   }
+  // Outliers: a window opened by a stray detection can hold the real
+  // frame further in, and the frame is then stamped with the stray
+  // detection's time (observed: 1.03 s early). One such point ruins the
+  // clock fit, so drop any frame > 50 ms from its segment's median
+  // offset before fitting.
+  {
+    std::map<int, std::vector<double>> offs;
+    for (size_t k = 0; k < txT.size(); ++k) {
+      offs[txSeg[k]].push_back(rxT[k] - txT[k]);
+    }
+    std::map<int, double> med;
+    for (auto& [g, v] : offs) {
+      std::sort(v.begin(), v.end());
+      med[g] = v[v.size() / 2];
+    }
+    std::vector<double> t2, r2;
+    std::vector<int> g2;
+    int dropped = 0;
+    for (size_t k = 0; k < txT.size(); ++k) {
+      if (std::fabs(rxT[k] - txT[k] - med[txSeg[k]]) > 0.050) {
+        ++dropped;
+        continue;
+      }
+      t2.push_back(txT[k]);
+      r2.push_back(rxT[k]);
+      g2.push_back(txSeg[k]);
+    }
+    if (dropped > 0) {
+      std::printf("timing: %d frame(s) > 50 ms off their segment, excluded "
+                  "from the clock fit\n", dropped);
+    }
+    txT.swap(t2);
+    rxT.swap(r2);
+    txSeg.swap(g2);
+  }
+  std::vector<int> fitGroup;
+  // Timing jumps INSIDE a keyed segment: consecutive frames should keep
+  // one offset; a step of more than a few ms is audio inserted (an
+  // underrun upstream of the transmitter) or removed (dropped audio).
+  // On air these are the TX-chain glitches that cost frames.
+  {
+    std::vector<size_t> idx(txT.size());
+    for (size_t k = 0; k < idx.size(); ++k) idx[k] = k;
+    std::sort(idx.begin(), idx.end(),
+              [&](size_t a, size_t b) { return txT[a] < txT[b]; });
+    int jumps = 0;
+    fitGroup.assign(txT.size(), 0);
+    int group = 0;
+    for (size_t n = 0; n < idx.size(); ++n) {
+      const size_t b = idx[n];
+      if (n == 0) {
+        fitGroup[b] = group;
+        continue;
+      }
+      const size_t a = idx[n - 1];
+      if (txSeg[a] != txSeg[b]) {
+        fitGroup[b] = ++group;
+        continue;
+      }
+      const double step = (rxT[b] - txT[b]) - (rxT[a] - txT[a]);
+      // A jump starts a new fit group: the clock is the slope WITHIN
+      // stretches of contiguous audio, not across an inserted gap.
+      fitGroup[b] = std::fabs(step) > 0.005 ? ++group : group;
+      if (std::fabs(step) > 0.005) {
+        if (jumps++ == 0) std::printf("timing jumps inside keyed segments:");
+        std::printf(" seg %d %+.0f ms (tx %.1f s);", txSeg[b], step * 1e3,
+                    txT[b]);
+      }
+    }
+    if (jumps > 0) std::printf("\n");
+  }
   double off = 0.0, slope = 1.0;
   bool aligned = fitLine(txT, rxT, off, slope) ||
                  (txT.size() == 1 && ((off = rxT[0] - txT[0]), true));
@@ -737,17 +817,17 @@ int cmdScore(const ScoreArgs& a) {
     std::map<int, std::pair<double, double>> mean;  // seg -> (tx, rx)
     std::map<int, int> cnt;
     for (size_t k = 0; k < txT.size(); ++k) {
-      mean[txSeg[k]].first += txT[k];
-      mean[txSeg[k]].second += rxT[k];
-      ++cnt[txSeg[k]];
+      mean[fitGroup[k]].first += txT[k];
+      mean[fitGroup[k]].second += rxT[k];
+      ++cnt[fitGroup[k]];
     }
     for (auto& [g, mr] : mean) { mr.first /= cnt[g]; mr.second /= cnt[g]; }
     double sxy = 0, sxx = 0;
     for (size_t k = 0; k < txT.size(); ++k) {
-      const double dx = txT[k] - mean[txSeg[k]].first;
-      sxy += dx * (rxT[k] - mean[txSeg[k]].second);
+      const double dx = txT[k] - mean[fitGroup[k]].first;
+      sxy += dx * (rxT[k] - mean[fitGroup[k]].second);
       sxx += dx * dx;
-      clockPairs += cnt[txSeg[k]] > 1;
+      clockPairs += cnt[fitGroup[k]] > 1;
     }
     slope = sxx > 1.0 ? sxy / sxx : 1.0;
     // Standard error of the slope: detection timing is quantized to
@@ -755,8 +835,8 @@ int cmdScore(const ScoreArgs& a) {
     // short, so a single run pins the clock only to tens of ppm.
     double rss = 0.0;
     for (size_t k = 0; k < txT.size(); ++k) {
-      const double e = (rxT[k] - mean[txSeg[k]].second) -
-                       slope * (txT[k] - mean[txSeg[k]].first);
+      const double e = (rxT[k] - mean[fitGroup[k]].second) -
+                       slope * (txT[k] - mean[fitGroup[k]].first);
       rss += e * e;
     }
     const int dof = int(txT.size()) - int(mean.size()) - 1;

@@ -47,8 +47,18 @@ build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.
   the channel ignores them. The payload is a known sequence keyed by
   frame number, so the scorer needs only the manifest.
 - **Clock figure.** Fitted within keyed segments, because the player's
-  PTT waits add time between segments that the WAV doesn't contain.
-  Expect ±5–15 ppm resolution per run.
+  PTT waits add time between segments that the WAV doesn't contain, and
+  split again at any timing jump. Expect ±1–15 ppm resolution per run.
+- **Timing jumps.** `score` lists steps of more than 5 ms between
+  consecutive frames in one keyed segment: audio inserted (an underrun) or
+  removed upstream of the transmitter. These are TX-chain glitches.
+  `SKW_SOUNDER_DEBUG=1` lists every detection and decode.
+- **CW ID** goes at the end of the sequence, plus at a segment boundary
+  before each 10-minute mark in longer runs. `--no-id` is for dummy-load
+  runs only.
+- **Station config.** `station-flex6700.ini` holds the measured settings
+  for N0CALL's FLEX-6700/AetherSDR station. Copy it out of the repo
+  before use, because the modem rewrites its `--config` file on exit.
 - **`kiwirec.py`** is receive-only and uses only the Python standard
   library. It tunes USB at the dial frequency with AGC off (`--gain`,
   default 50) and compression off, and writes the true sample rate to
