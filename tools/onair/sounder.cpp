@@ -664,6 +664,20 @@ int cmdScore(const ScoreArgs& a) {
     RxStage st = RxStage::NoDetect;
     auto res = receiveFrame(m.family, win, &st);
     const double rxSec = (dets[i].startSample - gd) / kFsBaseband;
+    if (std::getenv("SKW_SOUNDER_DEBUG")) {
+      std::fprintf(stderr, "det %.3f s sig=%d q=%.2f cfo=%.1f -> %s",
+                   rxSec, int(dets[i].sig), double(dets[i].quality),
+                   dets[i].cfoHz, res ? "header" : "no header");
+      if (res) {
+        std::fprintf(stderr, " M%d len=%d seqLow=%d type=%d payOk=%d",
+                     int(res->header.mode), int(res->header.length),
+                     int(res->header.seqLow), int(res->header.frameType),
+                     int(res->payloadOk));
+      } else {
+        std::fprintf(stderr, " (stage %d)", int(st));
+      }
+      std::fprintf(stderr, "\n");
+    }
     if (res) {
       std::vector<uint8_t> dummy(res->header.length);
       TxFrameParams tp;
@@ -762,8 +776,21 @@ int cmdScore(const ScoreArgs& a) {
                 "manifest (%zu detections, %zu headers)\n",
                 dets.size(), decodes.size());
   }
+  // A segment with no decoded frame borrows the offset of the nearest
+  // segment that has one: the player's waits make offsets step up from
+  // segment to segment, so a single line through all of them can sit
+  // far enough off (> tol) to file a header-only frame as "missed".
   auto expectedRx = [&](const FrameRec& f) {
     auto it = segOff.find(f.segment);
+    if (it == segOff.end() && !segOff.empty()) {
+      int best = -1;
+      for (const auto& [g, o] : segOff) {
+        if (best < 0 || std::abs(g - f.segment) < std::abs(best - f.segment)) {
+          best = g;
+        }
+      }
+      it = segOff.find(best);
+    }
     return it != segOff.end() ? it->second + slope * f.startSec
                               : off + slope * f.startSec;
   };
@@ -778,7 +805,7 @@ int cmdScore(const ScoreArgs& a) {
         const auto& f = m.frames[i];
         if (sc[i].out != Outcome::Missed || r.header.mode != f.mode ||
             r.header.seqLow != uint8_t(f.seq) ||
-            std::fabs(decodes[d].rxSec - expectedRx(f)) > tol) {
+            std::fabs(decodes[d].rxSec - expectedRx(f)) > 4.0 * tol) {
           continue;
         }
         used[d] = true;

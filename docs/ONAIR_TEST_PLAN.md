@@ -78,6 +78,32 @@ stage 1 drive setting carries over to the modem unchanged.
 **Operator rule: any over-the-air transmission from the Flex runs at the
 lowest RF power (`rfpower=0`), checked before every key-up.**
 
+## Bench session 2026-10-12: what it took to get frames through
+
+Station: FLEX-6700 at 1 W (`rfpower=1`) into a dummy load on ANT1, 14.085 MHz
+DIGU, driven by AetherSDR (built-in DAX driver, CAT on 4532); Web-888 on
+leakage. Each item blocked decoding until fixed.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Keyed, no RF | AetherSDR: `stopDax()` clears DAX TX mode and `startDax()` never restored it, so after any DAX restart the bridge's audio was dropped (workaround: change slice mode and back) | AetherSDR `DaxController::startDax()` re-derives DAX TX mode from the TX slice |
+| RF, but OFDM undecodable (corr 0.06, timing jumps of up to 6 ms) | AetherSDR DAX TX reader cut audio whenever more than 32 ms was queued; the virtual-cable path hit this on nearly every 43 ms Qt read | AetherSDR: stall guard raised to 250 ms (keep 40 ms), warn on every drop |
+| Burst drops (`TX reader stalled, dropped 5184 frames`) | Reader drained at most 43 ms of audio per 2 ms tick; macOS coalesces timers for background apps | AetherSDR: drain everything each tick, `Qt::PreciseTimer` |
+| One 20-45 ms RF hole per run | Mac reached the LAN through Tailscale (`utun6`, 12 ms RTT): Tailscale's 192.0.2.0/24 subnet route beat the Wi-Fi route | Disconnect Tailscale while on the home LAN (RTT 4 ms) |
+| Rig powered up at 31 W | Flex per-band power memory: 20 m stored `rfpower=31` | Set 1 W on 20 m; `flexptt.py --max-rfpower 1` refuses to key above it and unkeys if it rises mid-transmission |
+| Keyed via the Flex API, no audio | `xmit 1` from a non-GUI API client | Key through the GUI client's CAT: `flexptt.py --rigctl 127.0.0.1:4532` |
+
+Measured once these were fixed:
+- **PTT lead:** 200 ms and 300 ms each gave 6/6 key-ups with an intact
+  first frame; 100 ms clipped preambles twice. Set `ptt.lead_ms = 300`
+  for this rig.
+- **Level:** M8/M13 EVM SNR about 32/29 dB at 33-36 dB SNR, sounder
+  `--gain-db -10`.
+- **Frequency:** the Web-888 reads about 63 Hz off the Flex at 14 MHz
+  (4.5 ppm, no GPS lock on either), outside the modem's ±50 Hz
+  acquisition. Record with `--freq` 0.063 kHz low. Residual CFO 0.1 Hz;
+  clock +3 ± 9 ppm.
+
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 
 These are the bench checks left open by the pre-on-air review
