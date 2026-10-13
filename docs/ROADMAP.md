@@ -1105,10 +1105,61 @@ that blocks on-air use:
   config, CLI and GUI save, resolved at each stream open, missing name =
   start-up error; the ST3 harness passes names. Test
   `config_audio_device_by_name`.
-- [ ] Stage 1 bench (dummy load): drive/ALC knee, ladder at high SNR,
-  PTT lead, output latency, ppm, CPU.
+- [x] Stage 1 bench (radiated at 1 W, nearby Web-888; ONAIR_TEST_PLAN.md):
+  ladder, level sweep, PTT lead (300 ms), latency, ppm, live modem
+  decode, MID/NARROW/CSS, TX slip root cause and the AetherSDR fix.
 - [ ] Stage 2 one-way skywave runs, feeding the AMC Good-channel tuning
-  and 8.8 drift rates.
+  and 8.8 drift rates. LATER (operator, 2026-10-12).
+
+### Open-item review (2026-10-12, on `main` at 5dc6ed8)
+
+Every open item re-measured on current code; passes are closed here so
+they are not re-raised. Commands are the original measurements.
+
+- [ ] **8.8 CSS under LO drift - STILL OPEN (NARROW, MID).**
+  `bertool --css-frames --preset awgn --offsets 3 --trials 25`:
+  WIDE M0-M3 0% at 0.05 Hz/s; MID 0% at 0.05 Hz/s but M2/M3 100% (M1 8%)
+  at the 0.1 Hz/s gate; NARROW M1-M3 88-100% at 0.05 Hz/s. The 2026-10-12
+  on-air CSS run (WIDE, bench drift −0.0002 Hz/s) did not exercise it.
+  NEW: NARROW M0 32% FER at floor+3 with NO drift (acquisition/header,
+  full-frame path) - re-check its floor.
+- [ ] **AMC on CCIR Good ramps - STILL OPEN.** `test_m3_ramp`: AMC
+  289.5 KB vs oracle 363.0 KB (ratio 0.80, 3 seeds; static 0.76) -
+  unchanged from v1.2.0. Can be tuned in simulation now; on-air Good-
+  channel data would guard against tuning to the simulator.
+- [ ] **Reverse-direction offset after a retune - STILL PRESENT, harmless
+  inside ±55 Hz.** `cfo_st2 STEP=40`: data direction re-aligned (A shift
+  39.8 Hz, B sees −0.2 Hz); the reverse path keeps 40 Hz (A CFO=40.0);
+  0 drops, 214 KB. Low priority (wire change or reciprocity rule).
+- [ ] **Extreme in-frame drift - STILL OPEN.** `bertool --preset awgn
+  --offsets 6 --trials 40`: NARROW M4 @ 1 Hz/s 25% FER; MID M4 @ 2 Hz/s
+  82.5% (header failures).
+- [x] **Sustained simultaneous two-way bulk - CLOSED.** `soak_st2` churn,
+  seeds 11/12: PASS, A->B 41.4/37.5 KB and B->A 45.0/43.6 KB delivered
+  concurrently, 0 reconnects.
+- [x] **Churn stalls at Moderate <= 16 dB - CLOSED.** Same soaks: PASS
+  through the Moderate rotation down to 6-13 dB.
+- [ ] **Mid-tier (M7-M9) container starvation - not re-measured.** A
+  throughput lever, not correctness (window 4; 8 regressed a seed in
+  v1.1.0).
+- [x] **ULTRA robust tier ~3 dB worse than WIDE - CLOSED.** Current
+  `kFloors`: ULTRA M4/M5/M7 equal WIDE, M6 within 0.5 dB.
+- [x] **Residual tracking floor under fading (~8 dB EVM cap) - CLOSED for
+  WIDE/ULTRA.** `bertool --preset moderate --base awgn --offsets 40`:
+  EVM SNR 25-33 dB at 40-57 dB. NARROW's tracker estimate still caps
+  ~9-10 dB and M13 has a 20% floor at 50 dB; already excluded (Moderate
+  NARROW M13 = NA).
+- Optional:
+  - [ ] **Survive a timing slip mid-frame** (receiver re-sync after an
+    inserted or dropped k x 5.33 ms; 2026-10-12 on-air finding). Needs a
+    slip impairment in chansim/bertool and a conformance re-run; the
+    risk is false re-syncs under deep fades.
+  - [ ] **Use the robust-tier leftover carriers** (top ~12% of WIDE
+    carries pilots only in M4-M7, because the carrier count is not a
+    multiple of the spreading factor).
+- Later: stage 2 on-air (distant receivers), two-way on-air (second
+  station), and the unexplained 120 Hz modulation seen on the nearby
+  Web-888 (ONAIR_TEST_PLAN.md).
 
 ---
 
@@ -1249,13 +1300,15 @@ doc was updated)*
   false FER plateaus (cost a day of phantom debugging). Pass gates carry
   one-sided binomial slack; fading presets gate against kFadingFloors.
 - **1.13 / known issues (open, non-blocking)**:
-  1. Residual tracking floor under fading ≈ −8 dB relative to signal at
+  1. [RESOLVED for WIDE/ULTRA 2026-10-12, see "Open-item review"]
+     Residual tracking floor under fading ≈ −8 dB relative to signal at
      high SNR (resid ~0.17–0.26 vs pp ~1.1 at 40 dB, all families) —
      not process-noise-limited (fd/Q sweeps trade per-family wins
      without moving it); suspected moving off-grid tap representation.
      Candidate Phase-3 work: tracked physical-delay taps, adaptive Q.
      This floor is priced into kFadingFloors.
-  2. ULTRA robust tier ~3 dB worse than WIDE (M6/M7 floors provisional
+  2. [RESOLVED 2026-10-12, see "Open-item review"]
+     ULTRA robust tier ~3 dB worse than WIDE (M6/M7 floors provisional
      at 16.0/12.5): outermost carriers ride the TX band-FIR transition
      (40 Hz margin); try a wider margin for ULTRA.
   3. CCIR Poor (1 Hz) has no conformance row yet: the robust-class
