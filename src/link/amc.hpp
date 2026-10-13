@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "core/constants.hpp"
@@ -45,6 +46,16 @@ struct AmcConfig {
   // were 8 and 11 dB optimistic, ran far more aggressively than
   // designed and are now on the same operating point as WIDE).
   double promoteMarginDb = -1.5;
+  // Promote margin INTO the top rungs (k >= promoteHighFrom). Their FER
+  // curves are steep and their frames carry the most bytes, so a failed
+  // promotion there costs a whole segment (2026-10-12 ramp trace: M12 at
+  // 20-22 dB on CCIR Good where the oracle holds M11, the worst segment
+  // 6 KB vs 21 KB) - while the -1.5 dB margin still pays on the lower
+  // rungs. Swept -1.5/-0.5/+0.5/+1.5: +0.5 best (with the classifier's
+  // spread median: M3 ramp 0.93, churn +5..+8%, coupled churn +17%);
+  // +1.5 cost churn 6%. NaN = same as promoteMarginDb.
+  double promoteMarginHighDb = 0.5;
+  uint8_t promoteHighFrom = 11;
   double demoteMarginDb = -3.5;
   double snrEmaAlpha = 0.25;
   double remoteFreshSec = 60.0;
@@ -197,6 +208,7 @@ class Amc {
                     bool assumeProbeClean = false) const;
   double operatingFloorDb(uint8_t k) const;
   uint8_t demoteTarget(int steps) const;  // skips kFadingNA rungs
+  double promoteMarginFor(uint8_t k) const;
   void noteFailure(double now, double effSnr);
   double cadence() const { return mode_ <= 3 ? 8.0 : 1.0; }
 

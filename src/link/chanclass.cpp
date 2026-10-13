@@ -57,6 +57,9 @@ void ChannelClassifier::onFrame(double snrDb, double spreadMs,
   snrMean_ += delta / n_;
   snrM2_ += delta * (snrDb - snrMean_);
 
+  spreadWin_[size_t(spreadHead_)] = spreadMs;
+  spreadHead_ = (spreadHead_ + 1) % kSpreadWindow;
+  if (spreadN_ < kSpreadWindow) ++spreadN_;
   spreadEma_ = n_ == 1 ? spreadMs
                        : spreadEma_ + kEmaAlpha * (spreadMs - spreadEma_);
   // A negative pilot figure means "no sample" (a frame without a decoded
@@ -83,6 +86,13 @@ void ChannelClassifier::onFrame(double snrDb, double spreadMs,
     frames_ /= 2;
     failures_ /= 2;
   }
+}
+
+double ChannelClassifier::spreadMedian() const {
+  std::array<double, kSpreadWindow> v{};
+  for (int i = 0; i < spreadN_; ++i) v[size_t(i)] = spreadWin_[size_t(i)];
+  std::sort(v.begin(), v.begin() + spreadN_);
+  return v[size_t(spreadN_ / 2)];
 }
 
 double ChannelClassifier::pilotMedian() const {
@@ -117,7 +127,10 @@ ChannelClass ChannelClassifier::classifyNow() const {
   // and its evidence overlaps Fading's. Any TWO of the three signals.
   int severe = 0;
   if (var >= cfg_.severeSnrVarMin) ++severe;
-  if (spreadEma_ >= cfg_.severeSpreadMsMin) ++severe;
+  static const bool spreadEmaSevere = getenv("SKW_CHANCLASS_SPREAD_EMA") != nullptr;
+  const double spreadSevere =
+      (spreadEmaSevere || spreadN_ == 0) ? spreadEma_ : spreadMedian();
+  if (spreadSevere >= cfg_.severeSpreadMsMin) ++severe;
   if (fer >= cfg_.severeFerMin) ++severe;
   const double pilot = pilotMedian();  // -1 with no samples yet
   if (pilotN_ > 0 && pilot >= cfg_.severePilotStabMin[size_t(family_)]) {
@@ -148,6 +161,8 @@ void ChannelClassifier::reset() {
   snrMean_ = 0.0;
   snrM2_ = 0.0;
   spreadEma_ = 0.0;
+  spreadN_ = 0;
+  spreadHead_ = 0;
   pilotN_ = 0;
   pilotHead_ = 0;
   frames_ = 0;

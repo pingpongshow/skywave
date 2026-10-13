@@ -102,7 +102,14 @@ M3 ramp gate was tuned at (0.94 of genie on CCIR Good, 0 drops); before
 the estimator was calibrated they read as +2.5 / +0.5 against a WIDE
 estimate ~4 dB optimistic — i.e. they always were −1.5 / −3.5 in table
 terms, and MID / NARROW (8 / 11 dB optimistic) were running far more
-aggressively than designed. Hysteresis: the 2.0 dB gap between promote
+aggressively than designed. **Promotion into the top rungs (M11-M13)
+uses +0.5 dB** instead of −1.5 (v1.2.2): their FER curves are steep and
+their frames carry the most bytes, so one failed promotion costs a whole
+segment. The trace showed M12 at 20-22 dB where the oracle holds M11,
+moving 6 KB against 21 KB. Swept −1.5/−0.5/+0.5/+1.5 together with the
+spread median above: +0.5 is best, giving an M3 ramp of 0.80 → 0.93 of
+genie, churn soaks +5 to +8%, coupled churn +17%, and Moderate/Poor floor
+soaks unchanged. +1.5 cost churn 6%. Hysteresis: the 2.0 dB gap between promote
 and demote margins prevents oscillation; dwell timers prevent thrash on
 flutter.
 
@@ -292,7 +299,15 @@ negotiation:
 | SNR variance | low | moderate | moderate | high |
 | frame error rate | ~0 | low | fast tier fails | ≥ 35% |
 
-`Static` requires **all** gates; `Severe` requires **any two**;
+`Static` requires **all** gates; `Severe` requires **any two**. Its
+delay-spread signal is the **median** of the last 9 decoded frames, not
+the EMA. On CCIR Good (true spread about 0.5 ms) 26% of decoded frames
+read 1.6 ms or more, most about 5 ms, while the median read 0.62 ms. The
+EMA crossed the Severe line, and together with Good's genuine SNR
+variance from deep slow fades it filed Good channels as **Severe**. The
+AMC then steered by the CCIR Poor table: on the M3 ramp it demoted
+M11 → M9 → M8 → M7 at 18 dB with no retries (v1.2.2; the EMA is still
+used for the Static gate).
 `Moderate` is the pilot excess alone (its noise share is already
 removed, so it is not an SNR proxy) once the EMA has been seeded from
 decoded payload frames — checked before `Static`, because a Moderate

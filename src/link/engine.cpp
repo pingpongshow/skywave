@@ -1236,6 +1236,9 @@ void LinkEngine::drainFsmActions(double now) {
         if (const char* e = getenv("SKW_AMC_PROMOTE_MARGIN")) {
           ac.promoteMarginDb = atof(e);
         }
+        if (const char* e = getenv("SKW_AMC_PROMOTE_MARGIN_HIGH")) {
+          ac.promoteMarginHighDb = atof(e);
+        }
         if (const char* e = getenv("SKW_AMC_DEMOTE_MARGIN")) {
           ac.demoteMarginDb = atof(e);
         }
@@ -2860,11 +2863,11 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
       // be designed from (pilot excess per decoded frame, by mode).
       fprintf(stderr,
               "%s cls t=%.1f mode=%d snr=%.1f evm=%.1f spread=%.2f "
-              "pilot=%.4f ok=%d verdict=%d\n",
+              "pilot=%.4f ok=%d conv=%d verdict=%d\n",
               cfg_.policy.ownCall.c_str(), now, int(res->header.mode),
               res->snrDb, res->evmSnrDb, res->delaySpreadMs,
               res->pilotStability, res->payloadOk ? 1 : 0,
-              int(chanClass_.verdict()));
+              res->snrConverged ? 1 : 0, int(chanClass_.verdict()));
     }
     if (amc_) {
       amc_->setChannelClass(chanClass_.verdict());

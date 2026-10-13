@@ -139,6 +139,19 @@ class ChannelClassifier {
   int pilotN_ = 0;     // samples held (<= kPilotWindow)
   int pilotHead_ = 0;  // next slot
   double pilotMedian() const;
+  // Delay-spread MEDIAN over the last kSpreadWindow decoded frames, for
+  // the Severe gate. The EMA (kept for the Static gate) is pulled over
+  // the 1.6 ms Severe threshold by estimator outliers: on CCIR Good
+  // (0.5 ms, 2 paths) 26% of decoded frames read >= 1.6 ms, most ~5 ms,
+  // while the median read 0.62 ms (2026-10-12, M3 ramp seed 4200). With
+  // the SNR variance of Good's deep slow fades as the second signal, the
+  // verdict went SEVERE and the AMC steered by the CCIR Poor table -
+  // M11 -> M9 -> M8 -> M7 at 18 dB with no retries.
+  static constexpr int kSpreadWindow = 9;
+  std::array<double, kSpreadWindow> spreadWin_{};
+  int spreadN_ = 0;
+  int spreadHead_ = 0;
+  double spreadMedian() const;
   int frames_ = 0;
   int failures_ = 0;
 

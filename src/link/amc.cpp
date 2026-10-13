@@ -1,5 +1,7 @@
 #include "link/amc.hpp"
 
+#include <cmath>
+
 #include <algorithm>
 
 namespace skw {
@@ -143,7 +145,7 @@ bool Amc::modeEligible(uint8_t k, double effSnr,
     if (effSnr < floorDb(cfg_.family, int(k)) + cfg_.naModeAwgnMarginDb) {
       return false;
     }
-  } else if (effSnr < floor + cfg_.promoteMarginDb) {
+  } else if (effSnr < floor + promoteMarginFor(k)) {
     return false;
   }
   const double retry = retryRatio();
@@ -193,6 +195,13 @@ double Amc::failHoldSec(double now) const {
       std::min(std::max(failRepeats_, 1), cfg_.failHoldMaxDoublings);
   const double hold = 15.0 * cadence() * double(1 << doublings);
   return std::max(0.0, hold - (now - failAt_));
+}
+
+double Amc::promoteMarginFor(uint8_t k) const {
+  if (k >= cfg_.promoteHighFrom && !std::isnan(cfg_.promoteMarginHighDb)) {
+    return cfg_.promoteMarginHighDb;
+  }
+  return cfg_.promoteMarginDb;
 }
 
 AmcDecision Amc::evaluate(double now) {
@@ -318,7 +327,7 @@ AmcDecision Amc::evaluate(double now) {
       while (hi < cfg_.maxMode && operatingFloorDb(hi) >= 90.0) ++hi;
       if (hi > cfg_.maxMode || operatingFloorDb(hi) >= 90.0) break;
       if (!modeEligible(hi, eff)) break;
-      if (eff < operatingFloorDb(hi) + cfg_.promoteMarginDb +
+      if (eff < operatingFloorDb(hi) + promoteMarginFor(hi) +
                     cfg_.skipHeadroomDb) {
         break;
       }

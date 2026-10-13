@@ -1126,10 +1126,20 @@ they are not re-raised. Commands are the original measurements.
   (−16.0/−15.5 dB) and the release gate sweeps full frames. Recovering
   NARROW's ~3 dB is acquisition work (preamble/sync/header detection) -
   OPTIONAL.
-- [ ] **AMC on CCIR Good ramps - STILL OPEN.** `test_m3_ramp`: AMC
-  289.5 KB vs oracle 363.0 KB (ratio 0.80, 3 seeds; static 0.76) -
-  unchanged from v1.2.0. Can be tuned in simulation now; on-air Good-
-  channel data would guard against tuning to the simulator.
+- [x] **AMC on CCIR Good ramps - CLOSED (after v1.2.1).** Root cause was
+  the channel classifier, not the margins: the Severe gate averaged
+  delay spread with an EMA, and on CCIR Good 26% of frames mis-estimate
+  spread at ~5 ms (median 0.62 ms), so Good channels read SEVERE and the
+  AMC steered by the CCIR Poor table (M11 -> M9 -> M8 -> M7 at 18 dB, no
+  retries). Fix: the Severe gate reads a 9-frame spread median, and the
+  promote margin into M11-M13 is +0.5 dB (the other rungs keep -1.5).
+  Measured: M3 ramp 0.80 -> 0.93 of genie (337.5 vs 289.5 KB), static
+  0.76 -> 0.77, churn seeds 11-13 +7.6% and 14-16 +5%, coupled churn +17%,
+  Moderate floor soaks (seeds 11 at 1800 s, 12-14) and Poor floor soaks
+  byte-identical; all soaks PASS. Rejected along the way: demote margin
+  -2.5/-1.5 (static 0.72, a churn stall), SNR-aware fast demote (no
+  effect), fast-tier-only pilot feed (no effect - this sim path carries
+  no pilot samples). On-air Good-channel data should still confirm it.
 - [ ] **Reverse-direction offset after a retune - STILL PRESENT, harmless
   inside ±55 Hz.** `cfo_st2 STEP=40`: data direction re-aligned (A shift
   39.8 Hz, B sees −0.2 Hz); the reverse path keeps 40 Hz (A CFO=40.0);
