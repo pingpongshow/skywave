@@ -23,10 +23,10 @@ modem:
 
 ## Prerequisites
 
-1. **Licence and band plan.** Stage 2 transmits: use a data sub-band,
-   keep the power reasonable, and ID. `gen --call` puts CW ID at both
-   ends of every sounding. Stage 1 into a dummy load needs `--call` only
-   if anything leaks off-site.
+1. **Licence and band plan.** Anything keyed into an antenna transmits:
+   use a data sub-band, keep the power reasonable, and ID. `gen --call`
+   ends every sounding with a CW ID (and IDs every 10 min in long runs).
+   Only a run into a real dummy load may use `--no-id`.
 2. **Protect the Web-888.** Never transmit with the Web-888 on an antenna
    near the Flex's: 100 W next to an SDR front end can destroy it. Stage 1
    runs the Flex into a **dummy load at minimum power**, and the Web-888
@@ -80,9 +80,16 @@ lowest RF power (`rfpower=0`), checked before every key-up.**
 
 ## Bench session 2026-10-12: what it took to get frames through
 
-Station: FLEX-6700 at 1 W (`rfpower=1`) into a dummy load on ANT1, 14.085 MHz
-DIGU, driven by AetherSDR (built-in DAX driver, CAT on 4532); Web-888 on
-leakage. Each item blocked decoding until fixed.
+**Correction (operator, end of day): there was no dummy load.** Every
+"bench" run below RADIATED 1 W on 14.085 MHz into an antenna, mismatched
+until late in the day, and the Web-888 picked it up nearby off-air. Most
+runs ended with CW ID as N0CALL; the short keyed tone tests and the live
+beacon/broadcast test did not. Every keyed run must end with an ID (`gen
+--call`; the sounder now IDs at the end by default).
+
+Station: FLEX-6700 at 1 W (`rfpower=1`) radiating on ANT1, 14.085 MHz
+DIGU, driven by AetherSDR (built-in DAX driver, CAT on 4532); Web-888
+nearby, off-air. Each item blocked decoding until fixed.
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -104,7 +111,7 @@ Measured once these were fixed:
   acquisition. Record with `--freq` 0.063 kHz low. Residual CFO 0.1 Hz;
   clock +3 ± 9 ppm.
 
-### Stage 1 results (2026-10-12, 1 W into the dummy load, PTT lead 300 ms)
+### Stage 1 results (2026-10-12, 1 W radiated, Web-888 nearby, PTT lead 300 ms)
 
 | Run | Frames | Notes |
 |---|---|---|
@@ -126,7 +133,7 @@ Measured once these were fixed:
   §97.119). The modem already IDs after disconnect and every 10 min in
   long sessions.
 
-### Modem live, other families, CSS (2026-10-12, 1 W, dummy load)
+### Modem live, other families, CSS (2026-10-12, 1 W radiated)
 
 - **The modem itself through the rig, decoded live:** one modem sent a
   BEACON and broadcasts through AetherSDR; a second modem, listening off
@@ -161,6 +168,16 @@ Measured once these were fixed:
   was low (EVM 6-9 dB) because a new TX antenna overloaded the Web-888,
   which is unrelated to the slip fix. Option 3 remains worthwhile for
   sound-card and network glitches the client cannot prevent.
+
+  **Receive overload once the TX antenna was matched (late 2026-10-12).**
+  With a better-tuned TX antenna the full 1 W radiates and the nearby
+  Web-888's active loop overloads. The audio stays clean (no clipping,
+  `adc_ov=0`), but correlation with the sent waveform falls to 0.88 (about
+  6 dB signal-to-distortion, EVM about 5 dB), skirts rise 7-12 dB just
+  outside the band, and M13 fails. Audio gain (`--gain`) cannot fix it:
+  the overload is ahead of the ADC (likely the loop's preamplifier). Use a
+  distant receiver (stage 2) or isolate the local one much further
+  (distance, loop amplifier off, attenuator).
 
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 

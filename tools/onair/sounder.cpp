@@ -244,7 +244,7 @@ void appendSilence(std::vector<cfloat>& bb, double sec) {
 int cmdGen(const GenArgs& a) {
   if (a.call.empty() && !a.noId) {
     die("--call is required for an on-air sounding (or --no-id for a "
-        "dummy-load bench run)");
+        "run that is not radiated, e.g. a dummy load)");
   }
   Manifest m;
   m.family = a.family;

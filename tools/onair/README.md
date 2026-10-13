@@ -54,8 +54,8 @@ build/onair_sounder score --wav kiwi_rec.wav --manifest snd.manifest --csv run1.
   removed upstream of the transmitter. These are TX-chain glitches.
   `SKW_SOUNDER_DEBUG=1` lists every detection and decode.
 - **CW ID** goes at the end of the sequence, plus at a segment boundary
-  before each 10-minute mark in longer runs. `--no-id` is for dummy-load
-  runs only.
+  before each 10-minute mark in longer runs. `--no-id` is only for runs
+  that are not radiated (into a dummy load or a loopback cable).
 - **Station config.** `station-flex6700.ini` holds the measured settings
   for N0CALL's FLEX-6700/AetherSDR station. Copy it out of the repo
   before use, because the modem rewrites its `--config` file on exit.
