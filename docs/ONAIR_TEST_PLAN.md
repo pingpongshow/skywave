@@ -153,6 +153,15 @@ Measured once these were fixed:
      Opus path already does);
   3. make the Skywave receiver tolerate a mid-frame timing slip.
 
+  **Option 2, tested (same day, NARROW M4-M6 x 2, 200 s keyed, Wi-Fi).**
+  Pacing with the ~53 ms cushion held in AetherSDR (`1d93947`): slips
+  unchanged (+5.3/+10.7/+16.3 ms), 2/6 decoded. Pacing with the cushion
+  sent ahead into the radio's buffer (`d4451db`): no slips (lag constant to
+  within 10 samples across 25-40 s frames), **6/6 decoded**. That run's SNR
+  was low (EVM 6-9 dB) because a new TX antenna overloaded the Web-888,
+  which is unrelated to the slip fix. Option 3 remains worthwhile for
+  sound-card and network glitches the client cannot prevent.
+
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 
 These are the bench checks left open by the pre-on-air review
