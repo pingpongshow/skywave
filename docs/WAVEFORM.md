@@ -497,8 +497,16 @@ bandwidth, so narrow families reach deepest:
 |---|---:|---:|---:|---:|
 | WIDE | −13.0 | −10.5 | −8.0 | −5.0 |
 | MID | −16.5 | −14.0 | −12.0 | −9.0 |
-| NARROW | −19.5 | −17.5 | −15.0 | −12.0 |
+| NARROW | −16.0 ¹ | −15.5 ¹ | −15.0 | −12.0 |
 | ULTRA | −12.5 | −11.0 | −8.0 | −5.0 |
+
+¹ NARROW `M0`/`M1` are FULL-FRAME floors (v1.2.1). The payload alone
+reaches −19.5/−17.5 dB, but the chirp preamble, sync and header cannot
+follow it: with `bertool --css-frames`, M0 loses 30% of frames at
+−16.5 dB and M1 23%. The table holds what a frame achieves, because the
+AMC steers on it. MID/WIDE/ULTRA `M0` meet floor+1 ≤ 10% on full frames
+as published. Recovering NARROW's 3 dB is an acquisition problem
+(ROADMAP).
 
 The original forward estimate ("floors −9 → −14 dB") predates the
 per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`

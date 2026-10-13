@@ -80,10 +80,14 @@ on breaking wire changes, never for releases. Both are 1.
    build/bertool --preset good --trials 40 --modes 8,9,10,11,12,13 --csv docs/conformance/rel_good.csv
    build/bertool --preset good --trials 40 --modes 4,5,6,7 --families narrow --csv docs/conformance/rel_good_narrow.csv
    build/bertool --css --preset awgn --trials 40 --csv docs/conformance/rel_css.csv
+   build/bertool --css-frames --preset awgn --trials 40 --modes 0,1,2,3 --offsets 1,3 --csv docs/conformance/rel_css_frames.csv
    build/bertool --band vhf-fm --trials 40 --csv docs/conformance/rel_vhf.csv
    ```
    Every sweep must print `== all points pass ==` (the CSS sweep prints
-   `== all CSS points pass ==`). **Every sweep writes a CSV.** The three
+   `== all CSS points pass ==`; the full-frame CSS sweep prints no
+`FAIL:` line). **Every sweep writes a CSV.** The full-frame sweep exists
+because `--css` measures the payload alone: NARROW `M0` passed it for
+months while full frames lost 30% at floor+3 (v1.2.1). The three
    fading commands previously had no `--csv`, so `rel_mod.csv` and
    `rel_good.csv` sat at their v1.0.0 contents while the gate was
    re-run and reported green — the archived fading evidence did not

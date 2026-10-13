@@ -180,6 +180,13 @@ using FloorTable = std::array<double, kNumModes>;
 // branch-resolved CFO; GAP_CLOSURE_PLAN.md). CSS M0-M3 unchanged (the
 // CSS path did not change). The previous per-entry history (e.g. NARROW
 // M9's 2026-09-07 re-measure) is in git and the ROADMAP.
+// NARROW CSS M0/M1 RAISED 2026-10-12 (v1.2.1) to FULL-FRAME floors: the
+// payload reaches -19.5/-17.5 (bertool --css) but the chirp preamble,
+// sync and header do not follow it - full frames (bertool --css-frames,
+// AWGN, 40-60 trials) run M0 30% at -16.5, 10% at -15.5, 0% at -14.5 and
+// M1 23% at -16.5, 12% at -15.5, 5% at -14.5. The AMC steers on these
+// entries, so they now describe what a frame achieves; acquisition, not
+// the payload, bounds NARROW's deepest modes (ROADMAP).
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
     {{-13.0, -10.5, -8.0, -5.0,
@@ -188,7 +195,7 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     {{-16.5, -14.0, -12.0, -9.0,
       -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
     // NARROW
-    {{-19.5, -17.5, -15.0, -12.0,
+    {{-16.0, -15.5, -15.0, -12.0,
       -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,
@@ -224,9 +231,12 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // MID
     {{-10.0, -7.0, -5.0, -3.0,
       -9.0, -7.5, -5.0, -2.5, 6.0, 10.5, 10.5, 14.5, 17.5, 23.0, kFadingNA}},
-    // NARROW (all modes on CCIR Good - see above)
+    // NARROW (all modes on CCIR Good - see above). M5 RAISED -8.5 -> -8.0
+    // for v1.2.1: 400 trials gave 15.2% at the old floor+1 (the 15% gate
+    // passed on slack alone) and 12.2% at -7.0; the fixed-seed 40-trial
+    // release sweep failed the point identically at v1.2.0 and v1.2.1.
     {{-11.0, -9.0, -8.0, -7.0,
-      -10.5, -8.5, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
+      -10.5, -8.0, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
     // ULTRA
     {{-4.0, -2.0, kFadingNA, kFadingNA,
       -5.0, -2.5, 1.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
