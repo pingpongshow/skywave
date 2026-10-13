@@ -126,6 +126,33 @@ Measured once these were fixed:
   §97.119). The modem already IDs after disconnect and every 10 min in
   long sessions.
 
+### Modem live, other families, CSS (2026-10-12, 1 W, dummy load)
+
+- **The modem itself through the rig, decoded live:** one modem sent a
+  BEACON and broadcasts through AetherSDR; a second modem, listening off
+  with MONITOR ON, decoded the Web-888 live (`kiwirec.py --play-device
+  "BlackHole 2ch"`). 4/4 frames with payloads, callsign identified, 3/3
+  broadcasts reassembled, about 1.3 s after unkey. Getting there fixed a
+  modem defect: monitor-only stations reported frames about 90 s late
+  (`test_monitor_worker`).
+- **CSS M0-M3 (WIDE):** 8/8. Drift −0.0002 Hz/s over 89 s; the bench
+  Flex/Web-888 pair barely drifts, so 8.8's drift data must come from
+  on-air paths.
+- **MID M4-M13:** 28/30. **NARROW M4-M13:** 22/30, with losses concentrated
+  in robust frames that are 25-40 s long.
+- **Cause of every NARROW/MID loss examined:** timing steps in the
+  transmitted audio of exactly k × 5.33 ms (one DAX TX packet = 128 samples
+  at 24 kHz). The radio inserts silence when a DAX packet arrives late, and
+  the frame's timing is broken from that point on
+  ([`tools/onair/jumpfind.py`](../tools/onair/jumpfind.py)). Long frames
+  collect more of them. The likely sources: AetherSDR sends DAX TX packets
+  as its GUI-thread reader delivers them (bursty, not paced), plus Wi-Fi
+  jitter. Options:
+  1. wired Ethernet;
+  2. pace DAX TX in AetherSDR (small prebuffer, steady send clock, as its
+     Opus path already does);
+  3. make the Skywave receiver tolerate a mid-frame timing slip.
+
 ## Stage 1: bench, Flex into a dummy load, Web-888 on leakage
 
 These are the bench checks left open by the pre-on-air review
