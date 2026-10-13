@@ -10,7 +10,12 @@ pass it to `onair_sounder score --rate`.
 
 Usage:
   tools/onair/kiwirec.py --host 192.0.2.210 --freq 14105.0 --seconds 300 \\
-      --out rec.wav [--low 200 --high 2900] [--gain 50]
+      --out rec.wav [--low 200 --high 2900] [--gain 50] \\
+      [--play-device "BlackHole 2ch"]
+
+--play-device also streams the audio LIVE into an output device at 48 kHz
+(e.g. a virtual cable a receiving modem listens on). It needs numpy, scipy
+and sounddevice; recording alone needs only the standard library.
 """
 import argparse
 import base64
@@ -21,6 +26,82 @@ import struct
 import sys
 import time
 import wave
+
+
+class LivePlayer:
+    """Streams receiver audio into an output device at 48 kHz.
+
+    Integer upsampling (zero-stuff + windowed-sinc FIR with carried filter
+    state, so chunk edges are seamless), a jitter buffer of ~0.3 s, silence
+    on underrun, and oldest-first drops if the receiver clock runs ahead.
+    """
+
+    def __init__(self, device, in_rate):
+        import numpy as np
+        import scipy.signal as ss
+        import sounddevice as sd
+        import collections
+        import threading
+        self.np = np
+        self.ss = ss
+        if 48000 % in_rate:
+            raise SystemExit(f"kiwirec: cannot play {in_rate} Hz audio at 48 kHz")
+        self.L = 48000 // in_rate
+        self.taps = ss.firwin(48 * self.L + 1, 0.9 / self.L) * self.L
+        self.zi = np.zeros(len(self.taps) - 1)
+        self.buf = collections.deque()
+        self.have = 0
+        self.lock = threading.Lock()
+        self.primed = False
+        self.underruns = 0
+        idx = [i for i, d in enumerate(sd.query_devices())
+               if d["name"] == device and d["max_output_channels"] > 0]
+        if not idx:
+            raise SystemExit(f"kiwirec: no output device named '{device}'")
+        self.stream = sd.OutputStream(samplerate=48000, channels=1,
+                                      device=idx[0], dtype="float32",
+                                      blocksize=1024, callback=self._cb)
+        self.stream.start()
+
+    def push(self, samples):
+        np = self.np
+        x = np.asarray(samples, dtype=float) / 32768.0
+        up = np.zeros(len(x) * self.L)
+        up[::self.L] = x
+        y, self.zi = self.ss.lfilter(self.taps, 1.0, up, zi=self.zi)
+        with self.lock:
+            self.buf.append(y.astype(np.float32))
+            self.have += len(y)
+            while self.have > 48000:          # > 1 s queued: drop oldest
+                self.have -= len(self.buf.popleft())
+
+    def _cb(self, out, frames, _time, _status):
+        np = self.np
+        with self.lock:
+            if not self.primed:
+                if self.have < int(0.3 * 48000):
+                    out[:] = 0
+                    return
+                self.primed = True
+            n = 0
+            while n < frames and self.buf:
+                chunk = self.buf[0]
+                k = min(frames - n, len(chunk))
+                out[n:n + k, 0] = chunk[:k]
+                n += k
+                if k == len(chunk):
+                    self.buf.popleft()
+                else:
+                    self.buf[0] = chunk[k:]
+                self.have -= k
+            if n < frames:
+                out[n:, 0] = 0
+                self.underruns += 1
+                self.primed = False
+
+    def close(self):
+        self.stream.stop()
+        self.stream.close()
 
 
 class WebSocket:
@@ -128,6 +209,8 @@ def main():
                     help="manual gain with AGC off (0-120)")
     ap.add_argument("--password", default="")
     ap.add_argument("--user", default="skywave-onair")
+    ap.add_argument("--play-device",
+                    help="also stream the audio live into this output device")
     args = ap.parse_args()
 
     ws = WebSocket(args.host, args.port, f"/{int(time.time())}/SND")
@@ -136,6 +219,7 @@ def main():
     true_rate = None
     configured = False
     wav = None
+    player = None
     frames = 0
     start = None
     last_keepalive = 0.0
@@ -167,6 +251,8 @@ def main():
                             "SET squelch=0 max=0",
                     ):
                         ws.send_text(cmd)
+                    if args.play_device:
+                        player = LivePlayer(args.play_device, rate)
                     wav = wave.open(args.out, "wb")
                     wav.setnchannels(1)
                     wav.setsampwidth(2)
@@ -186,6 +272,8 @@ def main():
                     pcm = pcm[:-1]
                 samples = struct.unpack(f">{len(pcm) // 2}h", pcm)
                 wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+                if player is not None:
+                    player.push(samples)
                 frames += len(samples)
                 if start is None:
                     start = time.time()
@@ -201,6 +289,9 @@ def main():
         ws.close()
         if wav is not None:
             wav.close()
+        if player is not None:
+            print(f"kiwirec: live playback underruns: {player.underruns}")
+            player.close()
     if wav is None:
         sys.exit("kiwirec: no audio received")
     elapsed = time.time() - (start or time.time())

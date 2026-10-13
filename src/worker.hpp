@@ -297,7 +297,12 @@ class ModemWorker : public ControlBackend {
   // True when the busy channel is (or may still be) a station rather
   // than noise; only this defers transmission.
   bool peerBusyLocked(double now) const;
-  void runMonitorLocked(std::span<const cfloat> win);
+  // Monitor pass over a capture. With `final` false a header-only decode
+  // is NOT published (the frame may simply not have arrived yet): its
+  // header airtime is returned so the capture can wait for the whole
+  // burst. Returns true when something was published.
+  bool runMonitorLocked(std::span<const cfloat> win, bool final = true,
+                        double* airtimeSec = nullptr);
   // GUI instrument taps: a periodic Welch-style spectrum over the RX
   // baseband, and the equalized constellation from the last decode.
   void updateSpectrumLocked(std::span<const cfloat> bb);

@@ -121,6 +121,20 @@ std::optional<MonitorEvent> Monitor::rxBurst(
   }
 
   MonitorEvent ev;
+  ev.payloadOk = res->payloadOk;
+  {
+    // The header states the burst's exact span: a caller holding a
+    // capture shorter than this can wait for the rest of the frame.
+    std::vector<uint8_t> len(res->header.length);
+    TxFrameParams tp;
+    tp.family = family_;
+    tp.sig = res->sig;
+    tp.mode = res->header.mode;
+    tp.cpMode = res->header.cpMode;
+    tp.cssHeaderCopies = res->header.cssHeaderCopies;
+    tp.payload = len;
+    ev.airtimeSec = double(computeGeometry(tp).totalSamples) / kFsBaseband;
+  }
   ev.monLine = monLine(lastSrc_, lastDst_ == "*" ? "" : lastDst_,
                        res->header.frameType, plan(family_).name,
                        res->header.mode, hex);

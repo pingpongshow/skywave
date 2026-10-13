@@ -193,14 +193,17 @@ void ModemWorker::updateSpectrumLocked(std::span<const cfloat> bb) {
 // Passive monitor pass over a capture window. Runs for BOTH decode paths
 // (the burst-end fast path and the retry ladder) so third-party traffic is
 // reported regardless of which one took the frame.
-void ModemWorker::runMonitorLocked(std::span<const cfloat> win) {
-  if (!monitorOn_ || !monitor_) return;
+bool ModemWorker::runMonitorLocked(std::span<const cfloat> win, bool final,
+                                   double* airtimeSec) {
+  if (!monitorOn_ || !monitor_) return false;
   monitor_->setLocalConnected(engine_->state() == FsmState::Connected);
   auto ev = monitor_->rxBurst(win);
+  if (ev && airtimeSec) *airtimeSec = ev->airtimeSec;
+  if (ev && !ev->payloadOk && !final) ev.reset();
   // Broadcast chains complete inside the Monitor; drain them whether or
   // not this particular frame produced an event line.
   auto bcasts = monitor_->takeBroadcasts();
-  if (!ev && bcasts.empty()) return;
+  if (!ev && bcasts.empty()) return false;
 
   std::lock_guard lock(bridgeMutex_);
   if (ev) {
@@ -218,6 +221,7 @@ void ModemWorker::runMonitorLocked(std::span<const cfloat> win) {
   for (const auto& [src, payload] : bcasts) {
     notes_.push_back(evtBroadcast(src, payload));
   }
+  return true;
 }
 
 // --- channel memory ----------------------------------------------------------
@@ -700,7 +704,18 @@ void ModemWorker::decodePendingLocked(double now) {
           // MONITOR clients.
           runMonitorLocked(win);
           done = true;
-        } else if (engineEligible) {
+        } else if (!engineEligible) {
+          // Monitor-only station (not listening, no session): the
+          // monitor IS the decoder, so it gets the quiet-channel look.
+          // A header-only decode means the burst is still arriving; its
+          // airtime arms the burst-end finalization above.
+          double air = 0.0;
+          if (runMonitorLocked(win, /*final=*/false, &air)) {
+            done = true;
+          } else if (air > 0.0) {
+            it->airtimeSec = std::max(it->airtimeSec, air);
+          }
+        } else {
           it->airtimeSec =
               std::max(it->airtimeSec, engine_->lastRxBurstAirtimeSec());
         }
@@ -715,16 +730,28 @@ void ModemWorker::decodePendingLocked(double now) {
                                   size_t(std::min(need, histEnd) - w0));
       const bool engineEligible =
           listen_ || engine_->state() != FsmState::Idle;
+      // Not listening and idle, the engine never decodes a capture, so
+      // its airtime is never learned and burst-end finalization never
+      // fires: the monitor's only look used to be the LAST rung, ~90 s
+      // after the frame (bench 2026-10-12). Monitor-only, every rung is
+      // the monitor's, and the first decode retires the capture.
+      const bool monitorOnly = !engineEligible;
+      const bool lastRung = it->tries == kRxTries - 1;
+      double monAir = 0.0;
       const bool decoded =
           engineEligible
-              ? timedRxBurst(win, now, it->tries == kRxTries - 1)
-              : false;
+              ? timedRxBurst(win, now, lastRung)
+              : runMonitorLocked(win, /*final=*/lastRung, &monAir);
       --decodeBudget;
       ++it->tries;
       if (decoded || it->tries >= kRxTries) {
-        runMonitorLocked(win);
+        if (!monitorOnly) runMonitorLocked(win);
         done = true;
         break;
+      }
+      if (monitorOnly && monAir > 0.0) {
+        it->airtimeSec = std::max(it->airtimeSec, monAir);
+        break;  // burst-end finalization takes it from here
       }
       if (engineEligible) {
         it->airtimeSec =

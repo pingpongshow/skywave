@@ -18,6 +18,8 @@ namespace skw {
 struct MonitorEvent {
   std::string monLine;               // "MON:src:dst:type:family:Mx:hex"
   std::vector<uint8_t> binaryRecord; // empty when suppressed / no payload
+  bool payloadOk = false;            // header-only decode when false
+  double airtimeSec = 0.0;           // the frame's on-air span, from its header
 };
 
 class Monitor {
