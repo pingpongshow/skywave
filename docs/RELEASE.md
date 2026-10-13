@@ -23,9 +23,9 @@ on breaking wire changes, never for releases. Both are 1.
 
    Give the TSan legs a longer ctest budget — `test_st2` drives two
    modems through a full audio world and TSan slows it roughly 20x,
-   past ctest's 1500 s default:
+   past ctest's 1500 s default (v1.2.1: test_st2 alone took 3704 s under TSan; run the TSan leg by itself):
    ```
-   ctest --test-dir build-tsan -R "test_st2$|test_tcp$" --timeout 3600
+   ctest --test-dir build-tsan -R "test_st2$|test_tcp$" --timeout 7200
    ```
 
    **Configure the sanitizer trees with `-DENABLE_GUI=OFF`:**

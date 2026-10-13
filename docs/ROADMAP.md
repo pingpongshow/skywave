@@ -1121,8 +1121,11 @@ they are not re-raised. Commands are the original measurements.
   WIDE M0-M3 0% at 0.05 Hz/s; MID 0% at 0.05 Hz/s but M2/M3 100% (M1 8%)
   at the 0.1 Hz/s gate; NARROW M1-M3 88-100% at 0.05 Hz/s. The 2026-10-12
   on-air CSS run (WIDE, bench drift −0.0002 Hz/s) did not exercise it.
-  NEW: NARROW M0 32% FER at floor+3 with NO drift (acquisition/header,
-  full-frame path) - re-check its floor.
+  NARROW M0 32% FER at floor+3 with NO drift: RESOLVED in v1.2.1. The
+  CSS floors were payload-only; NARROW M0/M1 are now full-frame floors
+  (−16.0/−15.5 dB) and the release gate sweeps full frames. Recovering
+  NARROW's ~3 dB is acquisition work (preamble/sync/header detection) -
+  OPTIONAL.
 - [ ] **AMC on CCIR Good ramps - STILL OPEN.** `test_m3_ramp`: AMC
   289.5 KB vs oracle 363.0 KB (ratio 0.80, 3 seeds; static 0.76) -
   unchanged from v1.2.0. Can be tuned in simulation now; on-air Good-
