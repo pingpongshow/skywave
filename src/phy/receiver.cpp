@@ -965,6 +965,9 @@ std::optional<RxFrameResult> receiveFrameImpl(
   std::vector<uint8_t> hInfo;
   std::optional<PhyHeader> hdr;
   bool anyZc = false;
+  // A walk that ran past the capture: the frame is still arriving (the
+  // worker re-tries growing captures), so the drift retry cannot help.
+  bool truncated = false;
   for (const auto& branch : branches) {
     zc = zcRefine(family, sig, branch.start, branch.cfoHz, 0.7, zcCount, 24,
                   branch.fitRangeHz);
@@ -1010,6 +1013,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     std::vector<float> hLlr;
     if (!walkerSlot->collect(Constellation::Qpsk, headerSpread(robust),
                              CpMode::Medium, hcode.n(), hLlr)) {
+      truncated = true;
       continue;
     }
     hInfo.clear();
@@ -1021,7 +1025,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
   if (!anyZc) return std::nullopt;
   stage(RxStage::HeaderFail);
   if (!hdr) {
-    if (retryable) *retryable = true;
+    if (retryable && !truncated) *retryable = true;
     return std::nullopt;
   }
   ChannelTracker& tracker = *trackerSlot;
@@ -1124,6 +1128,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
       const LdpcCode& pcode =
           LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
       if (!haveAll) {
+        truncated = true;
         ok = false;
         break;
       }
@@ -1208,7 +1213,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     if (wantConstellation) res.constellation = std::move(constPts);
   }
   res.payloadOk = ok && white.size() >= size_t(hdr->length);
-  if (!res.payloadOk && retryable) *retryable = true;
+  if (!res.payloadOk && retryable && !truncated) *retryable = true;
   if (res.payloadOk) {
     white.resize(size_t(hdr->length));
     Whitener wh;
