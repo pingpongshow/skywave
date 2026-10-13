@@ -221,3 +221,30 @@ TEST_CASE(rx_weak_early_path_fast) {
 }
 
 SKYTEST_MAIN
+
+// Extreme in-frame drift (OFDM counterpart of 8.8): the first-order FLL
+// lags a linear drift by r * Tsym / gain, and at the robust gain the long
+// robust frames lost their headers - NARROW M4 @ 1 Hz/s (40 s frame) 25%,
+// MID M4 @ 2 Hz/s 82.5% at floor+6. The receiver re-walks a failed frame
+// at the drift gain (receiver.cpp fllDriftGain).
+TEST_CASE(rx_robust_extreme_drift) {
+  struct Case {
+    Family fam;
+    double floorDb, drift;
+  };
+  int ok = 0, total = 0;
+  for (const Case& k : {Case{Family::Narrow, -17.5, 1.0},
+                        Case{Family::Mid, -15.0, 2.0}}) {
+    for (double sign : {1.0, -1.0}) {
+      for (uint64_t seed = 1; seed <= 4; ++seed) {
+        ChansimParams c = cleanChannel(k.floorDb + 6.0);
+        c.cfoDriftHzPerSec = sign * k.drift;
+        c.seed = 70 + seed;
+        ++total;
+        if (runOne(k.fam, ChirpSig::Robust, 4, 60, c, uint8_t(seed))) ++ok;
+      }
+    }
+  }
+  std::printf("robust M4 extreme drift: %d/%d frames\n", ok, total);
+  CHECK(ok >= total - 1);
+}

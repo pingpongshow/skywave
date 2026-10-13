@@ -62,6 +62,24 @@ double fllGain(bool robustClass) {
   return on ? (robustClass ? robust : fast) : 0.0;
 }
 
+// Drift retry (the OFDM counterpart of the CSS drift search, 8.8): the
+// FLL is first-order, so a linear drift r leaves a steady frequency lag
+// of r * Tsym / gain. At the robust gain 0.1 that lag killed long frames
+// under extreme drift (AWGN floor+6, 40 trials: NARROW M4 @ 1 Hz/s 25%,
+// MID M4 @ 2 Hz/s 82.5%, mostly header failures); gain 0.3 recovers
+// both (2.5%), but a gain that high everywhere feeds CCIR Poor's Doppler
+// back (fllGain above). So a frame that fails at the class gain is
+// walked once more at this gain - frames that decode are untouched.
+// SKW_FLL_DRIFT_RETRY=0 disables; SKW_FLL_GAIN_DRIFT overrides 0.3.
+bool fllDriftRetryEnabled() { return envKnobOn("SKW_FLL_DRIFT_RETRY"); }
+double fllDriftGain() {
+  static const double g = [] {
+    const char* e = std::getenv("SKW_FLL_GAIN_DRIFT");
+    return e ? std::atof(e) : 0.3;
+  }();
+  return g;
+}
+
 // Frame-average channel power in tracker H units (R5): mean in-band FFT
 // power minus the out-of-band noise floor over up to `maxSyms` symbols
 // from the first post-ZC symbol. Guard bins (6 carriers each side) cover
@@ -142,6 +160,9 @@ struct SymbolWalker {
   double fllHz = 0.0;
   double fllPhase = 0.0;
   std::vector<cfloat> fllPrevH{};
+  // Loop gain for this walk; < 0 takes fllGain() (the drift retry in
+  // receiveFrame sets fllDriftGain()).
+  double fllGainOverride = -1.0;
 
   // CFO-derotate, FFT and TX-scale-correct the symbol whose FFT window
   // starts at `start`. False when the window runs past the capture.
@@ -193,7 +214,9 @@ struct SymbolWalker {
     std::vector<std::vector<cfloat>> hS(static_cast<size_t>(nSym));
     std::vector<double> nvS(static_cast<size_t>(nSym));
     const bool smooth = rtsSmoothingEnabled();
-    const double gain = fllGain(tracker->robustClass());
+    const double gain = fllGainOverride >= 0.0
+                            ? fllGainOverride
+                            : fllGain(tracker->robustClass());
     if (smooth) tracker->beginHistory();
     for (int k = 0; k < nSym; ++k) {
       const int64_t start = nextSampleStart + int64_t(k) * symLen + cpLen;
@@ -886,11 +909,12 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
   return out;
 }
 
-std::optional<RxFrameResult> receiveFrame(Family family,
-                                          std::span<const cfloat> rx,
-                                          RxStage* stageOut, HarqChase* harq,
-                                          const CarrierMask* payloadMask,
-                                          bool wantConstellation) {
+namespace {
+
+std::optional<RxFrameResult> receiveFrameImpl(
+    Family family, std::span<const cfloat> rx, RxStage* stageOut,
+    HarqChase* harq, const CarrierMask* payloadMask, bool wantConstellation,
+    double fllGainOverride, bool* retryable) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -980,6 +1004,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     trackerSlot.emplace(family, robust, std::move(h0), nv0, meanChanPow);
     walkerSlot.emplace(SymbolWalker{family, sig, zc.cfoHz, t0, 0,
                                     &*trackerSlot});
+    walkerSlot->fllGainOverride = fllGainOverride;
 
     // 3) Header codeword.
     std::vector<float> hLlr;
@@ -995,7 +1020,10 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   }
   if (!anyZc) return std::nullopt;
   stage(RxStage::HeaderFail);
-  if (!hdr) return std::nullopt;
+  if (!hdr) {
+    if (retryable) *retryable = true;
+    return std::nullopt;
+  }
   ChannelTracker& tracker = *trackerSlot;
   SymbolWalker& walker = *walkerSlot;
   stage(RxStage::Ok);
@@ -1180,6 +1208,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     if (wantConstellation) res.constellation = std::move(constPts);
   }
   res.payloadOk = ok && white.size() >= size_t(hdr->length);
+  if (!res.payloadOk && retryable) *retryable = true;
   if (res.payloadOk) {
     white.resize(size_t(hdr->length));
     Whitener wh;
@@ -1271,6 +1300,35 @@ std::optional<RxFrameResult> receiveFrame(Family family,
     }
   }
   return res;
+}
+
+}  // namespace
+
+std::optional<RxFrameResult> receiveFrame(Family family,
+                                          std::span<const cfloat> rx,
+                                          RxStage* stageOut, HarqChase* harq,
+                                          const CarrierMask* payloadMask,
+                                          bool wantConstellation) {
+  bool retryable = false;
+  auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
+                              wantConstellation, -1.0, &retryable);
+  if (!retryable || !fllDriftRetryEnabled()) return res;
+  // Drift retry (see fllDriftGain). Without HARQ: the first pass already
+  // stored this reception's LLRs, and combining them with a second walk
+  // of the same samples would count it twice. A frame that decodes here
+  // leaves its HARQ entries to age out, as the CSS drift search does.
+  RxStage st2 = RxStage::NoDetect;
+  auto res2 = receiveFrameImpl(family, rx, &st2, nullptr, payloadMask,
+                               wantConstellation, fllDriftGain(), nullptr);
+  if (!res2) return res;
+  if (res && res->payloadOk) return res;
+  if (res && !res2->payloadOk) return res;  // keep the first header pass
+  if (std::getenv("SKW_RX_DEBUG")) {
+    std::fprintf(stderr, "skw-rx: drift retry recovered %s\n",
+                 res ? "payload" : "header");
+  }
+  if (stageOut) *stageOut = st2;
+  return res2;
 }
 
 }  // namespace skw

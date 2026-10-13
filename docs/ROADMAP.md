@@ -1162,9 +1162,23 @@ they are not re-raised. Commands are the original measurements.
   inside ±55 Hz.** `cfo_st2 STEP=40`: data direction re-aligned (A shift
   39.8 Hz, B sees −0.2 Hz); the reverse path keeps 40 Hz (A CFO=40.0);
   0 drops, 214 KB. Low priority (wire change or reciprocity rule).
-- [ ] **Extreme in-frame drift - STILL OPEN.** `bertool --preset awgn
-  --offsets 6 --trials 40`: NARROW M4 @ 1 Hz/s 25% FER; MID M4 @ 2 Hz/s
-  82.5% (header failures).
+- [x] **Extreme in-frame drift - CLOSED 2026-10-13.** Cause: the FLL is
+  first-order, so a linear drift r leaves a steady lag of r*Tsym/gain;
+  at the robust gain 0.1 that lag cost the long robust headers. Raising
+  the gain everywhere would feed CCIR Poor's Doppler back (8.6), so a
+  frame that fails at the class gain is walked again at gain 0.3
+  (`SKW_FLL_DRIFT_RETRY`; frames that decode are untouched, HARQ not
+  re-fed). `bertool --preset awgn --offsets 6 --trials 40`, retry off ->
+  on: NARROW M4 @ 1 Hz/s 25% -> 2.5%, MID M4 @ 2 Hz/s 82.5% -> 2.5%;
+  1 Hz/s now <= 2.5% on every family M4-M7 (was NARROW M5 5%, M6 2.5%);
+  2 Hz/s MID M4-M6 82.5/52.5/15% -> <= 2.5%, NARROW M4-M7
+  92.5/75/37.5/10% -> 17.5/10/0/0%, WIDE/ULTRA 0% both ways. CCIR Poor
+  and Moderate (M4/M6/M8, floor and floor+3, 60 trials): no point worse,
+  several better (Poor NARROW M8 30 -> 25%, Moderate WIDE M4 10 -> 6.7%);
+  sweep CPU +8-11% at the floor, paid by failed frames only. Gains 0.4 /
+  0.5 did not improve NARROW 2 Hz/s. Test `rx_robust_extreme_drift`
+  (16/16; fails with the retry off). LIMIT: NARROW M4/M5 at 2 Hz/s (80 Hz
+  inside a 40 s frame) 10-17.5%.
 - [x] **Sustained simultaneous two-way bulk - CLOSED.** `soak_st2` churn,
   seeds 11/12: PASS, A->B 41.4/37.5 KB and B->A 45.0/43.6 KB delivered
   concurrently, 0 reconnects.

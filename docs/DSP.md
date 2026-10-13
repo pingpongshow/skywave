@@ -89,8 +89,11 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   channel power (R5); the frame is buffered, so a fixed-interval RTS
   smoother runs over each walk and every symbol is equalized with
   past AND future pilots (R6). A first-order FLL on the symbol-to-symbol
-  channel rotation (gain 0.2) re-derotates phase-continuously, tracking
-  in-frame LO drift ≥ 1 Hz/s (R2). (Documentation before v1.2.0 described
+  channel rotation (gain 0.2 fast, 0.1 robust) re-derotates
+  phase-continuously, tracking in-frame LO drift ≥ 1 Hz/s (R2). Being
+  first-order, it lags a linear drift by r·Tsym/gain, so a frame that
+  fails is walked once more at gain 0.3 (drift retry): long robust frames
+  hold 1 Hz/s on every family and 2 Hz/s on WIDE/MID/ULTRA. (Documentation before v1.2.0 described
   a 2nd-order PLL here; it was never implemented.)
 - `FLYWHEEL`: on lost pilots mid-frame, hold last CFO/timing for up to 8
   symbols before declaring frame loss (rides through short fades/impulses)
