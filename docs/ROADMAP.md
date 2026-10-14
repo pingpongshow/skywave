@@ -1397,6 +1397,20 @@ MID M0 fading floor.
   within noise of before (summed FER 288 vs 275 over 24 points at 100
   trials); MID/NARROW unchanged by construction. CSS gates (AWGN and
   Moderate full-frame) pass; suite 44/44.
+- [x] **NARROW M1 "payload-limited" - CLOSED 2026-10-14: it was CFO
+  branch errors.** Every NARROW M1 payload failure at the floor was a
+  frame 6.25 or 12.5 Hz off. The branch retry should have caught them,
+  but it ran WITH the sync branch check, and because the detector's start
+  error moves with its CFO error, sync on the correct branch sat ~half a
+  branch from the biased start - the check moved the retry straight back
+  to the wrong branch. The retry now runs without the check, at +-1 and
+  +-2 branches from the CFO the first attempt ended on. 100 trials, retry
+  off -> on: NARROW M1 floor 8 -> 1%, floor-1 27 -> 14%; MID M1 floor
+  19 -> 6%; MID M0 22 -> 17%; NARROW M2 8 -> 3%. AWGN floors re-measured:
+  WIDE M1 -12.0 -> -12.5, NARROW M1 -17.5 -> -18.0, ULTRA M1 -12.0 ->
+  -12.5, NARROW M3 -15.0 -> -14.5 (raised: 19% at -15.0 on this run).
+  The CSS fading floors were measured before this fix and are now
+  slightly conservative.
 - [x] **M7-M9 window 8 re-checked - CLOSED, stays 4 (2026-10-14).** On
   the deterministic harness, window 4 vs 8 over 21 configurations (churn
   seeds 11-16 at 4 and 64 KiB feeds, coupled, one-way floor points on

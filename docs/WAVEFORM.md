@@ -513,17 +513,17 @@ band is the noise bandwidth, so narrow families reach deepest:
 
 | Family | `M0`/SF8 | `M1`/SF7 | `M2`/SF6 | `M3`/SF5 |
 |---|---:|---:|---:|---:|
-| WIDE | −14.5 | −12.0 | −10.0 | −7.5 |
+| WIDE | −14.5 | −12.5 | −10.0 | −7.5 |
 | MID | −17.5 | −16.0 | −14.0 | −11.5 |
-| NARROW | −18.5 | −17.5 | −17.0 | −15.0 |
-| ULTRA | −14.0 | −12.0 | −10.0 | −7.5 |
+| NARROW | −18.5 | −18.0 | −17.0 | −14.5 |
+| ULTRA | −14.0 | −12.5 | −10.0 | −7.5 |
 
 These are 1.5–3 dB below the 2026-07-29 table, which was measured on the
 legacy Hamming payload layer alone (`bertool --css`, now a report-only
 diagnostic of that layer). NARROW `M0`/`M1` once sat ABOVE it instead
 (−16.0/−15.5 in v1.2.1): the 4-rep preamble could not acquire what the
 payload decoded; the 12-rep NARROW/MID preamble and the branch check
-below fixed that. NARROW `M1` is payload-limited. The table holds what a
+and retry below fixed that. The table holds what a
 frame achieves, because the AMC steers on it.
 
 **Sync CFO-branch check.** The preamble's fine CFO is ambiguous modulo
@@ -534,8 +534,10 @@ families where a branch spans more than two chips the sync window covers
 ±1 branch, and a peak about a branch away moves the CFO one branch and
 re-syncs. Where a branch is too small for sync to tell apart (MID ~19
 samples, inside the timing jitter), a frame whose header decoded but
-whose payload failed is re-received on the neighbouring branches and the
-payload CRC decides.
+whose payload failed is re-received one and two branches either side of
+the CFO it ended on, with the sync check off (the detector's start error
+moves with its CFO error, so on the right branch sync can sit half a
+branch from the biased start), and the payload CRC decides.
 
 The original forward estimate ("floors −9 → −14 dB") predates the
 per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`

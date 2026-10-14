@@ -350,7 +350,7 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
 std::optional<RxFrameResult> cssReceiveFrameOnce(
     Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
     double cfoHz, const std::function<void(RxStage)>& stage,
-    HarqChase* harq) {
+    HarqChase* harq, bool allowBranchCheck = true) {
   const CssPlan cp = cssPlan(family);
   const int spc = cp.samplesPerChip;
   const size_t symH = cssSymbolSamples(family, kCssHeaderSf);
@@ -383,6 +383,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   }();
   const bool wideSync =
       branchCheck && branchSamples > branchMinChips * double(spc);
+  const bool doBranchCheck = wideSync && allowBranchCheck;
   const int W = wideSync ? int(std::ceil(branchSamples)) + 2 * spc + 8
                          : 2 * spc + 24;  // sync search half-window, samples
   const int64_t region0 = int64_t(std::llround(coarse)) - W;
@@ -438,7 +439,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     return true;
   };
   if (!syncAt(cfoHz)) return std::nullopt;
-  if (wideSync) {
+  if (doBranchCheck) {
     const long k = std::lround(double(dBest) / branchSamples);
     if (k != 0 && std::abs(k) <= 1) {
       if (getenv("SKW_RX_DEBUG")) {
@@ -1111,9 +1112,16 @@ std::optional<RxFrameResult> cssReceiveFrame(
   if (!res || res->payloadOk || !branchRetry) return res;
   const double amb = chirpCfoAmbiguityHz(family, ChirpSig::Css);
   if (amb <= 0.0) return res;
-  for (double k : {-1.0, 1.0}) {
-    auto r2 = cssReceiveFrameOnce(family, sig, hit, cfoHz + k * amb,
-                                  [](RxStage) {}, nullptr);
+  // Relative to the CFO the first attempt ended on, one and two branches
+  // either way (NARROW M1 at the floor: every payload failure was 6.25 or
+  // 12.5 Hz off), WITHOUT the sync branch check: the detector's start
+  // error moves with its CFO error, so on the correct branch sync can sit
+  // ~half a branch from the biased start and the check "corrected" the
+  // retry straight back to the wrong branch.
+  const double base = res->cfoHz;
+  for (double k : {-1.0, 1.0, -2.0, 2.0}) {
+    auto r2 = cssReceiveFrameOnce(family, sig, hit, base + k * amb,
+                                  [](RxStage) {}, nullptr, false);
     if (r2 && r2->payloadOk) {
       if (getenv("SKW_RX_DEBUG")) {
         fprintf(stderr, "skw-css: branch retry %+.2f Hz recovered the payload\n",

@@ -203,18 +203,24 @@ using FloorTable = std::array<double, kNumModes>;
 // were measured on the legacy Hamming payload layer (`bertool --css`,
 // now a report-only diagnostic; frames carry LDPC). Curves archived in
 // docs/conformance/css_frames_floors_2026-10-14/.
+// Then the CSS branch retry was fixed (it had fought the sync branch
+// check and covered only +-1 branch) and every floor re-measured (100
+// trials per 0.5 dB): WIDE M1 -12.0 -> -12.5, NARROW M1 -17.5 -> -18.0
+// (it was branch errors, not the payload, that limited it), ULTRA M1
+// -12.0 -> -12.5, NARROW M3 -15.0 -> -14.5 (raised: 19% at -15.0 here,
+// 12% before - too close to the line).
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
-    {{-14.5, -12.0, -10.0, -7.5,
+    {{-14.5, -12.5, -10.0, -7.5,
       -11.0, -8.5, -6.0, -3.0, 0.5, 3.0, 5.5, 9.5, 13.5, 17.0, 99.0}},
     // MID
     {{-17.5, -16.0, -14.0, -11.5,
       -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
     // NARROW
-    {{-18.5, -17.5, -17.0, -15.0,
+    {{-18.5, -18.0, -17.0, -14.5,
       -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
-    {{-14.0, -12.0, -10.0, -7.5,
+    {{-14.0, -12.5, -10.0, -7.5,
       -11.0, -8.5, -5.5, -3.0, 1.0, 3.5, 6.0, 10.0, 14.0, 17.5, 99.0}},
 }};
 inline double floorDb(Family f, int mode);  // reads the active profile
