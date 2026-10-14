@@ -12,10 +12,14 @@
 //   FADE     1 = CCIR Moderate instead of AWGN                (default 0)
 //   SEED     world seed                                       (default 11)
 //   MIN_BYTES  pass threshold on bytes delivered to B         (default 0)
+//   REV_MAX  pass threshold on the REVERSE path's residual at the end:
+//            |CFO| A measures on B's frames, Hz           (default off)
 //
 // Exit status: 0 when the session never dropped and B received at least
 // MIN_BYTES; 1 otherwise. Prints a "RESULT" line for scripts.
+#include <cmath>
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 
 #include "st2_world.hpp"
@@ -33,6 +37,7 @@ int main() {
                stepAt = env("STEP_AT", 120), drift = env("DRIFT", 0),
                dur = env("DUR", 600), snr = env("SNR", 20);
   const size_t minBytes = size_t(env("MIN_BYTES", 0));
+  const double revMax = env("REV_MAX", -1);
   World w(snr, uint64_t(env("SEED", 11)));
   // B's LO offset `lo`: A -> B sees -lo, B -> A sees +lo.
   auto setLo = [&](double lo) {
@@ -91,7 +96,14 @@ int main() {
       std::fflush(stdout);
     }
   }
-  std::printf("RESULT bytes=%zu dropped=%d lastProgress=%.0f\n",
-              w.b.dataAcc.size(), int(dropped), lastProgress);
-  return (!dropped && w.b.dataAcc.size() >= minBytes) ? 0 : 1;
+  // Reverse path: what A hears of B. With reports riding ACKs only, a
+  // one-way sender never reported it and B's signal stayed off by the
+  // whole step (ROADMAP open-item review); A's standalone CFO ACK fixes it.
+  const std::string fa = w.cmd(w.a, "FREQINFO");
+  const size_t at = fa.find("CFO=");
+  const double rev = at == std::string::npos ? 1e9 : std::atof(fa.c_str() + at + 4);
+  std::printf("RESULT bytes=%zu dropped=%d lastProgress=%.0f rev=%.1f\n",
+              w.b.dataAcc.size(), int(dropped), lastProgress, rev);
+  const bool revOk = revMax < 0 || std::abs(rev) <= revMax;
+  return (!dropped && w.b.dataAcc.size() >= minBytes && revOk) ? 0 : 1;
 }

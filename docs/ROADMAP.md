@@ -1158,10 +1158,22 @@ they are not re-raised. Commands are the original measurements.
   -2.5/-1.5 (static 0.72, a churn stall), SNR-aware fast demote (no
   effect), fast-tier-only pilot feed (no effect - this sim path carries
   no pilot samples). On-air Good-channel data should still confirm it.
-- [ ] **Reverse-direction offset after a retune - STILL PRESENT, harmless
-  inside ±55 Hz.** `cfo_st2 STEP=40`: data direction re-aligned (A shift
-  39.8 Hz, B sees −0.2 Hz); the reverse path keeps 40 Hz (A CFO=40.0);
-  0 drops, 214 KB. Low priority (wire change or reciprocity rule).
+- [x] **Reverse-direction offset after a retune - CLOSED 2026-10-13
+  (no wire change).** Cause: CFO reports ride ACKs only, and a one-way
+  data sender sends none, so the receiver never learned its own
+  transmissions were off. A station that measures the peer's frames
+  >= 2 Hz off, with no ACK sent since, now sends a standalone ACK
+  (ordinary format; <= 1 per 15 s; OFDM only; `SKW_CFO_ACK=0` A/B).
+  `cfo_st2` DUR=400, A's residual on B's frames, off -> on: STEP=+40
+  40.0 -> 1.5 Hz (6 extra ACKs), STEP=-40 39.9 -> 0.2 Hz (4), STEP=40
+  on CCIR Moderate 40.2 -> 0.2 Hz (6; 75 -> 79 KB), DRIFT=0.1
+  36.6 -> 3.7 Hz (24, one per 15 s), CFO0=45 unchanged (bootstrap, 0
+  ACKs). Cost: one-way bytes 132-136 -> 128-132 KB (one 4 KiB message
+  in 400 s). Churn soak without CFO: 1 extra ACK in 900 s (a 2.3 Hz
+  reading). `cfo_st2_step40` now also requires the reverse residual
+  <= 5 Hz (REV_MAX; 40 Hz with the ACK off). The "reciprocity rule"
+  alternative stays rejected (it does not converge with reports both
+  ways).
 - [x] **Extreme in-frame drift - CLOSED in v1.2.2 (2026-10-13).** Cause: the FLL is
   first-order, so a linear drift r leaves a steady lag of r*Tsym/gain;
   at the robust gain 0.1 that lag cost the long robust headers. Raising
@@ -1184,9 +1196,24 @@ they are not re-raised. Commands are the original measurements.
   concurrently, 0 reconnects.
 - [x] **Churn stalls at Moderate <= 16 dB - CLOSED.** Same soaks: PASS
   through the Moderate rotation down to 6-13 dB.
-- [ ] **Mid-tier (M7-M9) container starvation - not re-measured.** A
-  throughput lever, not correctness (window 4; 8 regressed a seed in
-  v1.1.0).
+- [x] **Mid-tier (M7-M9) container starvation - CLOSED 2026-10-13.**
+  Re-measured with a per-burst instrument (SKW_PROTO_DEBUG logs every
+  data burst's fill and, for a lone frame, why): one-way under load the
+  M8-M9 containers were already near full (1.7-2.0 of 2); under
+  two-way churn they carried 1.34-1.60, and most lone frames were
+  RETRANSMITS (seed 11: 24 of 31) - the pump queued one retransmit per
+  call and it flew alone. M7-M9 now gather every due retransmit and top
+  up with new segments while the window allows (`SKW_RETX_FILL`; no
+  deeper window, so not the seed-13 stall). Fill 1.34-1.76 -> 1.71-2.00.
+  One-way loaded floor soaks (600 sim-s, static 10/12, Good 14/16,
+  Moderate 14-20 dB, seeds 11/12): +5.3% total (902 -> 950 KB), 10
+  better, 5 equal, 1 worse that a re-run showed to be run-to-run noise
+  (17 -> 37 KB in the re-run). Churn (seeds 11-13, 4 KiB and 64 KiB
+  feeds, 4 runs each, 32 runs): -0.9%, inside noise, 0 failures - churn
+  spends few bursts at M7-M9. Applying it at M10+ too cost the coupled
+  soak 263 -> 156 KB, so it is mid tier only. NOTE: the ST2 soaks are
+  not deterministic under parallel load (same code, seed 12 64 KiB:
+  55 vs 131 KB), so single-run soak A/B deltas are not evidence.
 - [x] **ULTRA robust tier ~3 dB worse than WIDE - CLOSED.** Current
   `kFloors`: ULTRA M4/M5/M7 equal WIDE, M6 within 0.5 dB.
 - [x] **Residual tracking floor under fading (~8 dB EVM cap) - CLOSED for

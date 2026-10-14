@@ -187,6 +187,8 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_DRAIN_CAP_MULT` | `2.0` | Cap on drain-before-grant, in handoff intervals |
 | `SKW_HF_WINDOW` | `16` | ARQ window for M10 and above |
 | `SKW_MID_WINDOW` | `4` | ARQ window for M7–M9 |
+| `SKW_RETX_FILL` | `1` | M7–M9 containers gather due retransmits and top up with new segments; `0` one retransmit per container (v1.2.2 behaviour), `2` at every rung (A/B) |
+| `SKW_CFO_ACK` | (unset = on) | `0` disables the standalone reverse-path CFO `ACK` (A/B) |
 | `SKW_ROBUST_FPB` | (per mode) | Frames per burst on the robust tier |
 | `SKW_ROBUST_AIR_CAP` | `10.0` | Airtime clamp, in seconds, on robust-tier codeword growth |
 | `SKW_DELIVER_TARGET_SEC` | `0.0` (off) | Mode-following coalesce bound; measured and left disabled |

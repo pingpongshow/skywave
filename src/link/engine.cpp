@@ -74,7 +74,9 @@ int macWindow(int mode) {
   // a passing seed into a wedge disqualifies it as a default however
   // good the average looks; the deeper window keeps more unacknowledged
   // frames alive across a fade, which is exactly what that seed's tail
-  // punishes. SKW_MID_WINDOW re-enables it for measurement.
+  // punishes. SKW_MID_WINDOW re-enables it for measurement. The short
+  // containers turned out to be mostly lone RETRANSMITS; pumpData now
+  // fills them without a deeper window (SKW_RETX_FILL).
   static const int kMidWindow = [] {
     const char* e = getenv("SKW_MID_WINDOW");  // diagnostic A/B
     return e ? atoi(e) : 4;
@@ -1219,6 +1221,8 @@ void LinkEngine::drainFsmActions(double now) {
                          : callRxCfoHz_,
             -kTxShiftMaxHz, kTxShiftMaxHz);
         harq_.clear();
+        peerCfoAt_ = -1.0;
+        lastAckTxAt_ = -1.0;
         probeGate_ = ProbeGate();
         maskDet_.emplace(cfg_.policy.family);
         txMask_ = CarrierMask();
@@ -1417,8 +1421,34 @@ void LinkEngine::pumpData(double now) {
     }
   }
   static const bool arqDbg = getenv("SKW_ARQ_DEBUG") != nullptr;
-  // Retransmits first (TX-queue priority), then new segments.
-  if (auto r = arqTx_.nextRetransmit(now)) {
+  // Retransmits first (TX-queue priority), then new segments - and they
+  // share the burst container. One retransmit per pump call used to
+  // ship alone: at M7-M9 (2-frame containers, window 4) most short
+  // containers under two-way churn were a lone retransmit paying a
+  // whole preamble (seed 11: 24 of 31). Every retransmit already due
+  // is gathered, and a container still short is topped up with new
+  // segments while the window allows - it fills the container without
+  // keeping more frames unacknowledged, which is what a deeper window
+  // did and what stalled churn seed 13 (macWindow).
+  // Mid tier only: at M10+ (window 16 against 4-frame containers) the
+  // window is not what leaves containers short, and the same fill there
+  // cost the coupled churn soak 263 -> 156 KB.
+  // SKW_RETX_FILL=0 restores one retransmit per call; 2 applies the
+  // fill at every rung (A/B).
+  static const int retxFillMode = [] {
+    const char* e = getenv("SKW_RETX_FILL");
+    return e ? atoi(e) : 1;
+  }();
+  const bool retxFill =
+      retxFillMode == 2 || (retxFillMode == 1 && mode_ >= 7 && mode_ <= 9);
+  const int slots = (cfg_.burstAggregation && retxFill)
+                        ? std::max(framesPerBurst(mode_), 1)
+                        : 1;
+  int retxQueued = 0;
+  int retxMode = -1;
+  while (retxQueued < slots) {
+    auto r = arqTx_.nextRetransmit(now);
+    if (!r) break;
     if (arqDbg) {
       fprintf(stderr, "%s pumpData retx seq=%u rv=%d\n",
               cfg_.policy.ownCall.c_str(), r->seq, int(r->rv));
@@ -1431,10 +1461,16 @@ void LinkEngine::pumpData(double now) {
     // blocked pumpData head-of-line on every tick, and starved new
     // segments outright (one-way goodput went to ZERO). The retry
     // budget stays honest via progress-resets in onAck.
+    bool dup = false;
     for (const auto& q : outQueue_) {
       if (q.env.type == LinkType::Data && q.env.sequence == r->seq) {
-        return;
+        dup = true;
+        break;
       }
+    }
+    if (dup) {
+      if (!retxFill) return;
+      continue;
     }
     OutFrame f;
     f.env.type = LinkType::Data;
@@ -1462,15 +1498,20 @@ void LinkEngine::pumpData(double now) {
     // Modes without an r1/2 rung (and r1/2 modes) stay put = chase.
     f.mode = harqIr() ? irStepDownMode(mode_) : mode_;
     f.sig = sigForMode(f.mode);
+    f.retx = true;
+    retxMode = f.mode;
     outQueue_.push_back(std::move(f));
-    return;
+    ++retxQueued;
   }
+  // New segments only join a container of the SAME mode: an IR
+  // step-down retransmit (M9 -> M8) airs on its own rung.
+  if (retxQueued > 0 && (!retxFill || retxMode != mode_)) return;
   static const bool pumpDbg = getenv("SKW_PUMP_DEBUG") != nullptr;
   // Handover drain (turn-taking): retransmits above still flow, but no
   // NEW segment is pulled - the window empties so the turn changes hands
   // with nothing outstanding.
   if (turnSchedActive() && turnDrainSince_ >= 0.0) return;
-  for (int k = 0; k < framesPerBurst(mode_); ++k) {
+  for (int k = retxQueued; k < framesPerBurst(mode_); ++k) {
     if (!arqTx_.canSend()) {
       if (pumpDbg) {
         fprintf(stderr, "%s pump t=%.0f BLOCKED canSend inflight=%zu\n",
@@ -1520,6 +1561,25 @@ void LinkEngine::pumpData(double now) {
     f.mode = mode_;
     outQueue_.push_back(std::move(f));
   }
+}
+
+LinkEngine::OutFrame LinkEngine::makeAckFrame() {
+  auto ack = arqRx_.makeAck(
+      int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)), ackRxFlags(),
+      int8_t(std::clamp(reportCfoHz() / 0.5, -127.0, 127.0)));
+  OutFrame f;
+  f.env.type = LinkType::Ack;
+  f.env.sessionId = sessionId_;
+  f.env.sequence = 0;
+  f.env.ackBase = arqRx_.ackBase();
+  f.body = ack.pack();
+  // Feedback at least as robust as forward traffic (M4 for M4-M6;
+  // CSS sessions ACK at the session's own CSS mode).
+  f.sig = kModes[size_t(mode_)].waveform == Waveform::Css
+              ? ChirpSig::Css
+              : (mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast);
+  f.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
+  return f;
 }
 
 std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
@@ -2468,28 +2528,47 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
                       return f.env.type == LinkType::Ack;
                     });
     if (!queued) {
-      auto ack = arqRx_.makeAck(
-          int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)),
-          ackRxFlags(),
-          int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0, 127.0)));
-      OutFrame f;
-      f.env.type = LinkType::Ack;
-      f.env.sessionId = sessionId_;
-      f.env.sequence = 0;
-      f.env.ackBase = arqRx_.ackBase();
-      f.body = ack.pack();
-      // Feedback at least as robust as forward traffic (M4 for M4-M6;
-      // CSS sessions ACK at the session's own CSS mode).
-      f.sig = kModes[size_t(mode_)].waveform == Waveform::Css
-                  ? ChirpSig::Css
-                  : (mode_ <= 6 ? ChirpSig::Robust : ChirpSig::Fast);
-      f.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
       outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
                                     [](const OutFrame& q) {
                                       return q.env.type == LinkType::Data;
                                     }),
-                       std::move(f));
+                       makeAckFrame());
     }
+  }
+  // REVERSE-PATH ALIGNMENT. CFO reports ride ACKs only, so in a one-way
+  // flow the data sender never reports, and after a retune the peer's
+  // transmissions stayed off by the whole step for the rest of the
+  // session (cfo_st2 STEP=40: B heard A re-aligned within 20 s, A heard
+  // B at +40 Hz to the end). When the peer's frames arrive off by
+  // kCfoAckMinHz or more and no ACK has carried a report since we
+  // measured it, send a standalone ACK: the existing wire format, which
+  // the peer's ARQ already accepts from a data sender (two-way flows do
+  // it all the time), and its loop does the rest at gain 1/2. Rate
+  // limited, OFDM only (a deep-tier ACK costs tens of seconds of air),
+  // never while an ACK is already queued. The piggyback rule above can
+  // drop an ackPending_ ACK in favour of DATA, which carries no report,
+  // so this one is queued directly. SKW_CFO_ACK=0 disables (A/B).
+  static const bool kCfoAck = [] {
+    const char* e = getenv("SKW_CFO_ACK");
+    return !(e && e[0] == '0');
+  }();
+  if (kCfoAck && fsm_.state() == FsmState::Connected && mode_ >= 4 &&
+      peerCfoAt_ > lastAckTxAt_ && std::abs(peerCfoHz_) >= kCfoAckMinHz &&
+      (lastAckTxAt_ < 0.0 || now - lastAckTxAt_ >= kCfoAckIntervalSec) &&
+      std::none_of(outQueue_.begin(), outQueue_.end(),
+                   [](const OutFrame& f) {
+                     return f.env.type == LinkType::Ack;
+                   })) {
+    static const bool cfoDbg = getenv("SKW_CFO_DEBUG") != nullptr;
+    if (cfoDbg) {
+      fprintf(stderr, "%s cfo-ack t=%.1f peerCfo=%+.1f\n",
+              cfg_.policy.ownCall.c_str(), now, peerCfoHz_);
+    }
+    outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
+                                  [](const OutFrame& q) {
+                                    return q.env.type == LinkType::Data;
+                                  }),
+                     makeAckFrame());
   }
 #ifdef SKW_HAVE_VOICE
   voiceFsm_.tick(now);
@@ -2666,6 +2745,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     }
   }
   if (f.env.type == LinkType::Ack && fsm_.state() == FsmState::Connected) {
+    lastAckTxAt_ = now;
     // Refresh ACK feedback at transmit time - see the ackPending_ note.
     f.env.ackBase = arqRx_.ackBase();
     const uint8_t rxFlags = ackRxFlags();
@@ -2673,8 +2753,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     f.body = arqRx_.makeAck(
                  int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)),
                  rxFlags,
-                 int8_t(std::clamp(lastRxQuality_.cfoHz / 0.5, -127.0,
-                                   127.0)))
+                 int8_t(std::clamp(reportCfoHz() / 0.5, -127.0, 127.0)))
                  .pack();
   }
   // MAC burst container: pack consecutive DATA frames of the same
@@ -2699,8 +2778,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       outQueue_.pop_front();
     }
     if (getenv("SKW_PROTO_DEBUG")) {
-      fprintf(stderr, "%s emit group=%zu queue=%zu\n",
-              cfg_.policy.ownCall.c_str(), group.size(), outQueue_.size());
+      fprintf(stderr, "%s emit group=%zu queue=%zu mode=%d\n",
+              cfg_.policy.ownCall.c_str(), group.size(), outQueue_.size(),
+              group[0].mode);
     }
     if (group.size() > 1) {
       std::vector<uint8_t> payload;
@@ -2734,6 +2814,18 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     f = std::move(group[0]);
   }
   auto solo = buildBurst(f);
+  static const bool soloDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
+  if (f.env.type == LinkType::Data && quota > 1 && soloDbg) {
+    // Why a container shipped short (retransmit, window, handover).
+    fprintf(stderr,
+            "%s emit group=1 queue=%zu mode=%d retx=%d inflight=%zu/%d "
+            "drain=%d qhead=%d backlog=%zu\n",
+            cfg_.policy.ownCall.c_str(), outQueue_.size(), f.mode,
+            int(f.retx), arqTx_.inFlight(), macWindow(mode_),
+            int(turnDrainSince_ >= 0.0),
+            outQueue_.empty() ? -1 : int(outQueue_.front().env.type),
+            protoTx_.backlogBytes());
+  }
   if (f.env.type == LinkType::Data) {
     turnAirSec_ += double(solo.size()) / kFsBaseband;
     turnContainerFrames_ += 1;
@@ -2952,6 +3044,10 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
   if (q.snrTrusted || !haveTrustedRxQuality_) {
     lastRxQuality_ = q;
     haveTrustedRxQuality_ = haveTrustedRxQuality_ || q.snrTrusted;
+  }
+  if (fsm_.state() == FsmState::Connected) {
+    peerCfoHz_ = q.cfoHz;
+    peerCfoAt_ = now;
   }
   const size_t inFlightBefore = arqTx_.inFlight();
   // Idle-disconnect liveness: refreshed by session traffic, and NOT by

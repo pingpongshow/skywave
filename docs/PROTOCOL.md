@@ -298,7 +298,12 @@ delay term, and did not reproduce.
 
 Multi-frame bursts use the PHY **burst container**
 ([WAVEFORM.md](WAVEFORM.md)) — one preamble/sync/header for the whole
-burst, link frames packed back-to-back inside. The window follows the
+burst, link frames packed back-to-back inside. At `M7`–`M9` a container
+gathers every retransmission that is due and tops up with new segments
+while the window allows, so a retransmission does not fly alone paying a
+whole preamble (frames are never held unacknowledged beyond the window
+to fill one). Containers carry frames of one mode only, so an IR
+step-down retransmission airs on its own rung. The window follows the
 COMMITTED mode across `MODE_CHANGE` (resizing mid-session; shrink only
 limits new sends). ACK deadlines arm as `timeout + TX-queue delay`:
 the worker reports how much already-emitted audio is still waiting in
@@ -466,7 +471,15 @@ grid:
   corrections, and gain ½ converges in a few exchanges without overshoot.
   In steady state each station's shift equals the full offset of the path
   it transmits on (each station moves its signal onto the other's
-  frequency). (Documentation before 2026-10 described this as a "split
+  frequency).
+- **reverse path**: a report rides only in an `ACK`, and in a one-way
+  flow the data sender sends none, so after a retune the receiver's
+  transmissions stayed off by the whole step. A station that measures
+  the peer's frames ≥ 2 Hz off, with no `ACK` sent since that
+  measurement, sends a standalone `ACK` (at most one per 15 s; `OFDM`
+  modes only). It is the ordinary `ACK` format, so the peer's loop
+  converges as above and older peers interoperate unchanged.
+  (Documentation before 2026-10 described this as a "split
   correction" capping each station's excursion at half the mistuning;
   the implementation never did that.)
 - since v1.2.0 alignment is filter hygiene, not a decode precondition:

@@ -248,7 +248,7 @@ if(BUILD_TESTS)
       ENVIRONMENT "SKW_CHANMEM_PATH=;DUR=200;MIN_BYTES=55000;${scenario}"
       TIMEOUT 3000)
   endfunction()
-  skw_cfo_st2(step40 "STEP=40")
+  skw_cfo_st2(step40 "STEP=40;REV_MAX=5")
   skw_cfo_st2(cfo45 "CFO0=45")
   skw_cfo_st2(drift01 "DRIFT=0.1")
   add_executable(monkey_st2 tests/monkey_st2.cpp)

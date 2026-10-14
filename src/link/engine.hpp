@@ -225,6 +225,7 @@ class LinkEngine {
     std::vector<uint8_t> body;
     ChirpSig sig;
     int mode;
+    bool retx = false;  // ARQ retransmission (diagnostics)
   };
   // sessionIdOverride: connectionless BCAST_DATA carries the SENDER's
   // callsign hash here instead of a session id (which is meaningless
@@ -291,6 +292,10 @@ class LinkEngine {
   // TX alignment clamp: the detector's +-55 Hz capture, less margin.
   // EVT:CFO_WARN fires from 40 Hz (worker), inside this clamp.
   static constexpr double kTxShiftMaxHz = 50.0;
+  // Reverse-path alignment ACK: sent when the peer's frames arrive at
+  // least this far off and no ACK has reported it, at most this often.
+  static constexpr double kCfoAckMinHz = 2.0;
+  static constexpr double kCfoAckIntervalSec = 15.0;
   double callRxCfoHz_ = 0.0;  // responder: CFO measured on the peer's CALL
   void onCfoReport(double reportedHz);
   double spreadEmaMs_ = 0.0;      // delay-spread EMA for CPMODE AUTO
@@ -381,6 +386,19 @@ class LinkEngine {
   bool ccaDataGated(double now);
   QualityMeasurement lastRxQuality_{};
   bool haveTrustedRxQuality_ = false;  // a converged (long-frame) SNR seen
+  // Reverse-path alignment (PROTOCOL.md "TX Frequency Alignment"): the
+  // CFO of the latest decoded peer frame, whatever its length (the SNR
+  // trust gate above would hold a one-way sender's figure at whatever
+  // long frame it last heard), and when our last ACK - the only frame
+  // that carries a CFO report - went out.
+  double peerCfoHz_ = 0.0;
+  double peerCfoAt_ = -1.0;
+  double lastAckTxAt_ = -1.0;
+  OutFrame makeAckFrame();
+  // CFO figure an ACK reports: the latest peer frame's while connected.
+  double reportCfoHz() const {
+    return peerCfoAt_ >= 0.0 ? peerCfoHz_ : lastRxQuality_.cfoHz;
+  }
   // SNR figure reported to the peer in ACKs: the AMC's smoothed local
   // EMA once it has one (the number this end actually steers on), else
   // the last measurement. A per-frame figure held a fade-edge reading
