@@ -62,8 +62,10 @@ points) gates CI; full sweeps run nightly.
 Frame-structure trade-offs are measured here too, not guessed:
 `--css-frames` runs the CSS tier (`M0–M3`) through the **full PHY frame
 path** (preamble, sync, header copies, LDPC payload → `receiveFrame`) —
-unlike `--css`, which measures payload-only FER through the modem-layer
-API and cannot see header loss — and `--css-hdr 1` sends a single header
+unlike `--css`, which measures payload-only FER through the legacy
+Hamming modem-layer API and cannot see header loss (a report-only
+diagnostic; `--css-frames` is the CSS conformance gate and defines the
+CSS floors) — and `--css-hdr 1` sends a single header
 copy (the `css_hdr1` layout). `--payload N` overrides the frame payload
 length for any mode. Recorded verdicts (WAVEFORM.md "Header copies —
 measured", ROADMAP 2026-09-05): a single CSS header copy saves ~11% of

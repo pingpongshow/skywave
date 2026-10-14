@@ -194,21 +194,27 @@ using FloorTable = std::array<double, kNumModes>;
 // cssFloorDb (lowest SNR with FER <= ~15%, rounded up to 0.5 dB).
 // MID CSS M0 LOWERED -16.5 -> -17.5 with the same 12-rep preamble and the
 // CSS CFO-branch retry (100 trials: 12% at -17.5, 6-7% at -17/-16.5).
-// MID M1-M3 full frames now reach ~-16.0/-14.0/-11.5 but stay at their
-// table values: the payload-only `bertool --css` gate still measures the
-// legacy Hamming payload layer, which cannot (ROADMAP).
+// ALL CSS M0-M3 are FULL-FRAME floors since 2026-10-14 (bertool
+// --css-frames, AWGN, 100 trials per 0.5 dB; floor = lowest point with
+// FER <= 15% and every point above it too): WIDE -14.5/-12.0/-10.0/-7.5,
+// MID -17.5/-16.0/-14.0/-11.5, NARROW -18.5/-17.5/-17.0/-15.0, ULTRA
+// -14.0/-12.0/-10.0/-7.5 (M0/M1 one step up: exactly 15% at -14.5/
+// -12.5, and the 40-trial gate seed read 17.5/20%) - 1.5-3 dB below the 2026-07-29 values, which
+// were measured on the legacy Hamming payload layer (`bertool --css`,
+// now a report-only diagnostic; frames carry LDPC). Curves archived in
+// docs/conformance/css_frames_floors_2026-10-14/.
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
-    {{-13.0, -10.5, -8.0, -5.0,
+    {{-14.5, -12.0, -10.0, -7.5,
       -11.0, -8.5, -6.0, -3.0, 0.5, 3.0, 5.5, 9.5, 13.5, 17.0, 99.0}},
     // MID
-    {{-17.5, -14.0, -12.0, -9.0,
+    {{-17.5, -16.0, -14.0, -11.5,
       -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
     // NARROW
-    {{-18.5, -17.5, -15.0, -12.0,
+    {{-18.5, -17.5, -17.0, -15.0,
       -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
-    {{-12.5, -11.0, -8.0, -5.0,
+    {{-14.0, -12.0, -10.0, -7.5,
       -11.0, -8.5, -5.5, -3.0, 1.0, 3.5, 6.0, 10.0, 14.0, 17.5, 99.0}},
 }};
 inline double floorDb(Family f, int mode);  // reads the active profile

@@ -504,27 +504,26 @@ interleaver spreads each codeword across 7 symbols, so one wholly wrong
 symbol costs each touched codeword at most one (corrected) bit for
 SF ≤ 7.
 
-**Measured AWGN floors** (dB SNR, 3 kHz noise reference; one-shot FER
-≤ ~15% at the floor, `cssFloorDb`, bertool `--css`, 2026-07-29 —
-`docs/conformance/skw_css_awgn.csv`). The CSS band is the noise
-bandwidth, so narrow families reach deepest:
+**Measured AWGN floors** (dB SNR, 3 kHz noise reference): FULL-FRAME
+floors — preamble, sync, header copies and LDPC payload through the
+receiver (`bertool --css-frames`, 100 trials per 0.5 dB, 2026-10-14;
+floor = lowest point with one-shot FER ≤ 15% and every point above it
+too; curves in `docs/conformance/css_frames_floors_2026-10-14/`). The CSS
+band is the noise bandwidth, so narrow families reach deepest:
 
 | Family | `M0`/SF8 | `M1`/SF7 | `M2`/SF6 | `M3`/SF5 |
 |---|---:|---:|---:|---:|
-| WIDE | −13.0 | −10.5 | −8.0 | −5.0 |
-| MID | −17.5 ¹ | −14.0 | −12.0 | −9.0 |
-| NARROW | −18.5 ¹ | −17.5 ¹ | −15.0 | −12.0 |
-| ULTRA | −12.5 | −11.0 | −8.0 | −5.0 |
+| WIDE | −14.5 | −12.0 | −10.0 | −7.5 |
+| MID | −17.5 | −16.0 | −14.0 | −11.5 |
+| NARROW | −18.5 | −17.5 | −17.0 | −15.0 |
+| ULTRA | −14.0 | −12.0 | −10.0 | −7.5 |
 
-¹ NARROW `M0`/`M1` are FULL-FRAME floors. The payload alone reaches
-−19.5/−17.5 dB; with the 4-rep preamble full frames only reached
-−16.0/−15.5 (v1.2.1). The 12-rep preamble and the sync CFO-branch check
-(below) bring them to −18.5/−17.5 (`bertool --css-frames`, 100 trials:
-M0 12% at the floor, 3% at floor+1; M1 13% and 1%). M1 is now
-payload-limited. MID `M0` is likewise a full-frame floor (−17.5 with the
-12-rep preamble and the branch retry below; was −16.5). MID `M1`–`M3`
-full frames reach ~−16.0/−14.0/−11.5 but the table keeps the payload-
-layer values the `bertool --css` gate measures. The table holds what a
+These are 1.5–3 dB below the 2026-07-29 table, which was measured on the
+legacy Hamming payload layer alone (`bertool --css`, now a report-only
+diagnostic of that layer). NARROW `M0`/`M1` once sat ABOVE it instead
+(−16.0/−15.5 in v1.2.1): the 4-rep preamble could not acquire what the
+payload decoded; the 12-rep NARROW/MID preamble and the branch check
+below fixed that. NARROW `M1` is payload-limited. The table holds what a
 frame achieves, because the AMC steers on it.
 
 **Sync CFO-branch check.** The preamble's fine CFO is ambiguous modulo

@@ -1362,12 +1362,19 @@ MID M0 fading floor.
     and full-frame sweeps pass, OFDM sweeps identical, suite 44/44, ASan
     clean. Test `chirp_long_css_preamble_at_floor` (12-rep 25/25 NARROW,
     23/25 MID; 4-rep 8/25, 13/25).
-  - FOLLOW-UPS: MID M1-M3 and NARROW M2/M3 full frames now reach ~1.5-2.5
-    dB below their table floors, but the payload-only `bertool --css`
-    release gate measures the legacy Hamming payload layer (84-99% FER
-    there), so lowering them needs that gate retired or re-pointed at full
-    frames first. The CSS fading floors (kFadingFloors) were not
-    re-measured.
+  - FOLLOW-UP DONE (same day): the payload-only `bertool --css` gate
+    measured the legacy Hamming payload layer (84-99% FER where full
+    frames ran <= 7%) and blocked every CSS floor at that layer's limits.
+    `--css` is now a report-only diagnostic, `test_css` pins that layer's
+    own floors, and the CSS release gate is the full-frame sweep. ALL CSS
+    floors re-measured on full frames (100 trials per 0.5 dB, curves in
+    docs/conformance/css_frames_floors_2026-10-14/): WIDE -13.0/-10.5/
+    -8.0/-5.0 -> -14.5/-12.0/-10.0/-7.5, MID M1-M3 -14.0/-12.0/-9.0 ->
+    -16.0/-14.0/-11.5, NARROW M2/M3 -15.0/-12.0 -> -17.0/-15.0, ULTRA
+    -12.5/-11.0/-8.0/-5.0 -> -14.0/-12.0/-10.0/-7.5 (M0/M1 one step
+    conservative: exactly 15% one step lower). Full-frame gate (floor+1,
+    +3) passes on two seeds; FER at every floor <= 15%. STILL OPEN: the
+    CSS fading floors (kFadingFloors M0-M3) were not re-measured.
 
 ---
 

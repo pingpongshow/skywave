@@ -171,10 +171,25 @@ TEST_CASE(css_cfo_tolerance) {
 
 // --- ROADMAP 6.1 gate: FER vs SNR down to -14 dB -----------------------------
 
+// Floors of THIS layer - the aligned Hamming(7,4) modem-layer API, no
+// preamble/sync/header (measured 2026-07-29, bertool --css). They are no
+// longer kFloors: frames carry an LDPC payload, and kFloors holds what a
+// FULL frame achieves (bertool --css-frames). Pinned here so the layer's
+// own regression test does not move with the frame floors.
+double payloadLayerFloorDb(Family f, int mode) {
+  static const double t[kNumFamilies][4] = {
+      {-13.0, -10.5, -8.0, -5.0},   // WIDE
+      {-16.5, -14.0, -12.0, -9.0},  // MID
+      {-19.5, -17.5, -15.0, -12.0}, // NARROW
+      {-12.5, -11.0, -8.0, -5.0},   // ULTRA
+  };
+  return t[size_t(f)][mode];
+}
+
 TEST_CASE(css_fer_gate_floors) {
-  // Every (family, mode) at its design floor: FER <= ~15% by definition
+  // Every (family, mode) at this layer's floor: FER <= ~15% by definition
   // of the floor, gated at 32% for 25-trial binomial + seed slack. The
-  // full curves are bertool --css; this pins the floor table.
+  // full curves are bertool --css (diagnostic).
   const int kTrials = 25;
   const Family fams[] = {Family::Wide, Family::Mid, Family::Narrow,
                          Family::Ultra};
@@ -183,7 +198,7 @@ TEST_CASE(css_fer_gate_floors) {
     for (int mode = 0; mode <= 3; ++mode) {
       int fails = 0;
       for (int t = 0; t < kTrials; ++t) {
-        if (!cssTrial(f, mode, cssFloorDb(f, mode),
+        if (!cssTrial(f, mode, payloadLayerFloorDb(f, mode),
                       uint64_t(f) * 77777 + uint64_t(mode) * 1000 +
                           uint64_t(t) + 1)) {
           ++fails;
@@ -191,7 +206,7 @@ TEST_CASE(css_fer_gate_floors) {
       }
       const double fer = double(fails) / kTrials;
       std::printf("    %-6s M%d SF%d %+6.1f dB : FER %3.0f%%\n",
-                  plan(f).name, mode, cssSf(mode), cssFloorDb(f, mode),
+                  plan(f).name, mode, cssSf(mode), payloadLayerFloorDb(f, mode),
                   100.0 * fer);
       CHECK(fer <= 0.32);
     }
@@ -200,7 +215,7 @@ TEST_CASE(css_fer_gate_floors) {
   for (int mode = 0; mode <= 3; ++mode) {
     int fails = 0;
     for (int t = 0; t < kTrials; ++t) {
-      if (!cssTrial(Family::Wide, mode, cssFloorDb(Family::Wide, mode) + 3.0,
+      if (!cssTrial(Family::Wide, mode, payloadLayerFloorDb(Family::Wide, mode) + 3.0,
                     uint64_t(9000 + mode * 100 + t))) {
         ++fails;
       }
