@@ -472,6 +472,24 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // strength) or a mid-block dominance switch shifts every symbol by the
   // inter-tap delay. Each pilot refreshes an EMA per tap; delays follow
   // sample-clock drift; unseen taps decay away over a few pilots.
+  // RAKE tap search span either side of the anchor: 3 chips, and never
+  // less than 3 ms. On WIDE/ULTRA 3 chips is 1.25 ms, so CCIR Poor's 2 ms
+  // second path was never a tap - whenever it dominated, every symbol
+  // read 4.8 chips off (CSS on Poor: 91-100% FER at ANY SNR, measured
+  // 2026-10-14). MID/NARROW chips are long enough already.
+  static const int kTapSpanMinSamples = [] {
+    const char* e = getenv("SKW_CSS_TAP_SPAN_MS");
+    return int(std::lround((e ? atof(e) : 3.0) * 1e-3 * kFsBaseband));
+  }();
+  const int tapSpan = std::max(3 * spc, kTapSpanMinSamples);
+  static const float kFarTapPeak = [] {
+    const char* e = getenv("SKW_CSS_FAR_TAP_PEAK");
+    return e ? float(atof(e)) : 0.35f;
+  }();
+  static const float kFarTapNoise = [] {
+    const char* e = getenv("SKW_CSS_FAR_TAP_NOISE");
+    return e ? float(atof(e)) : 3.5f;
+  }();
   struct TapTrack {
     int delay;
     float ema;
@@ -488,11 +506,17 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     // spurious taps poison every symbol score.
     const float cut = std::max((initial ? 0.12f : 0.4f) * pk,
                                (initial ? 1.8f : 2.0f) * noiseMed);
-    const int lo = std::max(-half + 1, center - 3 * spc);
-    const int hi = std::min(half - 1, center + 3 * spc);
+    const int lo = std::max(-half + 1, center - tapSpan);
+    const int hi = std::min(half - 1, center + tapSpan);
+    // Beyond 3 chips (the extended span) a tap must be STRONG: noise
+    // peaks there near the floor became taps and cost WIDE/ULTRA ~1 dB
+    // on AWGN; a genuine far path (CCIR Poor's 2 ms) is comparable to the
+    // main one when it matters.
+    const float farCut = std::max({cut, kFarTapPeak * pk,
+                                   kFarTapNoise * noiseMed});
     for (int d = lo; d <= hi; ++d) {
       const float v = pr[size_t(d + half)];
-      if (v < cut) continue;
+      if (v < (std::abs(d - center) > 3 * spc ? farCut : cut)) continue;
       if (v < pr[size_t(d + half - 1)] || v < pr[size_t(d + half + 1)]) {
         continue;
       }
@@ -589,7 +613,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
                                                  std::vector<uint8_t>> {
     const size_t symLen = cssSymbolSamples(family, sectionSf);
     const size_t nsym = cssSymbolsForBytes(byteCount, sectionSf);
-    const int PW = 3 * spc + 6;
+    const int PW = tapSpan + 6;
     std::vector<uint16_t> syms;
     syms.reserve(nsym);
     for (size_t s = 0; s < nsym; ++s) {
@@ -604,14 +628,18 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
         }
         int dp = 0;
         float pk = 0.0f;
-        for (int d = -PW; d <= PW; ++d) {
+        // Pilot quality (peak, offset, noise median) from the 3-chip core
+        // only: the extended tap span searched more noise, and its maxima
+        // passed the gate and fed the tracker (WIDE/ULTRA AWGN ~0.5 dB).
+        const int core = std::min(PW, 3 * spc + 6);
+        for (int d = -core; d <= core; ++d) {
           if (pp[size_t(d + PW)] > pk) {
             pk = pp[size_t(d + PW)];
             dp = d;
           }
         }
         std::vector<float> ns;
-        for (int d = -PW; d <= PW; ++d) {
+        for (int d = -core; d <= core; ++d) {
           if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
         }
         std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
@@ -791,7 +819,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   const size_t symLenP = cssSymbolSamples(family, sf);
   const size_t codedBits = cssPayloadCodedBits(size_t(hdr->length));
   const size_t nsymP = (codedBits + size_t(sf) - 1) / size_t(sf);
-  const int PWp = 3 * spc + 6;
+  const int PWp = tapSpan + 6;
   const size_t payloadPos = pos;
   const auto trackAtPayload = track;
   const auto tapsAtPayload = taps;
@@ -824,14 +852,18 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
         }
         float pk = 0.0f;
         int dp = 0;
-        for (int d = -PWp; d <= PWp; ++d) {
+        // Pilot quality (peak, offset, noise median) from the 3-chip core
+        // only: the extended tap span searched more noise, and its maxima
+        // passed the gate and fed the tracker (WIDE/ULTRA AWGN ~0.5 dB).
+        const int core = std::min(PWp, 3 * spc + 6);
+        for (int d = -core; d <= core; ++d) {
           if (pp[size_t(d + PWp)] > pk) {
             pk = pp[size_t(d + PWp)];
             dp = d;
           }
         }
         std::vector<float> ns;
-        for (int d = -PWp; d <= PWp; ++d) {
+        for (int d = -core; d <= core; ++d) {
           if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PWp)]);
         }
         std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),

@@ -240,21 +240,29 @@ inline constexpr double kFadingNA = 99.0;
 // floor. NARROW M6/M7 sit higher on Good than on Moderate: a 20-40 s
 // NARROW frame averages Moderate's faster fades but sits inside a Good
 // fade.
+// CSS M0-M3 (all three fading tables) RE-MEASURED 2026-10-14 on full
+// frames (bertool --css-frames --base awgn, 100 trials per 1.5 dB, same
+// derivation via tools/floor_tables.py): 1-6 dB lower than the 2026-07
+// values, WIDE/ULTRA M2/M3 gain a fading floor, and the Poor table -
+// which had only copied the designated CSS values - holds what CSS does
+// on Poor (WIDE/ULTRA M2/M3 never close there; M0/M1 only after the RAKE
+// tap span fix, receiver.cpp). Archived
+// docs/conformance/css_fading_floors_2026-10-14/.
 inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // WIDE
-    {{-3.0, 0.0, kFadingNA, kFadingNA,
+    {{-8.5, -5.5, -4.0, -1.5,
       -5.5, -3.0, -0.5, 4.0, 7.5, 11.0, 13.0, 17.5, 21.0, 25.0, kFadingNA}},
     // MID
-    {{-10.0, -7.0, -5.0, -3.0,
+    {{-11.0, -10.0, -8.5, -6.5,
       -9.0, -7.5, -5.0, -2.5, 6.0, 10.5, 10.5, 14.5, 17.5, 23.0, kFadingNA}},
     // NARROW (all modes on CCIR Good - see above). M5 RAISED -8.5 -> -8.0
     // for v1.2.1: 400 trials gave 15.2% at the old floor+1 (the 15% gate
     // passed on slack alone) and 12.2% at -7.0; the fixed-seed 40-trial
     // release sweep failed the point identically at v1.2.0 and v1.2.1.
-    {{-11.0, -9.0, -8.0, -7.0,
+    {{-11.5, -11.5, -9.0, -7.5,
       -10.5, -8.0, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
     // ULTRA
-    {{-4.0, -2.0, kFadingNA, kFadingNA,
+    {{-7.5, -6.0, -4.0, -1.5,
       -5.0, -2.5, 1.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
 }};
 
@@ -273,34 +281,34 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
 // One manual override: Moderate NARROW M13 (derived 36.0) is kFadingNA -
 // FER plateaus at 10-23% from 27 to 46 dB (64QAM r5/6 on a flat-Rayleigh
 // 500 Hz band), so it failed a fresh-seed sweep at floor+3 (23%). kFadingNA here means "never closes on this
-// channel" and makes the mode INELIGIBLE in that class. CSS M0-M3 carry
-// the designated values (not re-measured on Poor).
+// channel" and makes the mode INELIGIBLE in that class. CSS M0-M3 were
+// measured on each channel too (2026-10-14; see kFadingFloors).
 inline constexpr std::array<FloorTable, kNumFamilies> kModerateFloors = {{
     // WIDE
-    {{-3.0, 0.0, kFadingNA, kFadingNA,
+    {{-8.5, -5.5, -4.0, -1.5,
       -5.5, -3.0, -0.5, 4.0, 10.0, 13.5, 14.0, 19.0, 22.0, 28.5, kFadingNA}},
     // MID
-    {{-10.0, -7.0, -5.0, -3.0,
+    {{-11.0, -10.0, -8.5, -6.5,
       -9.0, -7.5, -5.0, -2.5, 4.5, 7.5, 10.5, 14.5, 17.0, 24.5, kFadingNA}},
     // NARROW
-    {{-11.0, -9.0, -8.0, -7.0,
+    {{-14.0, -12.5, -11.0, -9.0,
       -10.0, -9.5, -6.5, -5.0, 3.5, 6.5, 8.5, 13.0, 16.0, kFadingNA, kFadingNA}},
     // ULTRA
-    {{-4.0, -2.0, kFadingNA, kFadingNA,
+    {{-7.5, -6.0, -4.0, -1.5,
       -5.0, -2.5, 1.0, 2.5, 8.5, 12.5, 15.0, 19.0, 22.5, 26.5, kFadingNA}},
 }};
 inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
     // WIDE
-    {{-3.0, 0.0, kFadingNA, kFadingNA,
+    {{-3.5, 2.0, kFadingNA, kFadingNA,
       -4.0, -2.5, 0.5, 2.0, 11.5, 19.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // MID
-    {{-10.0, -7.0, -5.0, -3.0,
+    {{-9.0, -5.0, -4.5, 2.5,
       -8.0, -6.5, -4.5, 0.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // NARROW
-    {{-11.0, -9.0, -8.0, -7.0,
+    {{-12.5, -11.5, -9.5, -6.0,
       -10.0, -9.0, -7.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // ULTRA
-    {{-4.0, -2.0, kFadingNA, kFadingNA,
+    {{-2.5, 4.0, kFadingNA, kFadingNA,
       -4.0, -1.5, 0.0, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile

@@ -1375,6 +1375,28 @@ MID M0 fading floor.
     conservative: exactly 15% one step lower). Full-frame gate (floor+1,
     +3) passes on two seeds; FER at every floor <= 15%. STILL OPEN: the
     CSS fading floors (kFadingFloors M0-M3) were not re-measured.
+- [x] **CSS fading floors re-measured - DONE 2026-10-14.** Full frames,
+  bertool --css-frames --base awgn on CCIR Good/Moderate/Poor, every
+  family M0-M3, 100 trials per 1.5 dB (curves in
+  docs/conformance/css_fading_floors_2026-10-14/), same derivation as the
+  OFDM tables (tools/floor_tables.py). Designated (Moderate; NARROW on
+  Good): WIDE -3.0/0.0/NA/NA -> -8.5/-5.5/-4.0/-1.5, MID -10/-7/-5/-3 ->
+  -11.0/-10.0/-8.5/-6.5, NARROW -11/-9/-8/-7 -> -11.5/-11.5/-9.0/-7.5,
+  ULTRA -4.0/-2.0/NA/NA -> -7.5/-6.0/-4.0/-1.5; kModerateFloors NARROW
+  -14.0/-12.5/-11.0/-9.0. The campaign FOUND A DEFECT: the Poor table had
+  only copied the designated CSS values, and WIDE/ULTRA CSS on CCIR Poor
+  failed 91-100% at ANY SNR (old builds too) - the RAKE searched taps
+  over +-3 chips, 1.25 ms on WIDE/ULTRA, so Poor's 2 ms path was never a
+  tap. Tap span now >= 3 ms (`SKW_CSS_TAP_SPAN_MS`); a tap beyond 3
+  chips must reach 0.35 x the peak and 3.5 x the noise median
+  (`SKW_CSS_FAR_TAP_PEAK/_NOISE`); the pilot quality gate reads only the
+  3-chip core (a wide window let noise maxima pass and cost AWGN ~1 dB in
+  the first attempt). WIDE/ULTRA on Poor M0/M1: 91-100% -> 2.5-10% well
+  above the floor; Poor floors WIDE -3.5/2.0/NA/NA, MID -9.0/-5.0/-4.5/2.5,
+  NARROW -12.5/-11.5/-9.5/-6.0, ULTRA -2.5/4.0/NA/NA. WIDE/ULTRA AWGN
+  within noise of before (summed FER 288 vs 275 over 24 points at 100
+  trials); MID/NARROW unchanged by construction. CSS gates (AWGN and
+  Moderate full-frame) pass; suite 44/44.
 - [x] **ST2 soaks deterministic - DONE 2026-10-14.** Same code, same
   seed ran different timelines under parallel CPU load (churn seed 12,
   64 KiB feed: 55 KB vs 131 KB), so every single-run soak A/B before this
