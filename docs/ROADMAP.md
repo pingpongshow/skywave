@@ -1134,7 +1134,7 @@ that blocks on-air use:
 Every open item re-measured on current code; passes are closed here so
 they are not re-raised. Commands are the original measurements.
 
-- [x] **8.8 CSS under LO drift - CLOSED 2026-10-13 (drift search, see 8.8).**
+- [x] **8.8 CSS under LO drift - CLOSED in v1.2.2 (drift search, see 8.8).**
   `bertool --css-frames --preset awgn --offsets 3 --trials 25`:
   WIDE M0-M3 0% at 0.05 Hz/s; MID 0% at 0.05 Hz/s but M2/M3 100% (M1 8%)
   at the 0.1 Hz/s gate; NARROW M1-M3 88-100% at 0.05 Hz/s. The 2026-10-12
@@ -1144,7 +1144,7 @@ they are not re-raised. Commands are the original measurements.
   (−16.0/−15.5 dB) and the release gate sweeps full frames. Recovering
   NARROW's ~3 dB is acquisition work (preamble/sync/header detection) -
   OPTIONAL.
-- [x] **AMC on CCIR Good ramps - CLOSED (after v1.2.1).** Root cause was
+- [x] **AMC on CCIR Good ramps - CLOSED in v1.2.2.** Root cause was
   the channel classifier, not the margins: the Severe gate averaged
   delay spread with an EMA, and on CCIR Good 26% of frames mis-estimate
   spread at ~5 ms (median 0.62 ms), so Good channels read SEVERE and the
@@ -1162,7 +1162,7 @@ they are not re-raised. Commands are the original measurements.
   inside ±55 Hz.** `cfo_st2 STEP=40`: data direction re-aligned (A shift
   39.8 Hz, B sees −0.2 Hz); the reverse path keeps 40 Hz (A CFO=40.0);
   0 drops, 214 KB. Low priority (wire change or reciprocity rule).
-- [x] **Extreme in-frame drift - CLOSED 2026-10-13.** Cause: the FLL is
+- [x] **Extreme in-frame drift - CLOSED in v1.2.2 (2026-10-13).** Cause: the FLL is
   first-order, so a linear drift r leaves a steady lag of r*Tsym/gain;
   at the robust gain 0.1 that lag cost the long robust headers. Raising
   the gain everywhere would feed CCIR Poor's Doppler back (8.6), so a
