@@ -60,7 +60,12 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   (e.g., down–down where only up–up is valid) indicates **sideband
   inversion** ([WAVEFORM.md](WAVEFORM.md)): the engine conjugates the
   baseband, re-runs the match, and proceeds normally with an
-  `inverted-spectrum` telemetry flag set
+  `inverted-spectrum` telemetry flag set. Near the floor a slope slot can
+  flip and a 4-rep signature reads as another one rep away (calling
+  U-U-D-D a rep early matches three of CSS U-D-D-U's slots), so a 4-rep
+  detection also carries the best reading of each other signature at its
+  start or ±1 rep scoring ≥ 0.7 of the winner; the receiver tries those
+  only when the winner's path finds no header
 - `COARSE`: correlation peak → timing ±1 ms; CFO from slope diversity plus
   inter-rep phase → <1 Hz. The matched filter integrates ±55 Hz for every
   signature. An LFM frequency offset masquerades as a timing shift

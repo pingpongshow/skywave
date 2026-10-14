@@ -1,3 +1,4 @@
+#include <algorithm>
 // CSS frame path (ROADMAP 6.2): chirp-Css preamble -> sync symbols ->
 // SF8 header -> SF(mode) payload, through the full one-shot receiver
 // with sync arbitration - clean, CFO/clock offset, inverted spectrum,
@@ -5,6 +6,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "dsp/css.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
 #include "sim/chansim.hpp"
@@ -171,6 +173,55 @@ TEST_CASE(css_frame_lo_drift_strong) {
   }
   std::printf("css drift 0.3 Hz/s: %d/%d frames\n", ok, total);
   CHECK(ok >= total - 2);
+}
+
+// Soft header decode: ML Hamming over bit LLRs, and two copies' summed
+// LLRs. Synthetic LLRs with independent per-copy errors that one-error
+// hard Hamming cannot fix in either copy.
+TEST_CASE(css_header_soft_combining) {
+  const uint8_t hdr[9] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x0F};
+  const int sf = 8;
+  const auto syms = cssEncode({hdr, 9}, sf);
+  // Clean LLRs (+4 for bit 0, -4 for bit 1) in stream order.
+  std::vector<float> clean;
+  for (uint16_t g : syms) {
+    uint16_t v = g ^ (g >> 1);  // toGray
+    for (int b = 0; b < sf; ++b) clean.push_back(((v >> b) & 1) ? -4.f : 4.f);
+  }
+  auto dec = cssDecodeSoft(clean, sf, 9);
+  CHECK(std::equal(dec.begin(), dec.end(), hdr));
+  // Each copy: every 5th bit flipped at low confidence, at different
+  // offsets - the summed LLRs keep every bit's sign.
+  std::vector<float> c1(clean), c2(clean);
+  int flips = 0;
+  for (size_t i = 0; i < clean.size(); ++i) {
+    if (i % 5 == 0) { c1[i] = -0.5f * clean[i]; ++flips; }
+    if (i % 5 == 2) c2[i] = -0.5f * clean[i];
+  }
+  CHECK(flips > 20);
+  std::vector<float> sum(c1);
+  for (size_t i = 0; i < sum.size(); ++i) sum[i] += c2[i];
+  dec = cssDecodeSoft(sum, sf, 9);
+  CHECK(std::equal(dec.begin(), dec.end(), hdr));
+}
+
+// MID M0 on CCIR Moderate at floor+1 failed 26.5-28.5% (200 trials),
+// mostly headers: a fade takes one header copy and hard per-copy decoding
+// then needs the other to be clean. Soft decoding + copy combining (plus
+// runner-up preamble signatures and a 3.0 sync bar) -> 5.5%.
+TEST_CASE(css_frame_mid_m0_moderate_floor1) {
+  int fails = 0;
+  const int kTrials = 48;
+  for (int t = 0; t < kTrials; ++t) {
+    ChansimParams cp = ccirModerate();
+    cp.snr3kDb = -9.0;
+    cp.seed = uint64_t(1200 + t * 31);
+    if (!cssFrameTrial(Family::Mid, 0, cp, 60, uint64_t(900 + t)).payloadOk) {
+      ++fails;
+    }
+  }
+  std::printf("  MID M0 CCIR-Mod @ -9 dB: %d/%d failed\n", fails, kTrials);
+  CHECK(fails <= 4);  // 2/48; hard header 5, pre-change receiver 9
 }
 
 TEST_CASE(css_frame_inverted_spectrum) {

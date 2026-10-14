@@ -66,6 +66,20 @@ struct ChirpDetection {
   double startSample;  // preamble start in the detector's sample count
   double cfoHz;        // estimated carrier frequency offset
   float quality;       // mean per-rep NCC of the winning pattern
+  // Runner-up 4-rep signatures (the best reading of each OTHER pattern
+  // that scores >= kAltScoreFraction of the winner): near the
+  // floor single slope slots flip and a CSS U-D-D-U read as robust U-D-U-D
+  // or calling U-U-D-D (NARROW M0 at -17 dB: 10 of 40 frames). The
+  // receiver tries it only when the winner's path fails.
+  struct Alt {
+    ChirpSig sig = ChirpSig::Robust;
+    bool inverted = false;
+    double startSample = 0.0;
+    double cfoHz = 0.0;
+    float score = 0.0f;
+  };
+  int nAlt = 0;    // best reading per other signature, best first
+  Alt alts[2]{};
 };
 
 // Streaming matched-filter detector for one family (both slopes).
@@ -112,6 +126,8 @@ class ChirpDetector {
   const GridVal* gridAt(int64_t grid) const;
   void emitDetection(int64_t g0, ChirpSig sig, bool inverted,
                      const PatternScore& ps, std::vector<ChirpDetection>& out);
+  ChirpDetection makeDetection(ChirpSig sig, bool inverted,
+                               const PatternScore& ps) const;
 
   Family family_;
   std::vector<cfloat> refUp_;    // conj already applied

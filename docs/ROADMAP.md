@@ -971,7 +971,8 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   `SKW_CSS_DRIFT_SEARCH=0`). LIMITS (since closed - "Remaining-gaps
   round" below: rate estimate, header retry, 0% to +-0.3 Hz/s): NARROW at
   0.2 Hz/s still failed 32-68% (edge of the search range); MID M0 on CCIR
-  Moderate fails floor+1 (27.5%) with and without the search - a
+  Moderate fails floor+1 (27.5%; CLOSED in the remaining-gaps round:
+  5.5%) with and without the search - a
   pre-existing CSS fading-floor issue, not in the release gate (CSS is
   gated on AWGN only). Follow-up: FFT-based pilot correlation would cut
   the search cost. Original record: Mechanism confirmed:
@@ -1288,8 +1289,40 @@ MID M0 fading floor.
   NARROW M4/M5 52/30% - 120 Hz inside one frame, past the +-55 Hz
   acquisition range, out of scope. Test `rx_narrow_drift_2hz_estimate`
   (23/24; 21/24 and a failure without the estimate).
-- [ ] **NARROW CSS M0/M1 acquisition** (~3 dB between payload and frame).
-- [ ] **CSS MID M0 on CCIR Moderate** (27.5% at floor+1).
+- [ ] **NARROW CSS M0/M1 acquisition - IMPROVED, NOT CLOSED.** Stage
+  breakdown at NARROW M0 -17/-18 dB (40 trials): preamble not detected
+  4/15, sync 3/7, "header" 7/5, payload 0. The header count was mostly
+  MISCLASSIFIED PREAMBLES - at -17 dB 10 of 40 CSS frames were read as
+  robust or calling (one or two slope slots flipped) and went down the
+  OFDM path. Three receiver changes, each only on a frame that already
+  failed: (1) the detector reports the best reading of each other 4-rep
+  signature at its start or +-1 rep (>= 0.7 of the winner; calling a rep
+  early matches three of CSS's four slots) and the receiver tries them
+  (`SKW_CHIRP_ALT`); (2) CSS sync bar 3.5 -> 3.0 x median
+  (`SKW_CSS_SYNC_FACTOR`); (3) soft header: ML Hamming over bit LLRs per
+  copy, then the two copies' summed LLRs (`SKW_CSS_HARD_HEADER`). AWGN,
+  60 trials, vs the pre-round receiver (eae37ca): MID M0 floor 23.3 ->
+  6.7%, NARROW M0 floor 10.0 -> 6.7%, summed CSS full-frame FER over all
+  families 60.0 -> 25.1 (offsets 0/1/3). NARROW M0 at -17 dB 33 -> 25%,
+  MID M0 at -17.5 53 -> 37%. WHAT REMAINS on NARROW: the preamble itself
+  - at -18 dB 18 of 60 are never detected and most others are
+  misclassified (NARROW M1 -17.5: 32 OFDM-path attempts for 60 frames).
+  The 4-rep 160 ms signature is the limit on a 500 Hz band; recovering
+  the rest needs a longer CSS preamble on NARROW - a waveform change that
+  older NARROW CSS receivers would not detect (capability-gated if
+  pursued). Floors left as they are (conservative; MID M0 could move
+  ~0.5 dB).
+- [x] **CSS MID M0 on CCIR Moderate - CLOSED.** Floor+1 (-9 dB), 200
+  trials, two seeds: 28.5/26.5% -> 5.5/5.5%; header failures 51/48 ->
+  7/8. Attribution (seed 1): soft header off 19.5%, runner-up
+  signatures off 7.0%, sync bar 3.5 6.5%, drift search off 8.5%, all on
+  5.5% - a fade takes one header copy, and soft combining recovers what
+  the hard per-copy CRC check could not. CSS on Moderate overall (all
+  families, M0-M3, floor+1/+3, 60 trials): summed FER 328.5 -> 204.9.
+  OFDM unchanged (AWGN robust 1102.5 -> 1100.0, Moderate 90.0 -> 92.5,
+  one frame). Tests `css_frame_mid_m0_moderate_floor1` (2/48; 5 with the
+  hard header, 9 for the pre-round receiver) and
+  `css_header_soft_combining`.
 
 ---
 

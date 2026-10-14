@@ -28,6 +28,9 @@ constexpr double kSlotFloorFactor = 6.0;    // per-slot significance
 constexpr double kSlotFloorFactorFast = 12.0;
 constexpr int kMinValidSlots4 = 3;
 constexpr double kEmaAlpha = 5e-4;    // noise-floor tracker (~1.6 s)
+// Runner-up signatures reported with a 4-rep detection (ChirpDetection::
+// alts) when they score at least this fraction of the winner.
+constexpr double kAltScoreFraction = 0.7;
 
 std::vector<cfloat> makeRep(Family family, bool up) {
   const auto& p = plan(family);
@@ -485,13 +488,58 @@ void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
         break;
       }
     }
-    if (isMax) emitDetection(g0, bestSig, bestInv, bestValid, out);
+    if (!isMax) continue;
+    emitDetection(g0, bestSig, bestInv, bestValid, out);
+    // RUNNER-UP SIGNATURES. Near the floor single slope slots flip, and
+    // the true pattern is usually ONE REP AWAY from the winner: calling
+    // U-U-D-D started a rep early matches three of CSS U-D-D-U's four
+    // slots, so a misread CSS preamble's own pattern scores 0.76-0.96 of
+    // the winner at +-1 rep (measured, NARROW M0 -17 dB) and only 0.4-0.5
+    // at the winner's start. Report the best reading of each OTHER
+    // signature at the winner's start or +-1 rep (+-8 grid), with two
+    // valid slots: the receiver tries them only after the winner's path
+    // failed, and the header CRC arbitrates.
+    ChirpDetection& d = out.back();
+    for (ChirpSig sig :
+         {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
+      if (sig == bestSig) continue;
+      PatternScore bestAlt;
+      bestAlt.score = -1.0f;
+      bool altInv = false;
+      for (int64_t g = g0 - repGrid() - 8; g <= g0 + repGrid() + 8; ++g) {
+        const int64_t off = std::abs(g - g0);
+        if (off > 8 && std::abs(off - repGrid()) > 8) continue;
+        for (bool inv : {false, true}) {
+          PatternScore ps = scorePattern(g, sig, inv);
+          if (ps.score > bestAlt.score && validSlotCount(ps, slotFloor) >= 2) {
+            bestAlt = ps;
+            altInv = inv;
+          }
+        }
+      }
+      if (bestAlt.score < float(kAltScoreFraction) * bestValid.score) continue;
+      const ChirpDetection a = makeDetection(sig, altInv, bestAlt);
+      ChirpDetection::Alt alt{sig, altInv, a.startSample, a.cfoHz,
+                              bestAlt.score};
+      if (d.nAlt < 2) {
+        d.alts[d.nAlt++] = alt;
+      }
+    }
+    if (d.nAlt == 2 && d.alts[1].score > d.alts[0].score) {
+      std::swap(d.alts[0], d.alts[1]);
+    }
   }
 }
 
 void ChirpDetector::emitDetection(int64_t g0, ChirpSig sig, bool inverted,
                                   const PatternScore& ps,
                                   std::vector<ChirpDetection>& out) {
+  out.push_back(makeDetection(sig, inverted, ps));
+  lastEmitStart_ = g0;
+}
+
+ChirpDetection ChirpDetector::makeDetection(ChirpSig sig, bool inverted,
+                                            const PatternScore& ps) const {
   // Timing from per-slot interpolated positions; slope-dependent CFO
   // shifts cancel when both slopes are present.
   double meanUp = 0, meanDown = 0, meanAll = 0;
@@ -550,8 +598,7 @@ void ChirpDetector::emitDetection(int64_t g0, ChirpSig sig, bool inverted,
   det.startSample = meanAll * kGridStep - filterDelay_;
   det.cfoHz = cfoFine;
   det.quality = ps.score / float(ps.slots.size());
-  out.push_back(det);
-  lastEmitStart_ = g0;
+  return det;
 }
 
 }  // namespace skw

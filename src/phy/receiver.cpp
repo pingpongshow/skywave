@@ -416,7 +416,14 @@ std::optional<RxFrameResult> cssReceiveFrame(
             hit.startSample, cfoHz, W, dBest, double(peak), double(med),
             med > 0 ? double(peak / med) : 0.0);
   }
-  if (med <= 0.0f || peak < 3.5f * med) return std::nullopt;  // sync fail
+  // Sync acceptance: peak over the profile median. 3.5 -> 3.0 recovered
+  // MID M0 at the floor 11.7 -> 6.7% and M1 at floor-2 dB 20 -> 13%
+  // (2.5 added nothing); a false sync costs a header walk the CRC rejects.
+  static const float syncFactor = [] {
+    const char* e = getenv("SKW_CSS_SYNC_FACTOR");
+    return e ? float(atof(e)) : 3.0f;
+  }();
+  if (med <= 0.0f || peak < syncFactor * med) return std::nullopt;  // sync fail
 
   // Persistent RAKE tap tracker. Rayleigh taps hand dominance back and
   // forth on ~1 s scales while a deep frame runs 10+ s, and a tap that
@@ -534,6 +541,8 @@ std::optional<RxFrameResult> cssReceiveFrame(
     out = -slopes[slopes.size() / 2] / coupling;
     return true;
   };
+  // Header sections also collect soft bit LLRs here (see walkHeaders).
+  std::vector<float>* sectionLlr = nullptr;
   auto walkSection = [&](int sectionSf,
                          size_t byteCount) -> std::optional<
                                                  std::vector<uint8_t>> {
@@ -588,6 +597,11 @@ std::optional<RxFrameResult> cssReceiveFrame(
       syms.push_back(cssDemodSymbolTaps(
           family, sectionSf, std::span<const cfloat>(rx).subspan(pos, symLen),
           taps));
+      if (sectionLlr) {
+        cssSoftDemodSymbol(family, sectionSf,
+                           std::span<const cfloat>(rx).subspan(pos, symLen),
+                           taps, *sectionLlr);
+      }
       if (getenv("SKW_RX_DEBUG")) {
         fprintf(stderr, "skw-css sym %zu = %u\n", s, unsigned(syms.back()));
       }
@@ -604,6 +618,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // the saved airtime; a lost first copy on the two-copy layout still
   // recovers from copy 2 as before.
   std::optional<PhyHeader> hdr;
+  static const bool softHeader = !getenv("SKW_CSS_HARD_HEADER");  // A/B
   const size_t posAtHeader = pos;
   const auto trackAtHeader = track;
   const auto tapsAtHeader = taps;
@@ -614,9 +629,14 @@ std::optional<RxFrameResult> cssReceiveFrame(
     taps = tapsAtHeader;
     hdr.reset();
     int copies = kCssHeaderCopies;
+    std::vector<std::vector<float>> copyLlr;
     for (int c = 0; c < copies; ++c) {
+      copyLlr.emplace_back();
+      sectionLlr = softHeader ? &copyLlr.back() : nullptr;
       auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
+      sectionLlr = nullptr;
       if (!hdrBytes) {
+        copyLlr.pop_back();
         if (!hdr) hdrTruncated = true;
         break;  // ran out of samples (an earlier copy may have parsed)
       }
@@ -625,8 +645,39 @@ std::optional<RxFrameResult> cssReceiveFrame(
         if (hdr) copies = int(hdr->cssHeaderCopies);
       }
     }
+    // SOFT HEADER: hard symbol decisions + one-error Hamming per copy
+    // threw away what the duplicated header is for near the floor. When
+    // no copy parsed: soft ML-decode each copy, then the two copies'
+    // summed bit LLRs (identical symbol streams - soft combining, ~3 dB
+    // on top of soft decoding). The CRC-16 still arbitrates.
+    if (!hdr && softHeader) {
+      for (const auto& l : copyLlr) {
+        hdr = parsePhyHeader(cssDecodeSoft(l, kCssHeaderSf, kPhyHeaderBytes));
+        if (hdr) break;
+      }
+      if (!hdr && copyLlr.size() >= 2 &&
+          copyLlr[0].size() == copyLlr[1].size()) {
+        std::vector<float> sum(copyLlr[0]);
+        for (size_t i = 0; i < sum.size(); ++i) sum[i] += copyLlr[1][i];
+        hdr = parsePhyHeader(cssDecodeSoft(sum, kCssHeaderSf, kPhyHeaderBytes));
+      }
+      // A soft-recovered header that claims ONE copy contradicts the two
+      // walked: the copy-2 samples were payload, so reject it.
+      if (hdr && hdr->cssHeaderCopies == 1 && copyLlr.size() >= 2) {
+        const bool fromFirst =
+            parsePhyHeader(cssDecodeSoft(copyLlr[0], kCssHeaderSf,
+                                         kPhyHeaderBytes))
+                .has_value();
+        if (!fromFirst) hdr.reset();
+      }
+    }
   };
   walkHeaders();
+  if (getenv("SKW_RX_DEBUG")) {
+    fprintf(stderr, "skw-css header first pass: %s sync=%lld\n",
+            hdr ? "ok" : (hdrTruncated ? "truncated" : "FAIL"),
+            (long long)(region0 + W + dBest));
+  }
   // HEADER DRIFT RETRY: the SF8 header walk has no drift correction, and
   // at 0.2 Hz/s on NARROW its pilots move ~14 samples per pilot - past
   // what the tap tracker follows (+-2) - so headers failed before the
@@ -1099,20 +1150,27 @@ std::optional<RxFrameResult> receiveFrameImpl(
     Family family, std::span<const cfloat> rx, RxStage* stageOut,
     HarqChase* harq, const CarrierMask* payloadMask, bool wantConstellation,
     double fllGainOverride, bool* retryable, double driftRateIn = 0.0,
-    std::vector<std::pair<double, double>>* fllTrace = nullptr) {
+    std::vector<std::pair<double, double>>* fllTrace = nullptr,
+    const ChirpDetection* forcedHit = nullptr,
+    ChirpDetection* hitOut = nullptr) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
   stage(RxStage::NoDetect);
   // 1) Chirp acquisition.
-  ChirpDetector det(family);
   std::vector<ChirpDetection> hits;
-  const size_t chunk = 1472;
-  for (size_t i = 0; i < rx.size() && hits.empty(); i += chunk) {
-    det.process(rx.subspan(i, std::min(chunk, rx.size() - i)), hits);
+  if (forcedHit) {
+    hits.push_back(*forcedHit);
+  } else {
+    ChirpDetector det(family);
+    const size_t chunk = 1472;
+    for (size_t i = 0; i < rx.size() && hits.empty(); i += chunk) {
+      det.process(rx.subspan(i, std::min(chunk, rx.size() - i)), hits);
+    }
   }
   if (hits.empty()) return std::nullopt;
   const ChirpDetection& hit = hits.front();
+  if (hitOut) *hitOut = hit;
   stage(RxStage::ZcFail);
 
   // Spectrum inversion auto-correct: conjugate and re-run the whole
@@ -1504,9 +1562,41 @@ std::optional<RxFrameResult> receiveFrame(Family family,
                                           bool wantConstellation) {
   bool retryable = false;
   std::vector<std::pair<double, double>> trace;
+  ChirpDetection hit{};
+  hit.family = family;
   auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
                               wantConstellation, -1.0, &retryable, 0.0,
-                              &trace);
+                              &trace, nullptr, &hit);
+  // RUNNER-UP SIGNATURE (ChirpDetection::hasAlt): near the floor a slope
+  // slot flips and a CSS preamble reads as robust/calling (or the other
+  // way round), sending the frame down the wrong receive path. When the
+  // winner's path found no header, try the runner-up's; a wrong guess
+  // costs one sync/ZC search and the header CRC still arbitrates.
+  // SKW_CHIRP_ALT=0 disables (A/B).
+  static const bool altOn = envKnobOn("SKW_CHIRP_ALT");
+  if (!res && hit.nAlt > 0 && altOn && stageOut &&
+      (*stageOut == RxStage::ZcFail || *stageOut == RxStage::HeaderFail)) {
+    for (int k = 0; k < hit.nAlt; ++k) {
+      ChirpDetection alt = hit;
+      alt.sig = hit.alts[k].sig;
+      alt.inverted = hit.alts[k].inverted;
+      alt.startSample = hit.alts[k].startSample;
+      alt.cfoHz = hit.alts[k].cfoHz;
+      alt.nAlt = 0;
+      RxStage stAlt = RxStage::NoDetect;
+      auto resAlt = receiveFrameImpl(family, rx, &stAlt, harq, payloadMask,
+                                     wantConstellation, -1.0, nullptr, 0.0,
+                                     nullptr, &alt, nullptr);
+      if (std::getenv("SKW_RX_DEBUG")) {
+        std::fprintf(stderr, "skw-rx: alt signature %d (primary %d) -> %s\n",
+                     int(alt.sig), int(hit.sig), resAlt ? "header" : "fail");
+      }
+      if (resAlt) {
+        *stageOut = stAlt;
+        return resAlt;
+      }
+    }
+  }
   if (!retryable || !fllDriftRetryEnabled()) return res;
   // Drift estimate for the retry: the first walk's FLL frequency follows
   // a linear drift with a constant lag, so its SLOPE is the drift rate

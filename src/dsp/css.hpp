@@ -130,6 +130,13 @@ std::vector<uint16_t> cssEncode(std::span<const uint8_t> bytes, int sf);
 // Hamming corrects one bit per codeword.
 std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
                                size_t byteCount);
+// Soft-decision decode of the same bit layer: `llr` holds sf bit LLRs per
+// symbol in cssSoftDemodSymbol's convention (positive = bit 0), and each
+// Hamming(7,4) codeword is decoded by maximum likelihood over its 16
+// candidates. LLRs of identical sections (the duplicated CSS header) can
+// be summed before the call - soft combining.
+std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
+                                   size_t byteCount);
 // Symbols required to carry `byteCount` payload bytes at `sf`.
 size_t cssSymbolsForBytes(size_t byteCount, int sf);
 

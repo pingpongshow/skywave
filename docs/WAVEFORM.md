@@ -442,7 +442,9 @@ CFO↔delay coupling makes residual CFO a pure common shift absorbed here;
 multipath tap profile for RAKE) → PHY header **twice** (Hamming(7,4) bit
 layer at fixed SF8, two independently interleaved copies ~2 s apart —
 time diversity where a short section cannot interleave through a fade;
-CRC-16 arbitrates) → payload as **LDPC r1/2 (N=648 only)** over
+CRC-16 arbitrates; when neither copy decodes hard, the receiver decodes
+each soft — maximum likelihood over each codeword's 16 candidates — and
+then the two copies' summed bit LLRs) → payload as **LDPC r1/2 (N=648 only)** over
 soft-demodulated symbols (dual-max bit metric), whitened, trailing
 CRC-16. A known SF8 pilot precedes every `kCssPilotInterval` (8) data
 symbols of every section: it re-anchors timing (sample-clock drift) and

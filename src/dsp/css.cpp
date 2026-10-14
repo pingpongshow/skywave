@@ -347,6 +347,43 @@ std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
   return out;
 }
 
+std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
+                                   size_t byteCount) {
+  (void)sf;  // bits are already in stream order, sf per symbol
+  const size_t ncw = byteCount * 2;
+  // De-interleave: stream position i*ncw + j is bit i of codeword j.
+  std::vector<float> cwLlr(ncw * 7, 0.0f);
+  for (int i = 0; i < 7; ++i) {
+    for (size_t j = 0; j < ncw; ++j) {
+      const size_t bi = size_t(i) * ncw + j;
+      if (bi < llr.size()) cwLlr[j * 7 + size_t(i)] = llr[bi];
+    }
+  }
+  std::vector<uint8_t> out(byteCount, 0);
+  for (size_t n = 0; n < ncw; ++n) {
+    int bestNib = 0;
+    float bestMetric = -1e30f;
+    for (int nib = 0; nib < 16; ++nib) {
+      const uint8_t c = hamming74Encode(uint8_t(nib));
+      float m = 0.0f;
+      for (int i = 0; i < 7; ++i) {
+        const float l = cwLlr[n * 7 + size_t(i)];
+        m += ((c >> i) & 1) ? -l : l;
+      }
+      if (m > bestMetric) {
+        bestMetric = m;
+        bestNib = nib;
+      }
+    }
+    if ((n & 1) == 0) {
+      out[n / 2] = uint8_t(bestNib);
+    } else {
+      out[n / 2] |= uint8_t(bestNib << 4);
+    }
+  }
+  return out;
+}
+
 std::vector<cfloat> cssModulateBytes(Family f, int sf,
                                      std::span<const uint8_t> bytes) {
   return cssModulate(f, sf, cssEncode(bytes, sf));
