@@ -65,7 +65,12 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   U-U-D-D a rep early matches three of CSS U-D-D-U's slots), so a 4-rep
   detection also carries the best reading of each other signature at its
   start or ±1 rep scoring ≥ 0.7 of the winner; the receiver tries those
-  only when the winner's path finds no header
+  only when the winner's path finds no header. NARROW and MID CSS use a
+  12-rep signature: patterns of different lengths compete on a
+  length-normalized score, each start is judged against the noise floor
+  snapshot at its 4-rep decision point (so 4-rep detection is unchanged
+  by the longer horizon), and a long reading vetoes neighbours only when
+  valid
 - `COARSE`: correlation peak → timing ±1 ms; CFO from slope diversity plus
   inter-rep phase → <1 Hz. The matched filter integrates ±55 Hz for every
   signature. An LFM frequency offset masquerades as a timing shift

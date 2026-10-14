@@ -240,7 +240,7 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
         (cssPayloadCodedBits(p.payload.size()) + size_t(sf) - 1) /
         size_t(sf);
     g.preambleSamples =
-        int(chirpPattern(ChirpSig::Css).size()) * chirpRepSamples();
+        int(chirpPattern(p.family, ChirpSig::Css).size()) * chirpRepSamples();
     g.zcSymbols = 0;  // CSS frames sync on their own known symbols
     const size_t copies = p.cssHeaderCopies == 1 ? 1 : 2;
     const size_t hAll = copies * (hSyms + pilots(hSyms));

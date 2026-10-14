@@ -29,6 +29,11 @@ enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2, Css = 3 };
 // fast: U U   robust: U D U D   calling: U U D D   css: U D D U
 // (patterns and their spectrum-inverted mirrors are pairwise distinct).
 std::vector<bool> chirpPattern(ChirpSig sig);
+// The pattern a family actually transmits: chirpPattern(sig), except the
+// CSS signature on families with a LONG CSS preamble (deep-tier frames on
+// narrow bands, where the 4-rep signature limited acquisition - see
+// chirp.cpp). SKW_CSS_PREAMBLE_<FAMILY>=<U/D string> overrides (A/B).
+std::vector<bool> chirpPattern(Family family, ChirpSig sig);
 
 inline int chirpRepSamples() {
   // Profile-dependent: 1920 (HF, 160 ms) or 480 (VHF-FM, 40 ms).
@@ -47,6 +52,7 @@ double chirpCfoCaptureMaxHz();
 // does not have and which two-path multipath can bias by several
 // branches (GAP_CLOSURE_PLAN.md R1) - receiveFrame resolves the branch.
 double chirpCfoAmbiguityHz(ChirpSig sig);
+double chirpCfoAmbiguityHz(Family family, ChirpSig sig);
 
 // Delay-Doppler bias of the detector's start estimate, in samples per Hz
 // of CFO: under +cfo an up-rep's peak arrives early by cfo*T/B*fs and a
@@ -130,6 +136,14 @@ class ChirpDetector {
                                const PatternScore& ps) const;
 
   Family family_;
+  std::vector<bool> pat_[4];     // per-signature slope pattern (family's)
+  int maxReps_ = 4;              // longest 4-rep-timeline pattern
+  // Length-normalized pattern score: sigmas above the noise expectation
+  // (a noise slot window-max averages ~3.75x the NCC floor, sd ~1.42x).
+  // For one pattern length it orders exactly as the raw score; it is what
+  // lets a long CSS pattern compete with the 4-rep signatures.
+  double zScore(const PatternScore& ps, double noise) const;
+  double zOf(float score, size_t reps, double noise) const;
   std::vector<cfloat> refUp_;    // conj already applied
   std::vector<cfloat> refDown_;
   float refEnergy_;
@@ -158,7 +172,16 @@ class ChirpDetector {
     }
   };
   ScoreRing fastScores_;
-  ScoreRing best4Scores_;
+  ScoreRing best4Scores_;   // raw best 4-rep score per start (no validity)
+  ScoreRing bestLongScores_;  // raw best VALID long-pattern score per start
+  // Noise floor each start is judged against: the floor at the moment a
+  // 4-rep-only detector would have decided it (pattern horizon 3 reps).
+  // A long pattern lengthens the decision lag, and the floor - an EMA the
+  // preamble's own chirps feed - would otherwise be judged later and
+  // higher. With this, 4-rep detection is identical to a 4-rep detector.
+  ScoreRing decisionFloor_;
+  int64_t nextFloor_ = 0;
+  int longReps_ = 0;  // length of the long pattern (0 = none)
   int64_t nextFast_ = 0;         // next start to decide on the fast timeline
   int64_t next4_ = 0;            // next start to decide on the 4-rep timeline
   int suppress4_ = 0;

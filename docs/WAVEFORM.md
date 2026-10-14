@@ -269,6 +269,7 @@ information — the **header class**:
 | up–down–up–down | robust header follows | 4 |
 | up–up–down–down | calling/beacon (robust header) | 4 |
 | up–down–down–up | CSS frame follows (waveform=1) | 4 |
+| up–down–up–up–up–up–down–down–down–up–down–down | CSS frame follows, `NARROW` and `MID` | 12 |
 
 Every multi-rep signature that must support CFO measurement contains both
 chirp slopes: an LFM chirp's ambiguity function is a delay–Doppler ridge,
@@ -280,6 +281,19 @@ detector that has seen two up-reps checks the surrounding rep slots before
 classifying fast vs a containing 4-rep signature. This signature IS the
 sync arbitration: the preamble alone announces OFDM vs CSS, so the
 receiver never trial-decodes both.
+
+**`NARROW` and `MID` CSS use a 12-rep preamble (1.92 s).** On a 500 Hz band the
+4-rep signature was the acquisition limit for the deep tier: a third of
+frames went undetected at −18 dB and many more read as robust/calling.
+The 12-rep pattern is balanced (unbiased start, slope-diverse CFO), has
+one embedded 4-rep signature (unavoidable for a balanced 12-rep pattern)
+and shifted self-match ≤ 6/12. The detector compares patterns of
+different lengths by a length-normalized score, judges every start
+against the noise floor it would have had as a 4-rep decision (the floor
+EMA is fed by the preamble's own chirps, and the longer horizon would
+otherwise raise it), and lets a long-pattern reading veto a neighbour
+only when it is itself valid. Every other signature and family detects
+exactly as before.
 
 The robust class uses 4 reps so preamble detection always retains ≥ 3 dB of
 margin over the deepest payload floor it announces (a 2-rep preamble would
@@ -498,17 +512,31 @@ bandwidth, so narrow families reach deepest:
 | Family | `M0`/SF8 | `M1`/SF7 | `M2`/SF6 | `M3`/SF5 |
 |---|---:|---:|---:|---:|
 | WIDE | −13.0 | −10.5 | −8.0 | −5.0 |
-| MID | −16.5 | −14.0 | −12.0 | −9.0 |
-| NARROW | −16.0 ¹ | −15.5 ¹ | −15.0 | −12.0 |
+| MID | −17.5 ¹ | −14.0 | −12.0 | −9.0 |
+| NARROW | −18.5 ¹ | −17.5 ¹ | −15.0 | −12.0 |
 | ULTRA | −12.5 | −11.0 | −8.0 | −5.0 |
 
-¹ NARROW `M0`/`M1` are FULL-FRAME floors (v1.2.1). The payload alone
-reaches −19.5/−17.5 dB, but the chirp preamble, sync and header cannot
-follow it: with `bertool --css-frames`, M0 loses 30% of frames at
-−16.5 dB and M1 23%. The table holds what a frame achieves, because the
-AMC steers on it. MID/WIDE/ULTRA `M0` meet floor+1 ≤ 10% on full frames
-as published. Recovering NARROW's 3 dB is an acquisition problem
-(ROADMAP).
+¹ NARROW `M0`/`M1` are FULL-FRAME floors. The payload alone reaches
+−19.5/−17.5 dB; with the 4-rep preamble full frames only reached
+−16.0/−15.5 (v1.2.1). The 12-rep preamble and the sync CFO-branch check
+(below) bring them to −18.5/−17.5 (`bertool --css-frames`, 100 trials:
+M0 12% at the floor, 3% at floor+1; M1 13% and 1%). M1 is now
+payload-limited. MID `M0` is likewise a full-frame floor (−17.5 with the
+12-rep preamble and the branch retry below; was −16.5). MID `M1`–`M3`
+full frames reach ~−16.0/−14.0/−11.5 but the table keeps the payload-
+layer values the `bertool --css` gate measures. The table holds what a
+frame achieves, because the AMC steers on it.
+
+**Sync CFO-branch check.** The preamble's fine CFO is ambiguous modulo
+6.25 Hz, and a residual f moves the SF8 sync peak by f·symH·spc/fs
+samples (~77 per branch on `NARROW`). A frame one branch off still syncs
+and decodes its SF8 header, but its SF5–SF7 payload lands chips off. On
+families where a branch spans more than two chips the sync window covers
+±1 branch, and a peak about a branch away moves the CFO one branch and
+re-syncs. Where a branch is too small for sync to tell apart (MID ~19
+samples, inside the timing jitter), a frame whose header decoded but
+whose payload failed is re-received on the neighbouring branches and the
+payload CRC decides.
 
 The original forward estimate ("floors −9 → −14 dB") predates the
 per-family measurement; the −14 dB tier target is met by MID/NARROW `M0`

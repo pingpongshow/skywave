@@ -1289,7 +1289,7 @@ MID M0 fading floor.
   NARROW M4/M5 52/30% - 120 Hz inside one frame, past the +-55 Hz
   acquisition range, out of scope. Test `rx_narrow_drift_2hz_estimate`
   (23/24; 21/24 and a failure without the estimate).
-- [ ] **NARROW CSS M0/M1 acquisition - IMPROVED, NOT CLOSED.** Stage
+- [x] **NARROW CSS M0/M1 acquisition - CLOSED (second pass, 12-rep preamble, below).** First pass: Stage
   breakdown at NARROW M0 -17/-18 dB (40 trials): preamble not detected
   4/15, sync 3/7, "header" 7/5, payload 0. The header count was mostly
   MISCLASSIFIED PREAMBLES - at -17 dB 10 of 40 CSS frames were read as
@@ -1323,6 +1323,51 @@ MID M0 fading floor.
   one frame). Tests `css_frame_mid_m0_moderate_floor1` (2/48; 5 with the
   hard header, 9 for the pre-round receiver) and
   `css_header_soft_combining`.
+- [x] **Long CSS preamble on NARROW and MID - DONE 2026-10-14.** (No
+  backward compatibility constraint: never released.) The 4-rep 160 ms
+  CSS signature was the deep-tier acquisition limit on narrow bands.
+  - Pattern: 12 reps, U D U U U U D D D U D D (1.92 s, 1-2% of a deep-
+    tier frame), chosen by exhaustive search: balanced (unbiased start,
+    slope-diverse coarse CFO), one embedded 4-rep signature (every
+    balanced 12-rep pattern has one), shifted self-match <= 6/12. 8 reps
+    gave about half the gain. `chirpPattern(family, sig)`;
+    `SKW_CSS_PREAMBLE_<FAMILY>` overrides.
+  - Detector: patterns of different lengths compared by a length-
+    normalized score; the 4-rep decision horizon becomes 11 reps on
+    NARROW/MID. Two traps found on the way: (1) the noise-floor EMA is fed
+    by the preamble's own chirps, so judging a start ~1.3 s later raised
+    the floor 18% and NARROW robust OFDM frames on CCIR Good went
+    undetected +1.5% - every start is now judged against the floor
+    snapshot at its 4-rep decision point, which makes 4-rep detection
+    IDENTICAL to before (every OFDM sweep matches the previous build row
+    for row); (2) a long-pattern reading vetoes a neighbour only when it
+    is itself valid. NARROW/MID robust and calling detections arrive ~1.3 s
+    later (negligible against 20-40 s frames; fast frames unaffected).
+  - Receiver: SYNC CFO-BRANCH CHECK (NARROW: a 6.25 Hz branch moves the
+    SF8 sync peak ~77 samples; the window spans +-1 branch and re-syncs a
+    peak a branch away - every NARROW M1 payload failure at the floor had
+    been a branch error) and CSS BRANCH RETRY (a frame whose header
+    decoded but payload failed is re-received at +-6.25 Hz and the CRC
+    decides - MID's ~19-sample branch is inside the timing jitter).
+    `SKW_CSS_BRANCH_CHECK`, `SKW_CSS_BRANCH_MIN_CHIPS`,
+    `SKW_CSS_BRANCH_RETRY`.
+  - Results (full frames, AWGN, 100 trials per 0.5 dB): NARROW M0 12% at
+    -18.5 (4-rep: 50% at -18.0), M1 13% at -17.5 (now payload-limited),
+    M2 8% at -17.0; MID M0 12% at -17.5 (4-rep: 37% at -17.5). Floors
+    LOWERED: NARROW M0/M1 -16.0/-15.5 -> -18.5/-17.5, MID M0 -16.5 ->
+    -17.5 (same rule as cssFloorDb). CSS on CCIR Moderate, all families
+    (M0-M3, floor+1/+3, 60 trials): summed FER 204.9 -> 55.1 (WIDE/ULTRA
+    too, via the branch retry). False alarms per hour of noise: MID 38 ->
+    21, NARROW 17 -> 10, WIDE/ULTRA identical. Release gates: CSS payload
+    and full-frame sweeps pass, OFDM sweeps identical, suite 44/44, ASan
+    clean. Test `chirp_long_css_preamble_at_floor` (12-rep 25/25 NARROW,
+    23/25 MID; 4-rep 8/25, 13/25).
+  - FOLLOW-UPS: MID M1-M3 and NARROW M2/M3 full frames now reach ~1.5-2.5
+    dB below their table floors, but the payload-only `bertool --css`
+    release gate measures the legacy Hamming payload layer (84-99% FER
+    there), so lowering them needs that gate retired or re-pointed at full
+    frames first. The CSS fading floors (kFadingFloors) were not
+    re-measured.
 
 ---
 

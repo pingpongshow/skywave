@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include "dsp/window.hpp"
 
@@ -20,6 +23,12 @@ constexpr double kCfoCaptureMaxHz = 55.0;
 // sizes); 32x sits ~6 sigma above. Fast (2-rep) has less redundancy and a
 // stricter bar.
 constexpr double kScoreFactor4 = 32.0;
+// The same bar as a length-normalized z-score (zScore): 32x the floor
+// for four slots of mean 3.75x and sd 1.417x is 6 sigma.
+constexpr double kNoiseSlotMean = 3.75;
+constexpr double kNoiseSlotSd = 17.0 / 12.0;
+constexpr double kScoreZ4 = (kScoreFactor4 - 4 * kNoiseSlotMean) /
+                            (kNoiseSlotSd * 2.0);
 constexpr double kScoreFactor2 = 24.0;
 // Slot validity: a pattern match must be supported by multiple individually
 // significant slots, or a single strong peak seen through a distant window
@@ -75,10 +84,41 @@ std::vector<bool> chirpPattern(ChirpSig sig) {
   return {};
 }
 
+std::vector<bool> chirpPattern(Family family, ChirpSig sig) {
+  if (sig != ChirpSig::Css) return chirpPattern(sig);
+  static const char* kNames[kNumFamilies] = {"WIDE", "MID", "NARROW", "ULTRA"};
+  const char* e = std::getenv(
+      (std::string("SKW_CSS_PREAMBLE_") + kNames[size_t(family)]).c_str());
+  std::string pat = e ? std::string(e) : std::string();
+  if (pat.empty() && !e &&
+      (family == Family::Narrow || family == Family::Mid)) {
+    // LONG CSS PREAMBLE (NARROW). The 4-rep 160 ms signature was the
+    // acquisition limit on a 500 Hz band: at -18 dB a third of frames went
+    // undetected and many more were misread as robust/calling. 12 reps
+    // (1.92 s, 1-2% of a NARROW CSS frame): balanced (unbiased start and
+    // slope-diverse coarse CFO), one embedded 4-rep signature (any
+    // balanced pattern has one), shifted self-match <= 6/12 - chosen by
+    // exhaustive search. With the sync branch check: M0 10% point
+    // ~-16 -> ~-18.3 dB, M1 ~-15.7 -> ~-17.5 dB (60 trials). 8 reps gave
+    // about half that. MID (1 kHz band) too, with the receiver's CSS
+    // branch retry: M0 at floor-1 33 -> 10%, floor-2 58 -> 37%; M1 and M2
+    // better. WIDE/ULTRA keep 4 reps (their CSS floors are met).
+    pat = "UDUUUUDDDUDD";
+  }
+  if (pat.size() < 4) return chirpPattern(sig);
+  std::vector<bool> out;
+  for (char c : pat) out.push_back(c == 'U' || c == 'u');
+  return out;
+}
+
 double chirpCfoCaptureMaxHz() { return kCfoCaptureMaxHz; }
 
 double chirpCfoAmbiguityHz(ChirpSig sig) {
-  const auto pat = chirpPattern(sig);
+  return chirpCfoAmbiguityHz(Family::Wide, sig);
+}
+
+double chirpCfoAmbiguityHz(Family family, ChirpSig sig) {
+  const auto pat = chirpPattern(family, sig);
   int bestGap = 0;
   for (size_t i = 0; i < pat.size(); ++i) {
     for (size_t j = i + 1; j < pat.size(); ++j) {
@@ -91,7 +131,7 @@ double chirpCfoAmbiguityHz(ChirpSig sig) {
 }
 
 double chirpStartCfoSensitivity(Family family, ChirpSig sig) {
-  const auto pat = chirpPattern(sig);
+  const auto pat = chirpPattern(family, sig);
   int nUp = 0;
   for (bool u : pat) nUp += u ? 1 : 0;
   const int nDown = int(pat.size()) - nUp;
@@ -105,7 +145,7 @@ std::vector<cfloat> makeChirpPreamble(Family family, ChirpSig sig) {
   auto up = makeRep(family, true);
   auto down = makeRep(family, false);
   std::vector<cfloat> out;
-  for (bool u : chirpPattern(sig)) {
+  for (bool u : chirpPattern(family, sig)) {
     const auto& rep = u ? up : down;
     out.insert(out.end(), rep.begin(), rep.end());
   }
@@ -118,6 +158,14 @@ ChirpDetector::ChirpDetector(Family family)
     : family_(family), bandFilter_(familyBandTaps(family), 1) {
   filterDelay_ = bandFilter_.groupDelayInput();
   emaNoiseNcc_ = 1.0 / chirpRepSamples();
+  for (ChirpSig sig : {ChirpSig::Fast, ChirpSig::Robust, ChirpSig::Calling,
+                       ChirpSig::Css}) {
+    pat_[size_t(sig)] = chirpPattern(family, sig);
+    if (sig != ChirpSig::Fast) {
+      maxReps_ = std::max(maxReps_, int(pat_[size_t(sig)].size()));
+      if (pat_[size_t(sig)].size() > 4) longReps_ = int(pat_[size_t(sig)].size());
+    }
+  }
   const auto& p = plan(family);
   const double bw = p.chirpEndHz - p.chirpStartHz;
   crossTolGrid_ = int(2.0 * kCfoCaptureMaxHz *
@@ -155,6 +203,9 @@ void ChirpDetector::reset() {
   lastEmitStart_ = -1'000'000'000;
   bandFilter_.reset();
   emaNoiseNcc_ = 1.0 / chirpRepSamples();
+  bestLongScores_ = ScoreRing{};
+  decisionFloor_ = ScoreRing{};
+  nextFloor_ = 0;
 }
 
 const ChirpDetector::GridVal* ChirpDetector::gridAt(int64_t g) const {
@@ -187,14 +238,14 @@ void ChirpDetector::process(std::span<const cfloat> in,
 
   // Bound memory. Grid history must cover the 4-rep decision lag (pattern
   // horizon + suppression) measured back from the newest grid point.
-  const size_t keepSamples = size_t(n) * 8;
+  const size_t keepSamples = size_t(n) * size_t(maxReps_ + 4);
   if (buf_.size() > keepSamples * 2) {
     size_t drop = buf_.size() - keepSamples;
     buf_.erase(buf_.begin(), buf_.begin() + long(drop));
     bufStart_ += int64_t(drop);
   }
   const size_t keepGrid =
-      size_t(4 * repGrid() + 2 * crossTolGrid_ + 2 * suppress4_ + 128);
+      size_t(maxReps_ * repGrid() + 2 * crossTolGrid_ + 2 * suppress4_ + 128);
   if (grid_.size() > keepGrid * 2) {
     size_t drop = grid_.size() - keepGrid;
     grid_.erase(grid_.begin(), grid_.begin() + long(drop));
@@ -209,6 +260,9 @@ void ChirpDetector::process(std::span<const cfloat> in,
   };
   pruneRing(fastScores_, size_t(2 * suppressFast_ + 8));
   pruneRing(best4Scores_, size_t(2 * suppress4_ + 8));
+  pruneRing(bestLongScores_, size_t(2 * suppress4_ + 8));
+  pruneRing(decisionFloor_,
+            size_t(2 * suppress4_ + (maxReps_ - 3) * repGrid() + 64));
 }
 
 void ChirpDetector::evaluateGridPoint(int64_t g) {
@@ -258,7 +312,7 @@ void ChirpDetector::evaluateGridPoint(int64_t g) {
 ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,
                                                         ChirpSig sig,
                                                         bool inverted) const {
-  auto pat = chirpPattern(sig);
+  const auto& pat = pat_[size_t(sig)];
   PatternScore ps;
   ps.score = 0.0f;
   const bool slope0 = inverted ? !pat[0] : pat[0];
@@ -317,12 +371,33 @@ namespace {
 // pattern-relative floor (score/12): a strong 2-slot prefix plus one lucky
 // noise window-max must not count as 3 valid slots.
 int validSlotCount(const ChirpDetector::PatternScore& ps, float absFloor) {
-  const float floor = std::max(absFloor, ps.score / 8.0f);
+  // Half the mean slot (score/8 for four slots).
+  const float floor = std::max(
+      absFloor, ps.score / (2.0f * float(std::max<size_t>(ps.slots.size(), 1))));
   int n = 0;
   for (const auto& s : ps.slots) n += (s.ncc >= floor) ? 1 : 0;
   return n;
 }
+// Valid slots a 4-rep-timeline pattern needs: 3 of 4; half of a long one
+// (the joint sum, not per-slot significance, is what a long preamble buys).
+int minValidSlots(size_t reps) {
+  return reps <= 4 ? kMinValidSlots4 : int((reps + 1) / 2);
+}
 }  // namespace
+
+double ChirpDetector::zScore(const PatternScore& ps, double noise) const {
+  const double L = double(ps.slots.size());
+  if (L <= 0.0 || noise <= 0.0) return -1e9;
+  return (double(ps.score) / noise - kNoiseSlotMean * L) /
+         (kNoiseSlotSd * std::sqrt(L));
+}
+
+double ChirpDetector::zOf(float score, size_t reps, double noise) const {
+  if (reps == 0 || noise <= 0.0 || score <= -1e8f) return -1e9;
+  const double L = double(reps);
+  return (double(score) / noise - kNoiseSlotMean * L) /
+         (kNoiseSlotSd * std::sqrt(L));
+}
 
 // Fast timeline: short horizon, because connected-frame latency matters.
 // A fast candidate must not be part of a 4-rep signature: forward check
@@ -439,51 +514,85 @@ void ChirpDetector::finalizeFast(std::vector<ChirpDetection>& out) {
 // partial alignments are vetoed by score comparison against the true start.
 void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
   const int64_t newest = gridStartIdx_ + int64_t(grid_.size()) - 1;
-  const int64_t horizon = 3 * repGrid() + crossTolGrid_;
+  const int64_t horizon = int64_t(maxReps_ - 1) * repGrid() + crossTolGrid_;
+  // Floor snapshot at the 4-rep decision point (see decisionFloor_).
+  const int64_t horizon4 = 3 * repGrid() + crossTolGrid_;
+  while (nextFloor_ + horizon4 + suppress4_ <= newest) {
+    if (decisionFloor_.v.empty()) decisionFloor_.base = nextFloor_;
+    decisionFloor_.v.push_back(float(emaNoiseNcc_));
+    ++nextFloor_;
+  }
 
   while (next4_ + horizon + suppress4_ <= newest) {
     const int64_t g0 = next4_++;
     while (best4Scores_.base + int64_t(best4Scores_.v.size()) <=
            g0 + suppress4_) {
       int64_t s = best4Scores_.base + int64_t(best4Scores_.v.size());
-      float b4 = 0;
+      // Raw best score over the 4-rep patterns (as a 4-rep detector), and
+      // separately the best LONG-pattern reading - which only counts if
+      // it could be emitted (enough valid slots): a partial long-CSS
+      // alignment over a faded robust preamble must not veto the true
+      // start and then fail validity itself.
+      float b4 = -1e9f, bL = -1e9f;
+      const float ringFloor = float(kSlotFloorFactor * emaNoiseNcc_);
       for (ChirpSig sig :
            {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
         for (bool inv : {false, true}) {
-          b4 = std::max(b4, scorePattern(s, sig, inv).score);
+          const PatternScore ps = scorePattern(s, sig, inv);
+          if (ps.slots.size() <= 4) {
+            b4 = std::max(b4, ps.score);
+          } else if (validSlotCount(ps, ringFloor) >=
+                     minValidSlots(ps.slots.size())) {
+            bL = std::max(bL, ps.score);
+          }
         }
       }
       best4Scores_.v.push_back(b4);
+      bestLongScores_.v.push_back(bL);
     }
     const int64_t dRef = g0 - lastEmitStart_;
-    if (dRef > 0 && dRef <= 2 * repGrid() + suppress4_) continue;
+    if (dRef > 0 && dRef <= int64_t(maxReps_ - 2) * repGrid() + suppress4_) {
+      continue;
+    }
 
-    const float thr4 = float(kScoreFactor4 * emaNoiseNcc_);
-    const float here = best4Scores_.at(g0);
-    if (here < thr4) continue;
+    // Everything at this start is judged against ONE floor, so for equal
+    // lengths the z comparisons below are exactly the raw-score ones.
+    const float fl = decisionFloor_.at(g0);
+    const double n0 = fl > 0.0f ? double(fl) : emaNoiseNcc_;
+    auto ringZ = [&](int64_t q) {
+      return std::max(zOf(best4Scores_.at(q), 4, n0),
+                      longReps_ > 0
+                          ? zOf(bestLongScores_.at(q), size_t(longReps_), n0)
+                          : -1e9);
+    };
+    const double here = ringZ(g0);
+    if (here < kScoreZ4) continue;
 
-    const float slotFloor = float(kSlotFloorFactor * emaNoiseNcc_);
+    const float slotFloor = float(kSlotFloorFactor * n0);
     ChirpSig bestSig = ChirpSig::Robust;
     bool bestInv = false;
     PatternScore bestValid;
     bestValid.score = -1.0f;
+    double bestZ = -1e9;
     for (ChirpSig sig :
          {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
       for (bool inv : {false, true}) {
         PatternScore ps = scorePattern(g0, sig, inv);
-        if (ps.score > bestValid.score &&
-            validSlotCount(ps, slotFloor) >= kMinValidSlots4) {
+        const double z = zScore(ps, n0);
+        if (z > bestZ &&
+            validSlotCount(ps, slotFloor) >= minValidSlots(ps.slots.size())) {
           bestValid = ps;
+          bestZ = z;
           bestSig = sig;
           bestInv = inv;
         }
       }
     }
-    if (bestValid.score < thr4) continue;
+    if (bestValid.score < 0.0f || bestZ < kScoreZ4) continue;
 
     bool isMax = true;
     for (int64_t s = g0 - suppress4_; s <= g0 + suppress4_; ++s) {
-      if (s != g0 && best4Scores_.at(s) > here) {
+      if (s != g0 && ringZ(s) > here) {
         isMax = false;
         break;
       }
@@ -517,7 +626,13 @@ void ChirpDetector::finalize4(std::vector<ChirpDetection>& out) {
           }
         }
       }
-      if (bestAlt.score < float(kAltScoreFraction) * bestValid.score) continue;
+      // Per-slot mean ratio (the raw-score ratio for equal lengths).
+      if (bestAlt.score < 0.0f ||
+          bestAlt.score / float(bestAlt.slots.size()) <
+              float(kAltScoreFraction) * bestValid.score /
+                  float(bestValid.slots.size())) {
+        continue;
+      }
       const ChirpDetection a = makeDetection(sig, altInv, bestAlt);
       ChirpDetection::Alt alt{sig, altInv, a.startSample, a.cfoHz,
                               bestAlt.score};

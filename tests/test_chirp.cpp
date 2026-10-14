@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <cstdio>
 #include <cmath>
 #include <random>
@@ -48,7 +49,10 @@ std::vector<ChirpDetection> runOne(Family fam, ChirpSig sig, double snr3kDb,
   }
   std::vector<cfloat> sig12(leadSamples, cfloat(0, 0));
   sig12.insert(sig12.end(), pre.begin(), pre.end());
-  sig12.insert(sig12.end(), size_t(5) * size_t(chirpRepSamples()), cfloat(0, 0));
+  // Tail: a preamble is always followed by frame content, and the 4-rep
+  // decision waits for the longest pattern's horizon (NARROW's 12-rep CSS
+  // preamble: 11 reps + suppression), so give it 14 reps.
+  sig12.insert(sig12.end(), size_t(14) * size_t(chirpRepSamples()), cfloat(0, 0));
   addNoise3k(sig12, snr3kDb, rng);
 
   ChirpDetector det(fam);
@@ -229,3 +233,38 @@ TEST_CASE(chirp_timing_accuracy_with_noise) {
 }
 
 SKYTEST_MAIN
+
+// NARROW and MID CSS frames carry a 12-rep preamble (the 4-rep signature
+// was the deep-tier acquisition limit on narrow bands). At the full-frame
+// M0 floors (NARROW -18.5, MID -17.5 dB) the 12-rep preamble is detected
+// and classified CSS 25/25 and 23/25; the 4-rep signature managed 8/25
+// and 13/25 (SKW_CSS_PREAMBLE_<FAMILY>=UDDU).
+TEST_CASE(chirp_long_css_preamble_at_floor) {
+  struct P { Family f; double snr; };
+  for (const P& p : {P{Family::Narrow, -18.5}, P{Family::Mid, -17.5}}) {
+    CHECK_EQ(chirpPattern(p.f, ChirpSig::Css).size(), size_t(12));
+    int hits = 0;
+    const int trials = 25;
+    for (int t = 0; t < trials; ++t) {
+      auto out = runOne(p.f, ChirpSig::Css, p.snr, 0.0, false,
+                        5000 + uint32_t(t));
+      // Detected and classified CSS, start inside the receiver's sync
+      // window; the CFO branch (6.25 Hz ambiguity) is the receiver's to
+      // resolve (sync branch check / branch retry), not the detector's.
+      if (!out.empty() && out[0].sig == ChirpSig::Css &&
+          std::abs(out[0].startSample - 6000.0) < 100.0) {
+        ++hits;
+      } else if (std::getenv("SKW_TEST_VERBOSE")) {
+        std::printf("    miss t=%d n=%zu", t, out.size());
+        for (auto& d : out) std::printf(" [sig=%d start=%.0f cfo=%.1f]", int(d.sig), d.startSample, d.cfoHz);
+        std::printf("\n");
+      }
+    }
+    std::printf("  %s CSS 12-rep @ %.1f dB: %d/%d\n", plan(p.f).name, p.snr,
+                hits, trials);
+    CHECK(hits >= 22);
+  }
+  // WIDE/ULTRA keep the 4-rep CSS signature.
+  CHECK_EQ(chirpPattern(Family::Wide, ChirpSig::Css).size(), size_t(4));
+  CHECK_EQ(chirpPattern(Family::Ultra, ChirpSig::Css).size(), size_t(4));
+}

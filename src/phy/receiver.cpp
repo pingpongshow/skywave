@@ -347,7 +347,7 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
 // refine timing to the sample (CFO<->delay coupling makes any residual
 // CFO a pure common shift, absorbed here) and expose the multipath
 // profile, which becomes the RAKE tap list for header and payload.
-std::optional<RxFrameResult> cssReceiveFrame(
+std::optional<RxFrameResult> cssReceiveFrameOnce(
     Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
     double cfoHz, const std::function<void(RxStage)>& stage,
     HarqChase* harq) {
@@ -360,54 +360,95 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // a CSS frame can occupy from the coarse start.
   const double coarse =
       hit.startSample +
-      double(chirpPattern(ChirpSig::Css).size()) * chirpRepSamples();
-  const int W = 2 * spc + 24;  // sync search half-window, samples
+      double(chirpPattern(family, ChirpSig::Css).size()) * chirpRepSamples();
+  // CFO BRANCH CHECK. The preamble's fine CFO is ambiguous modulo amb
+  // (6.25 Hz on HF), and a residual f moves the SF8 sync peak by
+  // f * symH * spc / fs samples - on NARROW ~77 per branch. A frame one
+  // branch off still SYNCED (the shift absorbed as timing) and its SF8
+  // header decoded, but the SF5-SF7 payload, which sees half to an eighth
+  // of that shift, sat chips off and failed (NARROW M1, 12-rep preamble:
+  // all 6 payload failures at the floor were +-6.1-6.3 Hz). So the sync
+  // window spans +-1 branch where a branch is wider than the base window,
+  // and a peak about a branch away moves the CFO one branch and re-syncs.
+  // SKW_CSS_BRANCH_CHECK=0 disables (A/B).
+  static const bool branchCheck = [] {
+    const char* e = getenv("SKW_CSS_BRANCH_CHECK");
+    return !(e && e[0] == '0');
+  }();
+  const double branchSamples = chirpCfoAmbiguityHz(family, ChirpSig::Css) *
+                               double(symH) * double(spc) / kFsBaseband;
+  static const double branchMinChips = [] {
+    const char* e = getenv("SKW_CSS_BRANCH_MIN_CHIPS");
+    return e ? atof(e) : 2.0;
+  }();
+  const bool wideSync =
+      branchCheck && branchSamples > branchMinChips * double(spc);
+  const int W = wideSync ? int(std::ceil(branchSamples)) + 2 * spc + 8
+                         : 2 * spc + 24;  // sync search half-window, samples
   const int64_t region0 = int64_t(std::llround(coarse)) - W;
   if (region0 < 0) return std::nullopt;
-  std::vector<cfloat> rx(sig.begin() + long(region0), sig.end());
-  for (size_t n = 0; n < rx.size(); ++n) {
-    const double ph =
-        -2.0 * M_PI * cfoHz * double(int64_t(region0) + int64_t(n)) /
-        kFsBaseband;
-    rx[n] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
-  }
-
-  // Sync search: non-coherent correlation of the two known symbols over
-  // the timing window.
-  if (rx.size() < size_t(2 * W) + size_t(kCssSyncSymbols) * symH) {
-    return std::nullopt;
-  }
+  std::vector<cfloat> rx;
   std::vector<float> prof(size_t(2 * W + 1), 0.0f);
-  for (int d = -W; d <= W; ++d) {
-    double sum = 0.0;
-    for (int s = 0; s < kCssSyncSymbols; ++s) {
-      cfloat c(0, 0);
-      const size_t off = size_t(W + d) + size_t(s) * symH;
-      for (size_t n = 0; n < symH; ++n) {
-        c += rx[off + n] * std::conj(base[n]);
-      }
-      sum += std::abs(c);
-    }
-    prof[size_t(d + W)] = float(sum);
-  }
   int dBest = 0;
-  float peak = 0.0f;
-  for (int d = -W; d <= W; ++d) {
-    if (prof[size_t(d + W)] > peak) {
-      peak = prof[size_t(d + W)];
-      dBest = d;
+  float peak = 0.0f, med = 0.0f;
+  auto syncAt = [&](double cfo) {
+    rx.assign(sig.begin() + long(region0), sig.end());
+    for (size_t n = 0; n < rx.size(); ++n) {
+      const double ph =
+          -2.0 * M_PI * cfo * double(int64_t(region0) + int64_t(n)) /
+          kFsBaseband;
+      rx[n] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
     }
-  }
-  // Noise reference: median of the profile outside +-2 chips of the peak.
-  std::vector<float> noise;
-  for (int d = -W; d <= W; ++d) {
-    if (std::abs(d - dBest) > 2 * spc) noise.push_back(prof[size_t(d + W)]);
-  }
-  float med = 0.0f;
-  if (!noise.empty()) {
-    std::nth_element(noise.begin(), noise.begin() + long(noise.size() / 2),
-                     noise.end());
-    med = noise[noise.size() / 2];
+    // Sync search: non-coherent correlation of the two known symbols over
+    // the timing window.
+    if (rx.size() < size_t(2 * W) + size_t(kCssSyncSymbols) * symH) {
+      return false;
+    }
+    for (int d = -W; d <= W; ++d) {
+      double sum = 0.0;
+      for (int s = 0; s < kCssSyncSymbols; ++s) {
+        cfloat c(0, 0);
+        const size_t off = size_t(W + d) + size_t(s) * symH;
+        for (size_t n = 0; n < symH; ++n) {
+          c += rx[off + n] * std::conj(base[n]);
+        }
+        sum += std::abs(c);
+      }
+      prof[size_t(d + W)] = float(sum);
+    }
+    dBest = 0;
+    peak = 0.0f;
+    for (int d = -W; d <= W; ++d) {
+      if (prof[size_t(d + W)] > peak) {
+        peak = prof[size_t(d + W)];
+        dBest = d;
+      }
+    }
+    // Noise reference: median of the profile outside +-2 chips of the peak.
+    std::vector<float> noise;
+    for (int d = -W; d <= W; ++d) {
+      if (std::abs(d - dBest) > 2 * spc) noise.push_back(prof[size_t(d + W)]);
+    }
+    med = 0.0f;
+    if (!noise.empty()) {
+      std::nth_element(noise.begin(), noise.begin() + long(noise.size() / 2),
+                       noise.end());
+      med = noise[noise.size() / 2];
+    }
+    return true;
+  };
+  if (!syncAt(cfoHz)) return std::nullopt;
+  if (wideSync) {
+    const long k = std::lround(double(dBest) / branchSamples);
+    if (k != 0 && std::abs(k) <= 1) {
+      if (getenv("SKW_RX_DEBUG")) {
+        fprintf(stderr, "skw-css: branch check dBest=%d -> cfo %+.2f -> %+.2f\n",
+                dBest, cfoHz,
+                cfoHz - double(k) * chirpCfoAmbiguityHz(family, ChirpSig::Css));
+      }
+      cfoHz -= double(k) * chirpCfoAmbiguityHz(family, ChirpSig::Css);
+      if (!syncAt(cfoHz)) return std::nullopt;
+    }
   }
   if (getenv("SKW_RX_DEBUG")) {
     fprintf(stderr,
@@ -1016,6 +1057,43 @@ std::optional<RxFrameResult> cssReceiveFrame(
   return res;
 }
 
+// CSS frame receive with a CFO-BRANCH RETRY. The preamble's fine CFO is
+// ambiguous modulo 6.25 Hz; a frame one branch off still syncs and
+// decodes its SF8 header (the error is absorbed as timing), but its
+// SF5-SF7 payload lands off. Where a branch moves the sync peak by more
+// than two chips (NARROW) the sync check catches it; on MID (~19
+// samples, inside the timing jitter) it cannot - with the 12-rep
+// preamble every MID M1 payload failure at floor-1 was a +-6.25/12.5 Hz
+// branch error. So a frame whose header decoded but whose payload failed
+// is re-received on the neighbouring branches, and the payload CRC
+// decides. Only failed frames pay. SKW_CSS_BRANCH_RETRY=0 disables.
+std::optional<RxFrameResult> cssReceiveFrame(
+    Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
+    double cfoHz, const std::function<void(RxStage)>& stage,
+    HarqChase* harq) {
+  auto res = cssReceiveFrameOnce(family, sig, hit, cfoHz, stage, harq);
+  static const bool branchRetry = [] {
+    const char* e = getenv("SKW_CSS_BRANCH_RETRY");
+    return !(e && e[0] == '0');
+  }();
+  if (!res || res->payloadOk || !branchRetry) return res;
+  const double amb = chirpCfoAmbiguityHz(family, ChirpSig::Css);
+  if (amb <= 0.0) return res;
+  for (double k : {-1.0, 1.0}) {
+    auto r2 = cssReceiveFrameOnce(family, sig, hit, cfoHz + k * amb,
+                                  [](RxStage) {}, nullptr);
+    if (r2 && r2->payloadOk) {
+      if (getenv("SKW_RX_DEBUG")) {
+        fprintf(stderr, "skw-css: branch retry %+.2f Hz recovered the payload\n",
+                k * amb);
+      }
+      stage(RxStage::Ok);
+      return r2;
+    }
+  }
+  return res;
+}
+
 }  // namespace
 
 int irStepDownMode(int mode) {
@@ -1089,7 +1167,7 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
                                           std::span<const cfloat> sig,
                                           ChirpSig chirpSig, double cfoHz,
                                           double zcCoarse, int zcCount) {
-  const double amb = chirpCfoAmbiguityHz(chirpSig);
+  const double amb = chirpCfoAmbiguityHz(family, chirpSig);
   if (!cfoBranchSearchEnabled() || amb <= 0.0) {
     return {CfoBranch{cfoHz, zcCoarse, 3.0}};
   }
@@ -1193,7 +1271,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
   // 2) ZC refinement.
   const bool robust = robustHeaderForSig(hit.sig);
   const int zcCount = zcSymbols(robust);
-  const int reps = int(chirpPattern(hit.sig).size());
+  const int reps = int(chirpPattern(family, hit.sig).size());
   const double zcCoarse =
       hit.startSample + double(reps) * chirpRepSamples();
   // CFO branch candidates, verified by the header decode (R1): the ZC

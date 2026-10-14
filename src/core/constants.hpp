@@ -187,15 +187,25 @@ using FloorTable = std::array<double, kNumModes>;
 // M1 23% at -16.5, 12% at -15.5, 5% at -14.5. The AMC steers on these
 // entries, so they now describe what a frame achieves; acquisition, not
 // the payload, bounds NARROW's deepest modes (ROADMAP).
+// NARROW CSS M0/M1 LOWERED 2026-10-14 to -18.5/-17.5 with the 12-rep CSS
+// preamble and the sync CFO-branch check (full frames, AWGN, 100 trials
+// per 0.5 dB): M0 12% at -18.5, 7% at -18.0, 3% at -17.5; M1 13% at
+// -17.5, 5% at -17.0, 1% at -16.5 (now payload-limited). Same rule as
+// cssFloorDb (lowest SNR with FER <= ~15%, rounded up to 0.5 dB).
+// MID CSS M0 LOWERED -16.5 -> -17.5 with the same 12-rep preamble and the
+// CSS CFO-branch retry (100 trials: 12% at -17.5, 6-7% at -17/-16.5).
+// MID M1-M3 full frames now reach ~-16.0/-14.0/-11.5 but stay at their
+// table values: the payload-only `bertool --css` gate still measures the
+// legacy Hamming payload layer, which cannot (ROADMAP).
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
     {{-13.0, -10.5, -8.0, -5.0,
       -11.0, -8.5, -6.0, -3.0, 0.5, 3.0, 5.5, 9.5, 13.5, 17.0, 99.0}},
     // MID
-    {{-16.5, -14.0, -12.0, -9.0,
+    {{-17.5, -14.0, -12.0, -9.0,
       -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
     // NARROW
-    {{-16.0, -15.5, -15.0, -12.0,
+    {{-18.5, -17.5, -15.0, -12.0,
       -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
     {{-12.5, -11.0, -8.0, -5.0,

@@ -208,6 +208,10 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_CSS_DRIFT_SEARCH` | (unset = on) | `0` disables the CSS drift handling after a failed decode: the pilot-estimated payload search and the header re-walk (ROADMAP 8.8; A/B) |
 | `SKW_CSS_HARD_HEADER` | (unset) | set: CSS header decoded hard per copy only - no soft ML decode or copy combining (pre-2026-10-13; A/B) |
 | `SKW_CSS_SYNC_FACTOR` | `3.0` | CSS sync acceptance, correlation peak over profile median (was 3.5; A/B) |
+| `SKW_CSS_PREAMBLE_<FAMILY>` | (unset) | CSS preamble slope pattern for a family as a U/D string (e.g. `SKW_CSS_PREAMBLE_NARROW=UDDU` restores the 4-rep signature); both ends must agree (A/B) |
+| `SKW_CSS_BRANCH_CHECK` | (unset = on) | `0`: no ±1-CFO-branch sync window / re-sync (A/B) |
+| `SKW_CSS_BRANCH_MIN_CHIPS` | `2` | branch check applies where a 6.25 Hz branch moves the SF8 sync peak by more than this many chips |
+| `SKW_CSS_BRANCH_RETRY` | (unset = on) | `0`: a CSS frame whose payload failed is not re-received on the neighbouring CFO branches (A/B) |
 | `SKW_CHIRP_ALT` | (unset = on) | `0`: a failed frame is not retried on the detector's runner-up signatures (A/B) |
 | `SKW_CSS_SEARCH_HDR_TAPS` | (unset) | set: drift-search passes start from the header walk's tap state instead of the sync profile (pre-2026-10-13; A/B) |
 | `SKW_CHANCLASS_SPREAD_EMA` | (unset) | set: the Severe gate reads the delay-spread EMA (pre-v1.2.2) instead of the 9-frame median (A/B) |
