@@ -248,3 +248,25 @@ TEST_CASE(rx_robust_extreme_drift) {
   std::printf("robust M4 extreme drift: %d/%d frames\n", ok, total);
   CHECK(ok >= total - 1);
 }
+
+// NARROW M4/M5 at +2 Hz/s (80 Hz inside a 40 s frame): the retry needs
+// the drift ESTIMATE from the first walk's FLL trace - the first-order
+// loop alone left 10-17.5% (bertool, 40 trials).
+TEST_CASE(rx_narrow_drift_2hz_estimate) {
+  int ok = 0, total = 0;
+  for (int mode : {4, 5}) {
+    const double floorDb = mode == 4 ? -17.5 : -16.0;  // kFloors AWGN
+    for (uint64_t seed = 1; seed <= 12; ++seed) {
+      ChansimParams c = cleanChannel(floorDb + 6.0);
+      c.cfoDriftHzPerSec = 2.0;
+      c.seed = 300 + seed * 7 + uint64_t(mode);
+      ++total;
+      if (runOne(Family::Narrow, ChirpSig::Robust, mode, 60, c,
+                 uint8_t(seed + 40))) {
+        ++ok;
+      }
+    }
+  }
+  std::printf("NARROW M4/M5 2 Hz/s: %d/%d frames\n", ok, total);
+  CHECK(ok >= total - 1);
+}

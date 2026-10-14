@@ -1272,7 +1272,22 @@ MID M0 fading floor.
   CCIR Moderate seed 11 identical (336 = 336), seed 7 better (292 -> 240).
   Test `css_frame_lo_drift_strong` (+-0.3 Hz/s: 24/24; 0/24 with
   `SKW_CSS_DRIFT_SEARCH=0`); `css_frame_lo_drift` 36/36.
-- [ ] **OFDM NARROW M4/M5 at 2 Hz/s** (10-17.5% after the v1.2.2 retry).
+- [x] **OFDM NARROW M4/M5 at 2 Hz/s - CLOSED.** The v1.2.2 retry raised
+  the first-order FLL's gain, which still lags a ramp. The first walk's
+  FLL frequency follows a linear drift with a constant lag, so its SLOPE
+  is the rate even on a failed frame: least squares over the trace after
+  its first quarter, kept at 0.2-5 Hz/s, and the retry walk pre-derotates
+  that quadratic (from the first post-ZC symbol) before its FLL tracks
+  the rest (`SKW_FLL_DRIFT_ESTIMATE=0` A/B). A second-order loop
+  (frequency-rate integrator) was measured first: 10% at best, unstable
+  above a rate gain of 0.01. AWGN floor+6, 40 trials, estimate off -> on:
+  2 Hz/s NARROW M4 17.5 -> 2.5%, M5 10 -> 0%, MID M4/M5 2.5 -> 0%; 1 Hz/s
+  NARROW M4 2.5 -> 0%; -2 Hz/s 0% everywhere; WIDE 0% both ways. CCIR
+  Poor/Moderate/Good ladders (M4/M6/M8/M10, 60 trials): summed FER
+  636.8/186.8/229.8 -> 635.2/185.1/229.8, CPU identical. LIMIT: 3 Hz/s
+  NARROW M4/M5 52/30% - 120 Hz inside one frame, past the +-55 Hz
+  acquisition range, out of scope. Test `rx_narrow_drift_2hz_estimate`
+  (23/24; 21/24 and a failure without the estimate).
 - [ ] **NARROW CSS M0/M1 acquisition** (~3 dB between payload and frame).
 - [ ] **CSS MID M0 on CCIR Moderate** (27.5% at floor+1).
 

@@ -221,6 +221,7 @@ measurement - never needed in operation:
 | `SKW_RTS` | RTS smoothing over each buffered walk (R6) |
 | `SKW_FLL` | In-frame FLL; `SKW_FLL_GAIN_FAST` / `SKW_FLL_GAIN_ROBUST` override the 0.2 / 0.1 gains (R2) |
 | `SKW_FLL_DRIFT_RETRY` | Re-walk a failed OFDM frame at the drift FLL gain (0.3; `SKW_FLL_GAIN_DRIFT` overrides) - extreme in-frame drift (v1.2.2) |
+| `SKW_FLL_DRIFT_ESTIMATE` | The drift retry pre-derotates the drift rate fitted to the first walk's FLL trace |
 
 Test-harness only: `SKW_ST2_AMBIENT` (ST2 ambient floor amplitude, `0` =
 digital silence), `SKW_ST3_LOGDIR` (ST3 log directory).

@@ -72,6 +72,7 @@ double fllGain(bool robustClass) {
 // walked once more at this gain - frames that decode are untouched.
 // SKW_FLL_DRIFT_RETRY=0 disables; SKW_FLL_GAIN_DRIFT overrides 0.3.
 bool fllDriftRetryEnabled() { return envKnobOn("SKW_FLL_DRIFT_RETRY"); }
+bool fllDriftEstimateEnabled() { return envKnobOn("SKW_FLL_DRIFT_ESTIMATE"); }
 double fllDriftGain() {
   static const double g = [] {
     const char* e = std::getenv("SKW_FLL_GAIN_DRIFT");
@@ -163,6 +164,13 @@ struct SymbolWalker {
   // Loop gain for this walk; < 0 takes fllGain() (the drift retry in
   // receiveFrame sets fllDriftGain()).
   double fllGainOverride = -1.0;
+  // Drift retry: a measured linear drift (Hz/s) pre-derotated as a
+  // quadratic phase from `driftOrigin` (absolute sample), so the FLL only
+  // tracks what the estimate missed. And the trace the estimate comes
+  // from: (seconds, fllHz) after each symbol of the first walk.
+  double driftRate = 0.0;
+  double driftOrigin = 0.0;
+  std::vector<std::pair<double, double>>* fllTrace = nullptr;
 
   // CFO-derotate, FFT and TX-scale-correct the symbol whose FFT window
   // starts at `start`. False when the window runs past the capture.
@@ -173,6 +181,10 @@ struct SymbolWalker {
       double ph = -2.0 * M_PI * (cfoHz + fllHz) * double(start + i) /
                       kFsBaseband +
                   fllPhase;
+      if (driftRate != 0.0) {
+        const double tq = (double(start + i) - driftOrigin) / kFsBaseband;
+        ph -= M_PI * driftRate * tq * tq;
+      }
       in[size_t(i)] = rx[size_t(start + i)] *
                       cfloat(float(std::cos(ph)), float(std::sin(ph)));
     }
@@ -243,6 +255,9 @@ struct SymbolWalker {
           fllPhase += 2.0 * M_PI * delta * double(start + symLen) /
                       kFsBaseband;
           fllHz += delta;
+          if (fllTrace) {
+            fllTrace->push_back({double(start) / kFsBaseband, fllHz});
+          }
         }
         fllPrevH = h;
       }
@@ -1083,7 +1098,8 @@ namespace {
 std::optional<RxFrameResult> receiveFrameImpl(
     Family family, std::span<const cfloat> rx, RxStage* stageOut,
     HarqChase* harq, const CarrierMask* payloadMask, bool wantConstellation,
-    double fllGainOverride, bool* retryable) {
+    double fllGainOverride, bool* retryable, double driftRateIn = 0.0,
+    std::vector<std::pair<double, double>>* fllTrace = nullptr) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -1177,6 +1193,9 @@ std::optional<RxFrameResult> receiveFrameImpl(
     walkerSlot.emplace(SymbolWalker{family, sig, zc.cfoHz, t0, 0,
                                     &*trackerSlot});
     walkerSlot->fllGainOverride = fllGainOverride;
+    walkerSlot->driftRate = driftRateIn;
+    walkerSlot->driftOrigin = double(t0);
+    walkerSlot->fllTrace = fllTrace;
 
     // 3) Header codeword.
     std::vector<float> hLlr;
@@ -1484,22 +1503,47 @@ std::optional<RxFrameResult> receiveFrame(Family family,
                                           const CarrierMask* payloadMask,
                                           bool wantConstellation) {
   bool retryable = false;
+  std::vector<std::pair<double, double>> trace;
   auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
-                              wantConstellation, -1.0, &retryable);
+                              wantConstellation, -1.0, &retryable, 0.0,
+                              &trace);
   if (!retryable || !fllDriftRetryEnabled()) return res;
+  // Drift estimate for the retry: the first walk's FLL frequency follows
+  // a linear drift with a constant lag, so its SLOPE is the drift rate
+  // even where the lag broke the decode. Least squares over the trace
+  // after its first quarter (the loop's pull-in). The retry pre-derotates
+  // that quadratic and its FLL tracks the remainder - the first-order
+  // loop alone left NARROW M4/M5 at 2 Hz/s failing 10-17.5% (a second-
+  // order loop was measured too: 10% at best, unstable above).
+  double rate = 0.0;
+  if (fllDriftEstimateEnabled() && trace.size() >= 16) {
+    const size_t a = trace.size() / 4;
+    double st = 0, sf = 0, stt = 0, stf = 0;
+    const double n = double(trace.size() - a);
+    for (size_t i = a; i < trace.size(); ++i) {
+      st += trace[i].first;
+      sf += trace[i].second;
+      stt += trace[i].first * trace[i].first;
+      stf += trace[i].first * trace[i].second;
+    }
+    const double den = n * stt - st * st;
+    if (den > 1e-9) rate = (n * stf - st * sf) / den;
+    if (std::abs(rate) < 0.2 || std::abs(rate) > 5.0) rate = 0.0;
+  }
   // Drift retry (see fllDriftGain). Without HARQ: the first pass already
   // stored this reception's LLRs, and combining them with a second walk
   // of the same samples would count it twice. A frame that decodes here
   // leaves its HARQ entries to age out, as the CSS drift search does.
   RxStage st2 = RxStage::NoDetect;
   auto res2 = receiveFrameImpl(family, rx, &st2, nullptr, payloadMask,
-                               wantConstellation, fllDriftGain(), nullptr);
+                               wantConstellation, fllDriftGain(), nullptr,
+                               rate);
   if (!res2) return res;
   if (res && res->payloadOk) return res;
   if (res && !res2->payloadOk) return res;  // keep the first header pass
   if (std::getenv("SKW_RX_DEBUG")) {
-    std::fprintf(stderr, "skw-rx: drift retry recovered %s\n",
-                 res ? "payload" : "header");
+    std::fprintf(stderr, "skw-rx: drift retry (rate %.2f Hz/s) recovered %s\n",
+                 rate, res ? "payload" : "header");
   }
   if (stageOut) *stageOut = st2;
   return res2;

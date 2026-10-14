@@ -92,8 +92,9 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   channel rotation (gain 0.2 fast, 0.1 robust) re-derotates
   phase-continuously, tracking in-frame LO drift ≥ 1 Hz/s (R2). Being
   first-order, it lags a linear drift by r·Tsym/gain, so a frame that
-  fails is walked once more at gain 0.3 (drift retry): long robust frames
-  hold 1 Hz/s on every family and 2 Hz/s on WIDE/MID/ULTRA. (Documentation before v1.2.0 described
+  fails is walked once more at gain 0.3 (drift retry), with the drift
+  rate - the slope of the first walk's FLL frequency - pre-derotated as a
+  quadratic phase: long robust frames hold 2 Hz/s on every family. (Documentation before v1.2.0 described
   a 2nd-order PLL here; it was never implemented.)
 - `FLYWHEEL`: on lost pilots mid-frame, hold last CFO/timing for up to 8
   symbols before declaring frame loss (rides through short fades/impulses)
