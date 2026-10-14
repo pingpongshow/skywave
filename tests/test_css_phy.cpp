@@ -151,6 +151,28 @@ TEST_CASE(css_frame_lo_drift) {
   CHECK(ok >= total - 2);  // floor+3 allows a stray loss; was ~0/36
 }
 
+// Strong drift: the search now estimates the rate from pass 1's own
+// pilot offsets (unbounded by a grid), re-walks a failed header at that
+// rate, and starts each search pass from the sync tap profile. NARROW
+// at 0.2 Hz/s failed 12-68% with the blind +-0.2 grid; 0.3 is beyond it.
+TEST_CASE(css_frame_lo_drift_strong) {
+  int ok = 0, total = 0;
+  for (Family fam : {Family::Narrow, Family::Mid}) {
+    for (int mode : {1, 2, 3}) {
+      for (double drift : {0.3, -0.3}) {
+        for (uint64_t seed = 1; seed <= 2; ++seed) {
+          ChansimParams cp = awgn(floorDb(fam, mode) + 3.0, seed * 53 + uint64_t(mode));
+          cp.cfoDriftHzPerSec = drift;
+          ++total;
+          if (cssFrameTrial(fam, mode, cp, 60, seed + 20).payloadOk) ++ok;
+        }
+      }
+    }
+  }
+  std::printf("css drift 0.3 Hz/s: %d/%d frames\n", ok, total);
+  CHECK(ok >= total - 2);
+}
+
 TEST_CASE(css_frame_inverted_spectrum) {
   auto r = cssFrameTrial(Family::Wide, 1, awgn(10.0, 31), 40, 9, true);
   CHECK(r.payloadOk);

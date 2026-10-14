@@ -205,7 +205,8 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_MAX_PENDING_RX` | `8` | Capture backlog cap (oldest evicted first) |
 | `SKW_AMC_PROMOTE_MARGIN` / `SKW_AMC_DEMOTE_MARGIN` | `-1.5` / `-3.5` | AMC margins relative to the active floor table (measurement A/B) |
 | `SKW_AMC_PROMOTE_MARGIN_HIGH` | `0.5` | promote margin into M11-M13 (measurement A/B; LINK_ADAPTATION.md) |
-| `SKW_CSS_DRIFT_SEARCH` | (unset = on) | `0` disables the CSS payload drift-rate search after a failed decode (ROADMAP 8.8; A/B) |
+| `SKW_CSS_DRIFT_SEARCH` | (unset = on) | `0` disables the CSS drift handling after a failed decode: the pilot-estimated payload search and the header re-walk (ROADMAP 8.8; A/B) |
+| `SKW_CSS_SEARCH_HDR_TAPS` | (unset) | set: drift-search passes start from the header walk's tap state instead of the sync profile (pre-2026-10-13; A/B) |
 | `SKW_CHANCLASS_SPREAD_EMA` | (unset) | set: the Severe gate reads the delay-spread EMA (pre-v1.2.2) instead of the 9-frame median (A/B) |
 
 Phase 8 receiver stages (v1.2.0, GAP_CLOSURE_PLAN.md). Each is ON by

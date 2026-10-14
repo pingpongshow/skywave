@@ -484,6 +484,41 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // mid-frame); a pilot caught in a deep fade is skipped and the
   // previous anchor carries the block.
   size_t pos = size_t(W + dBest) + size_t(kCssSyncSymbols) * symH;
+  // The drift derotation is zero at the preamble (where the CFO was
+  // measured). A sync-referenced origin was measured too: no difference.
+  const double driftOrigin = hit.startSample;
+  // Pilot peak offsets of the first pass, (seconds from the preamble,
+  // samples): LO drift moves them linearly (see the drift search).
+  std::vector<std::pair<double, double>> pilotObs;
+  bool recordPilots = true;
+  auto notePilot = [&](size_t at, int dp) {
+    if (!recordPilots) return;
+    pilotObs.push_back(
+        {(double(region0) + double(at) - hit.startSample) / kFsBaseband,
+         double(dp)});
+  };
+  // Drift rate from pilot offsets (see the drift search below).
+  const double coupling = double(symH) * double(spc) / kFsBaseband;
+  auto slopeRate = [&](const std::vector<std::pair<double, double>>& obs,
+                       double& out, size_t minObs = 4) {
+    if (obs.size() < minObs || obs.back().first - obs.front().first < 4.0) {
+      return false;
+    }
+    std::vector<double> slopes;
+    for (size_t i = 0; i < obs.size(); ++i) {
+      for (size_t j = i + 1; j < obs.size(); ++j) {
+        const double dtp = obs[j].first - obs[i].first;
+        if (dtp > 1e-6) {
+          slopes.push_back((obs[j].second - obs[i].second) / dtp);
+        }
+      }
+    }
+    if (slopes.empty()) return false;
+    std::nth_element(slopes.begin(),
+                     slopes.begin() + long(slopes.size() / 2), slopes.end());
+    out = -slopes[slopes.size() / 2] / coupling;
+    return true;
+  };
   auto walkSection = [&](int sectionSf,
                          size_t byteCount) -> std::optional<
                                                  std::vector<uint8_t>> {
@@ -522,6 +557,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
         // jumps - per-tap delay follow absorbs clock drift.
         if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
           updateTaps(pp, PW, 0, nsMed, false);
+          notePilot(pos, dp);
         }
         if (getenv("SKW_RX_DEBUG")) {
           fprintf(stderr, "skw-css pilot s=%zu dp=%d pk=%.3g med=%.3g taps:",
@@ -553,16 +589,72 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // the saved airtime; a lost first copy on the two-copy layout still
   // recovers from copy 2 as before.
   std::optional<PhyHeader> hdr;
-  int copies = kCssHeaderCopies;
-  for (int c = 0; c < copies; ++c) {
-    auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
-    if (!hdrBytes) {
-      if (!hdr) return std::nullopt;
-      break;  // ran out of samples but an earlier copy already parsed
+  const size_t posAtHeader = pos;
+  const auto trackAtHeader = track;
+  const auto tapsAtHeader = taps;
+  bool hdrTruncated = false;
+  auto walkHeaders = [&] {
+    pos = posAtHeader;
+    track = trackAtHeader;
+    taps = tapsAtHeader;
+    hdr.reset();
+    int copies = kCssHeaderCopies;
+    for (int c = 0; c < copies; ++c) {
+      auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
+      if (!hdrBytes) {
+        if (!hdr) hdrTruncated = true;
+        break;  // ran out of samples (an earlier copy may have parsed)
+      }
+      if (!hdr) {
+        hdr = parsePhyHeader(*hdrBytes);
+        if (hdr) copies = int(hdr->cssHeaderCopies);
+      }
     }
-    if (!hdr) {
-      hdr = parsePhyHeader(*hdrBytes);
-      if (hdr) copies = int(hdr->cssHeaderCopies);
+  };
+  walkHeaders();
+  // HEADER DRIFT RETRY: the SF8 header walk has no drift correction, and
+  // at 0.2 Hz/s on NARROW its pilots move ~14 samples per pilot - past
+  // what the tap tracker follows (+-2) - so headers failed before the
+  // payload's drift search could run. On a failed header whose pilots
+  // show a drift (>= 3 pilots, >= 0.03 Hz/s), derotate the capture at
+  // that rate in place and walk the headers again, twice at most (the
+  // second pass re-reads the residual). Only failed frames pay. The
+  // payload then runs on the derotated samples and its own search
+  // estimates what remains.
+  static const bool hdrDriftRetry = [] {
+    const char* e = getenv("SKW_CSS_DRIFT_SEARCH");
+    return !(e && std::string(e) == "0");
+  }();
+  double hdrRate = 0.0;
+  for (int it = 0; !hdr && !hdrTruncated && hdrDriftRetry && it < 2; ++it) {
+    double r = 0.0;
+    if (!slopeRate(pilotObs, r, 3) || std::abs(r) < 0.03 ||
+        std::abs(hdrRate + r) > 1.0) {
+      break;
+    }
+    hdrRate += r;
+    const double dt = 1.0 / kFsBaseband;
+    const double t0 = driftOrigin;
+    for (size_t blk = 0; blk < rx.size(); blk += 4096) {
+      const size_t end = std::min(rx.size(), blk + 4096);
+      const double t = (double(region0) + double(blk) - t0) * dt;
+      const double ph0 = -M_PI * r * t * t;
+      const double d1 = -M_PI * r * (2.0 * t * dt + dt * dt);
+      const double d2 = -2.0 * M_PI * r * dt * dt;
+      std::complex<double> rot(std::cos(ph0), std::sin(ph0));
+      std::complex<double> step(std::cos(d1), std::sin(d1));
+      const std::complex<double> acc(std::cos(d2), std::sin(d2));
+      for (size_t n = blk; n < end; ++n) {
+        rx[n] *= cfloat(float(rot.real()), float(rot.imag()));
+        rot *= step;
+        step *= acc;
+      }
+    }
+    pilotObs.clear();
+    walkHeaders();
+    if (getenv("SKW_RX_DEBUG")) {
+      fprintf(stderr, "skw-css header drift retry: r=%.3f Hz/s -> %s\n",
+              hdrRate, hdr ? "parsed" : "failed");
     }
   }
   if (!hdr) return std::nullopt;
@@ -600,10 +692,15 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // the tap state the header left; returns false if samples run out.
   // `ratioSum` accumulates each symbol's decided-score/mean - the drift
   // search's figure of merit.
+  // Drift-search passes may start from the SYNC tap profile instead: on
+  // derotated samples the header walk's tap state (built on drifting
+  // ones, where pilot peaks out-ran the +-2-sample tap follow) is stale.
+  const std::vector<TapTrack>* startTrack = &trackAtPayload;
+  const std::vector<CssTap>* startTaps = &tapsAtPayload;
   auto demodPayload = [&](const std::vector<cfloat>& buf,
                           std::vector<float>& llr, double& ratioSum) {
-    track = trackAtPayload;
-    taps = tapsAtPayload;
+    track = *startTrack;
+    taps = *startTaps;
     size_t p = payloadPos;
     llr.clear();
     llr.reserve(nsymP * size_t(sf));
@@ -635,6 +732,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
         const float nsMed = ns[ns.size() / 2];
         if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
           updateTaps(pp, PWp, 0, nsMed, false);
+          notePilot(p, dp);
         }
         p += symH;
       }
@@ -713,6 +811,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
   double ratio0 = 0.0;
   const bool samplesOk = demodPayload(rx, llr, ratio0);
   if (samplesOk) decodePayload(llr, harq);
+  recordPilots = false;  // the search's own passes must not add to the fit
 
   // DRIFT SEARCH (ROADMAP 8.8). The receiver removes the preamble's CFO
   // once; LO drift leaves a residual r*t that a chirp turns into a TIMING
@@ -731,7 +830,12 @@ std::optional<RxFrameResult> cssReceiveFrame(
     return !(e && std::string(e) == "0");
   }();
   if (!res.payloadOk && samplesOk && driftSearch) {
-    const double t0 = hit.startSample;  // drift is measured from the preamble
+    static const bool syncTaps = !getenv("SKW_CSS_SEARCH_HDR_TAPS");
+    if (syncTaps) {
+      startTrack = &trackAtHeader;
+      startTaps = &tapsAtHeader;
+    }
+    const double t0 = driftOrigin;
     // Only the payload span is re-read: derotating the whole capture
     // window (up to the 90 s ladder rung) doubled the cost for nothing.
     const size_t pilotsP = (nsymP + size_t(kCssPilotInterval) - 1) /
@@ -739,43 +843,108 @@ std::optional<RxFrameResult> cssReceiveFrame(
     const size_t spanLo = payloadPos > size_t(PWp) ? payloadPos - size_t(PWp) : 0;
     const size_t spanHi = std::min(rx.size(), payloadPos + nsymP * symLenP +
                                                   pilotsP * symH + size_t(PWp) + 1);
-    auto derotate = [&](double r) {
-      std::vector<cfloat> buf(rx.size());
-      for (size_t n = spanLo; n < spanHi; ++n) {
-        const double t = (double(region0) + double(n) - t0) / kFsBaseband;
-        const double ph = -M_PI * r * t * t;
-        buf[n] = rx[n] * cfloat(float(std::cos(ph)), float(std::sin(ph)));
+    // One buffer for every candidate (it used to allocate and zero the
+    // whole capture per rate), filled by a phasor recurrence: the phase
+    // -pi*r*t^2 has a constant second difference, so two complex
+    // multiplies per sample replace a cos/sin pair. Re-seeded every
+    // 4096 samples to bound float rounding.
+    std::vector<cfloat> buf(rx.size());
+    auto derotate = [&](double r) -> const std::vector<cfloat>& {
+      const double dt = 1.0 / kFsBaseband;
+      for (size_t blk = spanLo; blk < spanHi; blk += 4096) {
+        const size_t end = std::min(spanHi, blk + 4096);
+        const double t = (double(region0) + double(blk) - t0) * dt;
+        const double ph0 = -M_PI * r * t * t;
+        const double d1 = -M_PI * r * (2.0 * t * dt + dt * dt);  // ph(n+1)-ph(n)
+        const double d2 = -2.0 * M_PI * r * dt * dt;              // its step
+        std::complex<double> rot(std::cos(ph0), std::sin(ph0));
+        std::complex<double> step(std::cos(d1), std::sin(d1));
+        const std::complex<double> acc(std::cos(d2), std::sin(d2));
+        for (size_t n = blk; n < end; ++n) {
+          buf[n] = rx[n] * cfloat(float(rot.real()), float(rot.imag()));
+          rot *= step;
+          step *= acc;
+        }
       }
       return buf;
     };
     double bestR = 0.0, bestScore = ratio0;
     std::vector<float> bestLlr;
+    int tried = 0;
     auto tryRate = [&](double r) {
       std::vector<float> l;
       double sc = 0.0;
+      ++tried;
       if (demodPayload(derotate(r), l, sc) && sc > bestScore) {
         bestScore = sc;
         bestR = r;
         bestLlr = std::move(l);
       }
     };
-    // 0.02 Hz/s grid over +-0.2 Hz/s, then +-0.01 around the winner. (A
-    // 0.04 coarse grid lost the right neighbourhood: NARROW M2 at
-    // 0.1 Hz/s went 0% -> 60% FER - the figure of merit is too flat away
-    // from the true rate to steer a coarse search.)
-    for (double r = -0.20; r <= 0.2001; r += 0.02) {
-      if (std::abs(r) > 1e-9) tryRate(r);
-    }
+    // RATE ESTIMATE from pass 1's own pilots. A residual frequency f moves
+    // a chirp's correlation peak by f * symH * spc / fs samples (delay-
+    // Doppler coupling; ~12.3 samples/Hz on NARROW SF8), so drift r makes
+    // the pilot peak offsets fall linearly at r * that coupling per
+    // second (measured NARROW M2: -1/-15/-28/-43 samples over the header
+    // pilots at +0.2 Hz/s). A Theil-Sen slope (median of pairwise slopes)
+    // shrugs off pilots that walked out of the search window or were
+    // read in a fade. Searching +-0.02 Hz/s around it at 0.01 costs five
+    // candidates where the blind +-0.2 grid cost 23 (~0.95 s per failing
+    // NARROW M2 frame), and the estimate is not bounded by a grid.
+    // Fewer than four pilots spanning 4 s: the blind grid as before.
+    // Seed from the EARLIEST pilots: on a long frame under strong drift
+    // the later ones have walked out of the +-PW window and read noise
+    // (NARROW M0 at 0.2 Hz/s: 24 Hz of residual over 118 s; a fit over
+    // all 14 pilots read 0.03-0.06). The refinement passes below re-read
+    // every pilot once the estimate has re-centred them.
+    double rEst = 0.0;
+    bool haveEst = false;
     {
+      std::vector<std::pair<double, double>> early(
+          pilotObs.begin(),
+          pilotObs.begin() + long(std::min<size_t>(pilotObs.size(), 6)));
+      haveEst = (slopeRate(early, rEst) || slopeRate(pilotObs, rEst)) &&
+                std::abs(rEst) <= 1.0;
+    }
+    // Refine: pilots that walked out of the +-PW window drag the slope
+    // toward zero (NARROW M2 at 0.2 Hz/s read 0.05-0.10), so derotate at
+    // the estimate, re-read the pilots (now near the centre) and add the
+    // residual - each pass is also scored as a candidate. Two passes.
+    for (int it = 0; haveEst && it < 2; ++it) {
+      if (std::abs(rEst) < 1e-9) break;
+      pilotObs.clear();
+      recordPilots = true;
+      tryRate(rEst);
+      recordPilots = false;
+      double resid = 0.0;
+      if (!slopeRate(pilotObs, resid) || std::abs(resid) < 0.005) break;
+      rEst += resid;
+      if (std::abs(rEst) > 1.0) break;
+    }
+    if (haveEst) {
+      const double c = std::round(rEst * 100.0) / 100.0;
+      for (int k = -2; k <= 2; ++k) {
+        const double r = c + 0.01 * k;
+        if (std::abs(r) > 1e-9) tryRate(r);
+      }
+    } else {
+      // 0.02 Hz/s grid over +-0.2 Hz/s, then +-0.01 around the winner. (A
+      // 0.04 coarse grid lost the right neighbourhood: NARROW M2 at
+      // 0.1 Hz/s went 0% -> 60% FER - the figure of merit is too flat
+      // away from the true rate to steer a coarse search.)
+      for (double r = -0.20; r <= 0.2001; r += 0.02) {
+        if (std::abs(r) > 1e-9) tryRate(r);
+      }
       const double c = bestR;
       tryRate(c - 0.01);
       tryRate(c + 0.01);
     }
     if (!bestLlr.empty()) decodePayload(bestLlr, nullptr);
     if (getenv("SKW_RX_DEBUG")) {
-      fprintf(stderr, "skw-css drift search: best r=%.3f Hz/s score %.1f "
-              "(pass 1 %.1f) -> %s\n", bestR, bestScore, ratio0,
-              res.payloadOk ? "decoded" : "failed");
+      fprintf(stderr, "skw-css drift search: est %s%.3f (%zu pilots), %d "
+              "rates, best r=%.3f Hz/s score %.1f (pass 1 %.1f) -> %s\n",
+              haveEst ? "" : "none ", rEst, pilotObs.size(), tried, bestR,
+              bestScore, ratio0, res.payloadOk ? "decoded" : "failed");
     }
   }
   return res;

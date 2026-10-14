@@ -515,10 +515,13 @@ range (chirp CFO↔delay coupling; the sync symbols absorb the residual).
 **LO drift:** the receiver removes the preamble CFO once, so drift leaves
 a residual r·t, and a chirp turns that into a timing offset proportional
 to 2^SF. The SF8 pilots move the RAKE taps 2^(8−SF) times further than an
-SF5–SF7 payload needs. If a payload fails, the receiver searches the drift
-rate (±0.2 Hz/s), derotating the payload's quadratic phase and re-running
-the pilot/demod pass, and decodes the best-correlating candidate under
-the CRC. MID/NARROW `M0–M3` hold floor+3 at ±0.1 Hz/s (ROADMAP 8.8).
+SF5–SF7 payload needs. The same coupling makes drift visible: the pilot
+peaks walk linearly, at r·symH·spc/fs samples per second. If a header or
+payload fails, the receiver estimates r from the pilot offsets it has
+just read, derotates the quadratic phase, re-reads (twice, to refine) and
+decodes the best-correlating candidate within ±0.02 Hz/s of the estimate
+under the CRC. Every family's `M0–M3` holds floor+3 to ±0.3 Hz/s
+(ROADMAP 8.8 and the 2026-10-13 remaining-gaps round).
 
 **Measured FADING floors** (one-shot FER ≤ ~10%, full frames, designated
 channels per the `kFadingFloors` convention — CCIR Moderate, NARROW on

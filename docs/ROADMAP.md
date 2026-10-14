@@ -968,8 +968,9 @@ receiver/worker-side: `kWireVersion`/`kProtocolVersion` stay at 1.*
   Moderate without drift equal or better at every point (WIDE M1 20 -> 10%,
   MID M2 15 -> 7.5%). Cost ~1 s CPU per failing NARROW M2 frame (64 s on
   air), worker-thread time. Test `css_frame_lo_drift` (36/36; 4/36 with
-  `SKW_CSS_DRIFT_SEARCH=0`). LIMITS: NARROW at 0.2 Hz/s still fails
-  32-68% (edge of the search range; twice the gate); MID M0 on CCIR
+  `SKW_CSS_DRIFT_SEARCH=0`). LIMITS (since closed - "Remaining-gaps
+  round" below: rate estimate, header retry, 0% to +-0.3 Hz/s): NARROW at
+  0.2 Hz/s still failed 32-68% (edge of the search range); MID M0 on CCIR
   Moderate fails floor+1 (27.5%) with and without the search - a
   pre-existing CSS fading-floor issue, not in the release gate (CSS is
   gated on AWGN only). Follow-up: FFT-based pilot correlation would cut
@@ -1232,6 +1233,48 @@ they are not re-raised. Commands are the original measurements.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
+
+### Remaining-gaps round (2026-10-13, after v1.2.2)
+
+Worked in dependency order: the search cost first (a cheaper search
+could be widened), then drift range, then NARROW CSS acquisition and the
+MID M0 fading floor.
+
+- [x] **CSS drift-search CPU - CLOSED.** The blind search tried 23 rates,
+  each derotating and re-correlating the whole payload (~0.95 s per
+  failing NARROW M2 frame). It now ESTIMATES the rate from pass 1's own
+  pilot offsets - a residual f moves a chirp's correlation peak by
+  f*symH*spc/fs samples (~12.3/Hz on NARROW SF8), so drift makes them
+  fall linearly (NARROW M2 at +0.2 Hz/s: -1/-15/-28/-43 samples over the
+  header pilots). Theil-Sen slope over the earliest six pilots (later
+  ones on a long frame walk out of the +-PW window), two refinement
+  passes that derotate and re-read every pilot, then +-0.02 Hz/s at
+  0.01: 6-7 demod passes instead of 23. Blind grid kept when fewer than
+  four pilots span 4 s. Derotation reuses one buffer (it allocated and
+  zeroed the whole capture per rate) and runs a phasor recurrence instead
+  of cos/sin per sample. Full-frame sweeps (25 trials, all families,
+  M0-M3, floor+3): 0.1 Hz/s 194 -> 85 s CPU, 0.2 Hz/s 159 -> 76 s, no-
+  drift and floor sweeps unchanged (nothing extra runs there).
+- [x] **CSS drift beyond the gate - CLOSED.** Two more causes once the
+  rate was known: (1) the SF8 HEADER walk had no drift correction - at
+  0.2 Hz/s its pilots move ~14 samples per pilot, past the +-2 the tap
+  tracker follows - so a failed header whose pilots show >= 0.03 Hz/s is
+  derotated in place and re-walked (two passes; the payload then runs on
+  the corrected samples); (2) each search pass started from the HEADER
+  walk's tap state, built on drifting samples; starting from the SYNC
+  tap profile took NARROW at -0.2 Hz/s M1 32 -> 0%, M3 12 -> 0%
+  (`SKW_CSS_SEARCH_HDR_TAPS` restores the old start for A/B). A
+  sync-referenced derotation origin was measured as well: no difference.
+  Old -> new, AWGN floor+3, 25 trials, every family and M0-M3: 0.2 Hz/s
+  NARROW M0-M3 56/32/68/12% -> 0%, -0.2 Hz/s 48/48/12/40% -> 0%, and
+  +-0.3 Hz/s (beyond the old grid) 0% everywhere; 0.1 Hz/s 0% everywhere.
+  No-drift AWGN identical, floor sweep identical (summed FER 244 = 244),
+  CCIR Moderate seed 11 identical (336 = 336), seed 7 better (292 -> 240).
+  Test `css_frame_lo_drift_strong` (+-0.3 Hz/s: 24/24; 0/24 with
+  `SKW_CSS_DRIFT_SEARCH=0`); `css_frame_lo_drift` 36/36.
+- [ ] **OFDM NARROW M4/M5 at 2 Hz/s** (10-17.5% after the v1.2.2 retry).
+- [ ] **NARROW CSS M0/M1 acquisition** (~3 dB between payload and frame).
+- [ ] **CSS MID M0 on CCIR Moderate** (27.5% at floor+1).
 
 ---
 
