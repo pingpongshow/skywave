@@ -68,13 +68,14 @@ int macWindow(int mode) {
   // 2 frames and the turn was 27-52% keyed, against 65-76% and 2.5-3.2
   // of 4 frames at M10+ where the window is 16.
   //
-  // Raising it to 8 was MEASURED and NOT adopted: churn seed 12
-  // 63,344 -> 87,749 B (+39%) and seed 11 +0.5%, coupled identical -
-  // but seed 13 goes from PASS (89,473 B) to a stall at t=741. Turning
-  // a passing seed into a wedge disqualifies it as a default however
-  // good the average looks; the deeper window keeps more unacknowledged
-  // frames alive across a fade, which is exactly what that seed's tail
-  // punishes. SKW_MID_WINDOW re-enables it for measurement. The short
+  // Raising it to 8 was MEASURED and NOT adopted. The first measurement
+  // (seed 13 "stalling" at t=741) was taken before the ST2 soaks were
+  // deterministic and does not reproduce. RE-MEASURED 2026-10-14 on the
+  // deterministic harness, 21 configurations (churn seeds 11-16 at 4 and
+  // 64 KiB feeds, coupled, eight one-way floor points): no stall
+  // anywhere, but 1.88 vs 1.92 MB in total (-2.2%) with large one-way
+  // losses (CCIR Good 16 dB 70.6 -> 37.1 KB) - no throughput case for it.
+  // SKW_MID_WINDOW re-enables it for measurement. The short
   // containers turned out to be mostly lone RETRANSMITS; pumpData now
   // fills them without a deeper window (SKW_RETX_FILL).
   static const int kMidWindow = [] {

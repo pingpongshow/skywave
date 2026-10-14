@@ -1397,6 +1397,13 @@ MID M0 fading floor.
   within noise of before (summed FER 288 vs 275 over 24 points at 100
   trials); MID/NARROW unchanged by construction. CSS gates (AWGN and
   Moderate full-frame) pass; suite 44/44.
+- [x] **M7-M9 window 8 re-checked - CLOSED, stays 4 (2026-10-14).** On
+  the deterministic harness, window 4 vs 8 over 21 configurations (churn
+  seeds 11-16 at 4 and 64 KiB feeds, coupled, one-way floor points on
+  static/Good/Moderate): every run PASSES at both (the old seed-13 stall
+  was noise) but window 8 delivers 1.88 vs 1.92 MB (-2.2%), losing up to
+  half on some one-way points (Good 16 dB 70.6 -> 37.1 KB). No case for
+  it; the window-4 default stands for a measured reason now.
 - [x] **ST2 soaks deterministic - DONE 2026-10-14.** Same code, same
   seed ran different timelines under parallel CPU load (churn seed 12,
   64 KiB feed: 55 KB vs 131 KB), so every single-run soak A/B before this
