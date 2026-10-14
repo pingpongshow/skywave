@@ -1397,6 +1397,16 @@ MID M0 fading floor.
   within noise of before (summed FER 288 vs 275 over 24 points at 100
   trials); MID/NARROW unchanged by construction. CSS gates (AWGN and
   Moderate full-frame) pass; suite 44/44.
+- [x] **Drift beyond the gates - CLOSED as out of scope (2026-10-14).**
+  Measured limits on the current receiver (AWGN; CSS floor+3, 25 trials;
+  OFDM floor+6, 40 trials): CSS NARROW/MID M0-M3 at +-0.4 and 0.5 Hz/s
+  0-8% except NARROW M2 20-24% at +-0.4 (4% at 0.5 - sampling noise at 25
+  trials); OFDM at 3 Hz/s WIDE/MID M4-M6 0-5%, NARROW M6 0%, NARROW M4/M5
+  52.5/30% - 120 Hz inside one 40 s frame, past the +-55 Hz acquisition
+  capture. Real HF transceivers drift well under 0.1 Hz/s once warm (a
+  3 Hz/s LO moves 180 Hz a minute and would need retuning anyway), and
+  the gates (CSS 0.1 Hz/s, OFDM 1-2 Hz/s) are met with 3-5x margin. Not
+  worth more receiver complexity.
 - [x] **NARROW M1 "payload-limited" - CLOSED 2026-10-14: it was CFO
   branch errors.** Every NARROW M1 payload failure at the floor was a
   frame 6.25 or 12.5 Hz off. The branch retry should have caught them,
