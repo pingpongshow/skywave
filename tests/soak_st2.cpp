@@ -207,11 +207,11 @@ int main() {
     if (!boActive) {
       if (gA.sent.size() < w.b.dataAcc.size() + kFeedWindow) {
         auto c = gA.chunk(256 + rng.u32(768));
-        ::send(w.a.dataFd, c.data(), c.size(), 0);
+        w.a.sendData(c);
       }
       if (!oneWay && gB.sent.size() < w.a.dataAcc.size() + kFeedWindow) {
         auto c = gB.chunk(256 + rng.u32(768));
-        ::send(w.b.dataFd, c.data(), c.size(), 0);
+        w.b.sendData(c);
       }
     }
 

@@ -29,8 +29,8 @@ TEST_CASE(st2_scripted_session_over_tcp) {
   // Data through the data port, both directions.
   const std::string msgA = "ST2: the quick brown fox jumps over the lazy dog";
   const std::string msgB = "ST2: reply from K6XYZ";
-  ::send(w.a.dataFd, msgA.data(), msgA.size(), 0);
-  ::send(w.b.dataFd, msgB.data(), msgB.size(), 0);
+  w.a.sendData(msgA);
+  w.b.sendData(msgB);
   for (int i = 0;
        i < 4000 && (w.b.dataAcc.size() < msgA.size() ||
                     w.a.dataAcc.size() < msgB.size());
@@ -73,7 +73,7 @@ TEST_CASE(st2_faults_dropout_starvation_reconnect_abort) {
     s ^= s << 17;
     v = uint8_t(s >> 32);
   }
-  ::send(w.a.dataFd, blob.data(), blob.size(), 0);
+  w.a.sendData(blob);
   // 26000 rounds: half-duplex LBT serializes what previously
   // overlapped, the dropout/starvation recovery adds ARQ cycles on
   // top, and the 3 KiB message is delivered as ONE unit at the end
@@ -104,7 +104,7 @@ TEST_CASE(st2_faults_dropout_starvation_reconnect_abort) {
   for (int i = 0; i < 10; ++i) w.round();
   const std::string more = "after reconnect";
   const size_t base = w.b.dataAcc.size();
-  ::send(w.a.dataFd, more.data(), more.size(), 0);
+  w.a.sendData(more);
   for (int i = 0; i < 6000 && w.b.dataAcc.size() < base + more.size(); ++i) {
     w.round();
   }
@@ -184,7 +184,7 @@ TEST_CASE(st2_oneway_throughput_floor) {
         b = uint8_t(s >> 32);
       }
       sent.insert(sent.end(), c.begin(), c.end());
-      ::send(w.a.dataFd, c.data(), c.size(), 0);
+      w.a.sendData(c);
     }
     w.round();
     if (w.b.dataAcc.size() > verified) {
@@ -241,7 +241,7 @@ TEST_CASE(st2_peer_death_then_reconnect) {
       payload[i] = uint8_t(st >> 32);
     }
   }
-  ::send(w.a.dataFd, payload.data(), payload.size(), 0);
+  w.a.sendData(payload);
   for (int i = 0; i < 8000 && w.b.dataAcc.size() < 4096; ++i) w.round();
   CHECK(w.b.dataAcc.size() >= 4096);
   CHECK(w.b.dataAcc.size() < payload.size());  // the kill must interrupt
@@ -348,7 +348,7 @@ TEST_CASE(st2_peer_death_digital_silence) {
   CHECK(w.waitState(w.a, "CONNECTED", 3000));
   std::vector<uint8_t> payload(32768);
   for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 7 + 3);
-  ::send(w.a.dataFd, payload.data(), payload.size(), 0);
+  w.a.sendData(payload);
   for (int i = 0; i < 8000 && w.b.dataAcc.size() < 4096; ++i) w.round();
   w.b.w.reset();
   w.b.w.emplace(w.b.cfg, w.clk, w.b.rxRing, w.b.txRing);

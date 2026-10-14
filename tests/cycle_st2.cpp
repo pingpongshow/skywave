@@ -35,7 +35,7 @@ int main() {
     std::vector<uint8_t> c(512);
     for (size_t i = 0; i < c.size(); ++i) c[i] = uint8_t((cycles + i) % 251);
     want += c.size();
-    ::send(w.a.dataFd, c.data(), c.size(), 0);
+    w.a.sendData(c);
     const double ts = double(w.clk.nowUs()) * 1e-6;
     while (w.b.dataAcc.size() < want &&
            double(w.clk.nowUs()) * 1e-6 - t0 < dur) {

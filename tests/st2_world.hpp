@@ -11,14 +11,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/clock.hpp"
@@ -176,6 +179,16 @@ struct Node {
   int dataFd = -1, ctrlFd = -1;
   std::string ctrlAcc;                // everything the ctrl client saw
   std::vector<uint8_t> dataAcc;       // everything the data client saw
+  // DETERMINISTIC TCP. The harness bridges the modem through real
+  // loopback sockets, and WHEN the kernel hands bytes across used to
+  // decide which simulated round saw them: under parallel CPU load the
+  // same seed ran different timelines (churn seed 12: 55 KB in one run,
+  // 131 KB in the next) and single-run soak A/B deltas were noise. Every
+  // hand-off is now completed before the simulated clock moves: bytes
+  // are counted at both ends and the harness waits (wall-clock bounded)
+  // until each side has seen everything the other sent.
+  uint64_t dataCliSent = 0, dataSrvRecv = 0, dataSrvSent = 0, dataCliRecv = 0;
+  uint64_t ctrlCliSent = 0, ctrlSrvRecv = 0, ctrlSrvSent = 0, ctrlCliRecv = 0;
 
   Node(FakeClock& clk, const char* call) {
     cfg.callsign = call;
@@ -196,42 +209,138 @@ struct Node {
   void reconnectData() {
     if (dataFd >= 0) ::close(dataFd);
     dataFd = connectLoopback(dataSrv.boundPort());
+    dataCliSent = dataSrvRecv = dataSrvSent = dataCliRecv = 0;
   }
   void reconnectCtrl() {
     if (ctrlFd >= 0) ::close(ctrlFd);
     ctrlFd = connectLoopback(ctrlSrv.boundPort());
+    ctrlCliSent = ctrlSrvRecv = ctrlSrvSent = ctrlCliRecv = 0;
+  }
+
+  // Client -> modem data, delivered whole (see DETERMINISTIC TCP).
+  void sendData(const void* p, size_t n) {
+    if (dataFd < 0) return;
+    const auto* b = static_cast<const uint8_t*>(p);
+    size_t off = 0;
+    while (off < n) {
+      const ssize_t k = ::send(dataFd, b + off, n - off, 0);
+      if (k <= 0) break;
+      off += size_t(k);
+    }
+    dataCliSent += off;
+  }
+  template <class C>
+  void sendData(const C& c) {
+    sendData(c.data(), c.size());
+  }
+  void sendCtrl(const std::string& line) {
+    if (ctrlFd < 0) return;
+    size_t off = 0;
+    while (off < line.size()) {
+      const ssize_t k = ::send(ctrlFd, line.data() + off, line.size() - off, 0);
+      if (k <= 0) break;
+      off += size_t(k);
+    }
+    ctrlCliSent += off;
+  }
+
+  static bool waitUntil(const std::function<bool()>& done) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!done()) {
+      if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(2)) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return true;
   }
 
   // One pass of the main-loop TCP bridging (mirrors src/main.cpp).
   void pumpTcp() {
-    auto in = dataSrv.poll();
-    if (!in.empty()) w->submitAppData(in);
+    // Server side: everything the client has sent so far, whole.
+    auto takeData = [&] {
+      auto in = dataSrv.poll();
+      dataSrvRecv += in.size();
+      if (!in.empty()) w->submitAppData(in);
+    };
+    takeData();
+    if (dataFd >= 0 && dataSrv.clientConnected()) {
+      waitUntil([&] {
+        if (dataSrvRecv >= dataCliSent) return true;
+        takeData();
+        return dataSrvRecv >= dataCliSent;
+      });
+    }
     auto out = w->takeAppData();
     dataOut.insert(dataOut.end(), out.begin(), out.end());
     if (!dataOut.empty() && dataSrv.clientConnected()) {
+      dataSrvSent += dataOut.size();
       dataSrv.send(dataOut);
       dataOut.clear();
     }
     for (auto& rec : w->takeMonitorRecords()) {
-      if (dataSrv.clientConnected()) dataSrv.send(rec);
+      if (dataSrv.clientConnected()) {
+        dataSrvSent += rec.size();
+        dataSrv.send(rec);
+      }
     }
-    ctrlLines.feed(ctrlSrv.poll());
+    auto takeCtrl = [&] {
+      auto in = ctrlSrv.poll();
+      ctrlSrvRecv += in.size();
+      ctrlLines.feed(in);
+    };
+    takeCtrl();
+    if (ctrlFd >= 0 && ctrlSrv.clientConnected()) {
+      waitUntil([&] {
+        if (ctrlSrvRecv >= ctrlCliSent) return true;
+        takeCtrl();
+        return ctrlSrvRecv >= ctrlCliSent;
+      });
+    }
+    auto ctrlSend = [&](const std::string& s) {
+      if (!ctrlSrv.clientConnected()) return;
+      ctrlSrvSent += s.size();
+      ctrlSrv.send(s);
+    };
     for (auto& line : ctrlLines.takeLines()) {
-      ctrlSrv.send(w->control(line) + "\n");
+      ctrlSend(w->control(line) + "\n");
     }
-    for (auto& n : w->takeNotifications()) {
-      if (ctrlSrv.clientConnected()) ctrlSrv.send(n + "\n");
-    }
-    // Client-side reads (nonblocking).
+    for (auto& n : w->takeNotifications()) ctrlSend(n + "\n");
+    // Client side: everything the server has sent so far, whole.
     char buf[4096];
-    ssize_t n;
-    while (ctrlFd >= 0 &&
-           (n = ::recv(ctrlFd, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
-      ctrlAcc.append(buf, size_t(n));
+    auto readCtrl = [&] {
+      ssize_t n;
+      while (ctrlFd >= 0 &&
+             (n = ::recv(ctrlFd, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
+        ctrlAcc.append(buf, size_t(n));
+        ctrlCliRecv += uint64_t(n);
+      }
+    };
+    auto readData = [&] {
+      ssize_t n;
+      while (dataFd >= 0 &&
+             (n = ::recv(dataFd, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
+        dataAcc.insert(dataAcc.end(), buf, buf + n);
+        dataCliRecv += uint64_t(n);
+      }
+    };
+    readCtrl();
+    readData();
+    if (ctrlFd >= 0) {
+      waitUntil([&] {
+        readCtrl();
+        if (ctrlCliRecv >= ctrlSrvSent) return true;
+        if (ctrlSrv.txBacklog() > 0) takeCtrl();  // poll() flushes
+        return false;
+      });
     }
-    while (dataFd >= 0 &&
-           (n = ::recv(dataFd, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
-      dataAcc.insert(dataAcc.end(), buf, buf + n);
+    if (dataFd >= 0) {
+      waitUntil([&] {
+        readData();
+        if (dataCliRecv >= dataSrvSent) return true;
+        if (dataSrv.txBacklog() > 0) takeData();  // poll() flushes
+        return false;
+      });
     }
   }
 
@@ -367,11 +476,18 @@ struct World {
   }
 
   std::string cmd(Node& n, const std::string& line) {
-    const std::string out = line + "\n";
-    ::send(n.ctrlFd, out.data(), out.size(), 0);
     const size_t mark = n.ctrlAcc.size();
-    for (int i = 0; i < 400; ++i) {
-      round();
+    n.sendCtrl(line + "\n");
+    // Control replies are synchronous: with the deterministic hand-off a
+    // single pump answers without moving the simulated clock (a query no
+    // longer costs a varying number of rounds - one source of the
+    // run-to-run divergence). Rounds remain the fallback.
+    for (int i = 0; i < 401; ++i) {
+      if (i == 0) {
+        n.pumpTcp();
+      } else {
+        round();
+      }
       // First non-notification line after the mark is the response.
       size_t pos = mark;
       while (pos < n.ctrlAcc.size()) {

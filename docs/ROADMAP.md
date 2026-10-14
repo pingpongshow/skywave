@@ -1375,6 +1375,19 @@ MID M0 fading floor.
     conservative: exactly 15% one step lower). Full-frame gate (floor+1,
     +3) passes on two seeds; FER at every floor <= 15%. STILL OPEN: the
     CSS fading floors (kFadingFloors M0-M3) were not re-measured.
+- [x] **ST2 soaks deterministic - DONE 2026-10-14.** Same code, same
+  seed ran different timelines under parallel CPU load (churn seed 12,
+  64 KiB feed: 55 KB vs 131 KB), so every single-run soak A/B before this
+  was confounded by noise. Cause: the harness bridges the modems through
+  real loopback TCP and WHEN the kernel handed bytes across decided which
+  simulated round saw them; `World::cmd` also ran rounds until a reply
+  arrived. Fix (st2_world.hpp): bytes counted at both ends of every
+  socket and each hand-off completed (wall-clock bounded) before the
+  simulated clock moves; control replies answered without advancing it;
+  harnesses send through `Node::sendData`. Verified: five runs of churn
+  seed 12 (4 concurrent with 11 bertool jobs, 1 alone) byte-identical
+  output. Earlier soak-based conclusions that rested on single runs
+  (notably the M7-M9 window-8 "seed 13 stall") need re-checking.
 
 ---
 

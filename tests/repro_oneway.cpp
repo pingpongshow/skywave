@@ -48,7 +48,7 @@ int main() {
         b = uint8_t(s >> 32);
       }
       sent.insert(sent.end(), c.begin(), c.end());
-      ::send(w.a.dataFd, c.data(), c.size(), 0);
+      w.a.sendData(c);
     }
     if (now() - lastReport > 30.0) {
       lastReport = now();

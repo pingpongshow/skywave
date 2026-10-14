@@ -77,7 +77,7 @@ int main() {
         b = uint8_t(s >> 32);
       }
       sent += c.size();
-      ::send(w.a.dataFd, c.data(), c.size(), 0);
+      w.a.sendData(c);
     }
     w.round();
     if (w.b.dataAcc.size() > lastB) {

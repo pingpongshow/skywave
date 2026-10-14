@@ -115,6 +115,13 @@ lower. A turn carries ~89 B/s at M9 and at M11 alike. Use
 `SKW_SOAK_WINDOW` deliberately, and prefer bertool or the one-way gate
 for anything claiming a rate.
 
+**The two-modem world is deterministic** (since 2026-10-14): the same
+seed gives byte-identical output whatever else the machine is doing, so
+one run per configuration is an A/B. It was not before - the harness's
+loopback TCP hand-offs landed in whichever simulated round the kernel
+delivered them, and parallel load changed whole timelines. Harnesses
+must send through `Node::sendData` (never a raw `::send` on `dataFd`).
+
 **The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
 each modem's calibrated measured SNR, next to the schedule's set point.
 That field found the radio chain referencing its noise to unit power

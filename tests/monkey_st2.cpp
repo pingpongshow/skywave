@@ -127,7 +127,7 @@ int main() {
       s2 ^= s2 << 17;
       v = uint8_t(s2 >> 32);
     }
-    ::send(w.a.dataFd, blob.data(), blob.size(), 0);
+    w.a.sendData(blob);
     // LBT hold-for-clear makes jammed progress slow by design (the
     // jammer reads as busy; each burst waits out the 12 s peer cap):
     // ~80k rounds covers the measured worst case with margin.
