@@ -1287,6 +1287,29 @@ they are not re-raised. Commands are the original measurements.
     WIDE 9 dB 62 -> 97 KB, MID 9 dB 84 -> 85 KB. STILL WEAK: NARROW on the
     Moderate floor delivers ~4 KB per 10 min; one rung per ~45 s
     MODE_CHANGE exchange is the remaining cost.
+  - [x] **ULTRA never connected as ULTRA - FIXED 2026-10-15.**
+    `rebuildEngine()` never copied `modem.ultra_enable` into the
+    handshake policy, so an ULTRA responder ignored every ULTRA CALL and
+    sessions connected only after the caller's family fallback to WIDE
+    (~250 s). Every "ULTRA" soak above, v1.2.4's included, ran on WIDE.
+    True ULTRA: floor 9 dB 6/6, 97 KB (seeds 1-6); churn 3/3, 119 KB
+    A->B (seeds 11-13).
+  - [ ] **NARROW Moderate floor: mode control outweighs data.** Airtime of
+    a 600 s run (seed 1): DATA 252 s, MODE_CHANGE + MODE_ACK 331 s (8
+    exchanges, M7 <-> M8 oscillation), handshake 83 s. The cost is the
+    robust header: 648 symbols (~20 s) on NARROW, so every robust-tier
+    frame is >= 20.7 s. Two link-layer fixes measured WORSE over six
+    seeds and were reverted: (1) promotion timers scaled by the family's
+    control-frame airtime (NARROW 9 dB 26.0 -> 21.3 KB, MID 85 -> 71 KB:
+    on NARROW the fast tier's 2 s header makes M8 worth reaching, so
+    staying longer at M7 costs more than the flaps); (2) MODE_CHANGE /
+    MODE_ACK / ACK on the fast tier whenever the AMC's SNR clears M8's
+    floor (NARROW 6 dB 4/6 -> 1/6, MID 85 -> 48 KB: the estimate is
+    optimistic inside fades and a lost control frame costs far more than
+    the airtime saved). The remaining lever is the PHY: a lighter robust
+    header class (e.g. spread x8 for M5-M7 sessions, its own chirp
+    signature) - a WAVEFORM change with acquisition and floor
+    re-measurement, so an owner decision.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
