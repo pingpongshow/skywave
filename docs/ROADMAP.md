@@ -1400,6 +1400,13 @@ MID M0 fading floor.
   within noise of before (summed FER 288 vs 275 over 24 points at 100
   trials); MID/NARROW unchanged by construction. CSS gates (AWGN and
   Moderate full-frame) pass; suite 44/44.
+- [x] **CSS fading floors re-run after the branch-retry fix - DONE.** Same
+  campaign (48 curves, 100 trials per 1.5 dB); about ten entries moved
+  0.5-3 dB, mostly down: Good NARROW -11.5/-11.0/-10.0/-7.5, Moderate
+  NARROW -14.0/-13.5/-11.5/-9.0 and ULTRA -7.5/-6.5/-4.0/-1.5, Poor WIDE
+  -3.5/-1.0/NA/NA, MID -9.0/-5.0/-5.0/2.5, NARROW -13.0/-12.0/-9.5/-6.0,
+  ULTRA -3.0/1.5/NA/NA. Curves replace the archive in
+  docs/conformance/css_fading_floors_2026-10-14/.
 - [x] **Drift beyond the gates - CLOSED as out of scope (2026-10-14).**
   Measured limits on the current receiver (AWGN; CSS floor+3, 25 trials;
   OFDM floor+6, 40 trials): CSS NARROW/MID M0-M3 at +-0.4 and 0.5 Hz/s

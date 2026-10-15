@@ -253,7 +253,9 @@ inline constexpr double kFadingNA = 99.0;
 // which had only copied the designated CSS values - holds what CSS does
 // on Poor (WIDE/ULTRA M2/M3 never close there; M0/M1 only after the RAKE
 // tap span fix, receiver.cpp). Archived
-// docs/conformance/css_fading_floors_2026-10-14/.
+// docs/conformance/css_fading_floors_2026-10-14/ - RE-RUN after the CSS
+// branch-retry fix (same campaign): about ten entries moved by 0.5-3 dB,
+// mostly down (Poor WIDE M1 2.0 -> -1.0, ULTRA M1 4.0 -> 1.5).
 inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // WIDE
     {{-8.5, -5.5, -4.0, -1.5,
@@ -265,10 +267,10 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // for v1.2.1: 400 trials gave 15.2% at the old floor+1 (the 15% gate
     // passed on slack alone) and 12.2% at -7.0; the fixed-seed 40-trial
     // release sweep failed the point identically at v1.2.0 and v1.2.1.
-    {{-11.5, -11.5, -9.0, -7.5,
+    {{-11.5, -11.0, -10.0, -7.5,
       -10.5, -8.0, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
     // ULTRA
-    {{-7.5, -6.0, -4.0, -1.5,
+    {{-7.5, -6.5, -4.0, -1.5,
       -5.0, -2.5, 1.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
 }};
 
@@ -297,24 +299,24 @@ inline constexpr std::array<FloorTable, kNumFamilies> kModerateFloors = {{
     {{-11.0, -10.0, -8.5, -6.5,
       -9.0, -7.5, -5.0, -2.5, 4.5, 7.5, 10.5, 14.5, 17.0, 24.5, kFadingNA}},
     // NARROW
-    {{-14.0, -12.5, -11.0, -9.0,
+    {{-14.0, -13.5, -11.5, -9.0,
       -10.0, -9.5, -6.5, -5.0, 3.5, 6.5, 8.5, 13.0, 16.0, kFadingNA, kFadingNA}},
     // ULTRA
-    {{-7.5, -6.0, -4.0, -1.5,
+    {{-7.5, -6.5, -4.0, -1.5,
       -5.0, -2.5, 1.0, 2.5, 8.5, 12.5, 15.0, 19.0, 22.5, 26.5, kFadingNA}},
 }};
 inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
     // WIDE
-    {{-3.5, 2.0, kFadingNA, kFadingNA,
+    {{-3.5, -1.0, kFadingNA, kFadingNA,
       -4.0, -2.5, 0.5, 2.0, 11.5, 19.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // MID
-    {{-9.0, -5.0, -4.5, 2.5,
+    {{-9.0, -5.0, -5.0, 2.5,
       -8.0, -6.5, -4.5, 0.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // NARROW
-    {{-12.5, -11.5, -9.5, -6.0,
+    {{-13.0, -12.0, -9.5, -6.0,
       -10.0, -9.0, -7.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // ULTRA
-    {{-2.5, 4.0, kFadingNA, kFadingNA,
+    {{-3.0, 1.5, kFadingNA, kFadingNA,
       -4.0, -1.5, 0.0, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile
