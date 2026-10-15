@@ -1291,6 +1291,14 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### v1.2.4 (2026-10-15)
+
+Fix release for the ST2 NARROW/ULTRA stalls (poll bit, capture-airing
+CCA, header-complete decode, MODE_ACK wait, idle refresh; see the item
+above). Cut on the owner's instruction without the long gates (TSan,
+2 h soak, conformance); suites and sanitizers re-run. Release notes:
+docs/releases/v1.2.4.md.
+
 ### v1.2.3 (2026-10-15)
 
 Released with all seven gates passing on the candidate; two small fixes
