@@ -364,7 +364,13 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
 std::optional<RxFrameResult> cssReceiveFrameOnce(
     Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
     double cfoHz, const std::function<void(RxStage)>& stage,
-    HarqChase* harq, bool allowBranchCheck = true) {
+    HarqChase* harq, bool allowBranchCheck = true,
+    bool* truncatedOut = nullptr) {
+  // Set when the capture ran out before the frame did (the worker re-
+  // tries growing captures): no retry of any kind can help such a frame.
+  auto markTruncated = [&] {
+    if (truncatedOut) *truncatedOut = true;
+  };
   const CssPlan cp = cssPlan(family);
   const int spc = cp.samplesPerChip;
   const size_t symH = cssSymbolSamples(family, kCssHeaderSf);
@@ -417,6 +423,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     // Sync search: non-coherent correlation of the two known symbols over
     // the timing window.
     if (rx.size() < size_t(2 * W) + size_t(kCssSyncSymbols) * symH) {
+      markTruncated();
       return false;
     }
     for (int d = -W; d <= W; ++d) {
@@ -721,7 +728,10 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
       sectionLlr = nullptr;
       if (!hdrBytes) {
         copyLlr.pop_back();
-        if (!hdr) hdrTruncated = true;
+        if (!hdr) {
+          hdrTruncated = true;
+          markTruncated();
+        }
         break;  // ran out of samples (an earlier copy may have parsed)
       }
       if (!hdr) {
@@ -964,6 +974,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   std::vector<float> llr;
   double ratio0 = 0.0;
   const bool samplesOk = demodPayload(rx, llr, ratio0);
+  if (!samplesOk) markTruncated();
   if (samplesOk) decodePayload(llr, harq);
   recordPilots = false;  // the search's own passes must not add to the fit
 
@@ -1117,8 +1128,14 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
 std::optional<RxFrameResult> cssReceiveFrame(
     Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
     double cfoHz, const std::function<void(RxStage)>& stage,
-    HarqChase* harq) {
-  auto res = cssReceiveFrameOnce(family, sig, hit, cfoHz, stage, harq);
+    HarqChase* harq, bool* truncatedOut = nullptr) {
+  bool truncated = false;
+  auto res = cssReceiveFrameOnce(family, sig, hit, cfoHz, stage, harq, true,
+                                 &truncated);
+  if (truncatedOut) *truncatedOut = truncated;
+  // A payload that ran out of samples is still arriving: re-receiving it
+  // on other CFO branches (four full passes) only burns worker time.
+  if (truncated) return res;
   static const bool branchRetry = [] {
     const char* e = getenv("SKW_CSS_BRANCH_RETRY");
     return !(e && e[0] == '0');
@@ -1284,7 +1301,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     double fllGainOverride, bool* retryable, double driftRateIn = 0.0,
     std::vector<std::pair<double, double>>* fllTrace = nullptr,
     const ChirpDetection* forcedHit = nullptr,
-    ChirpDetection* hitOut = nullptr) {
+    ChirpDetection* hitOut = nullptr, bool* truncatedOut = nullptr) {
   auto stage = [&](RxStage s) {
     if (stageOut) *stageOut = s;
   };
@@ -1319,7 +1336,8 @@ std::optional<RxFrameResult> receiveFrameImpl(
   // CSS frames (sync arbitration): the chirp signature announced a CSS
   // frame; hand off to the CSS receive path - no ZC, no OFDM.
   if (hit.sig == ChirpSig::Css) {
-    return cssReceiveFrame(family, sig, hit, cfoSign, stage, harq);
+    return cssReceiveFrame(family, sig, hit, cfoSign, stage, harq,
+                           truncatedOut);
   }
 
   // 2) ZC refinement.
@@ -1392,6 +1410,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     if (!walkerSlot->collect(Constellation::Qpsk, headerSpread(robust),
                              CpMode::Medium, hcode.n(), hLlr)) {
       truncated = true;
+      if (truncatedOut) *truncatedOut = true;
       continue;
     }
     hInfo.clear();
@@ -1508,6 +1527,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
           LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
       if (!haveAll) {
         truncated = true;
+        if (truncatedOut) *truncatedOut = true;
         ok = false;
         break;
       }
@@ -1697,9 +1717,10 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   std::vector<std::pair<double, double>> trace;
   ChirpDetection hit{};
   hit.family = family;
+  bool truncated = false;
   auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
                               wantConstellation, -1.0, &retryable, 0.0,
-                              &trace, nullptr, &hit);
+                              &trace, nullptr, &hit, &truncated);
   // RUNNER-UP SIGNATURE (ChirpDetection::hasAlt): near the floor a slope
   // slot flips and a CSS preamble reads as robust/calling (or the other
   // way round), sending the frame down the wrong receive path. When the
@@ -1707,7 +1728,9 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   // costs one sync/ZC search and the header CRC still arbitrates.
   // SKW_CHIRP_ALT=0 disables (A/B).
   static const bool altOn = envKnobOn("SKW_CHIRP_ALT");
-  if (!res && hit.nAlt > 0 && altOn && stageOut &&
+  // Not on a capture that ran out (the frame is still arriving: the next,
+  // longer capture decides) - each alternate is a full receive attempt.
+  if (!res && !truncated && hit.nAlt > 0 && altOn && stageOut &&
       (*stageOut == RxStage::ZcFail || *stageOut == RxStage::HeaderFail)) {
     for (int k = 0; k < hit.nAlt; ++k) {
       ChirpDetection alt = hit;
