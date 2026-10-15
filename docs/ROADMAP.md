@@ -1224,10 +1224,11 @@ they are not re-raised. Commands are the original measurements.
   ~9-10 dB and M13 has a 20% floor at 50 dB; already excluded (Moderate
   NARROW M13 = NA).
 - Optional:
-  - [ ] **Survive a timing slip mid-frame** (receiver re-sync after an
-    inserted or dropped k x 5.33 ms; 2026-10-12 on-air finding). Needs a
-    slip impairment in chansim/bertool and a conformance re-run; the
-    risk is false re-syncs under deep fades.
+  - [-] **Survive a timing slip mid-frame - DEFERRED PERMANENTLY
+    (owner, 2026-10-15).** (Receiver re-sync after an inserted or dropped
+    k x 5.33 ms; 2026-10-12 on-air finding.) Would need a slip impairment
+    in chansim/bertool and a conformance re-run, with the risk of false
+    re-syncs under deep fades; a slipped frame is simply retransmitted.
   - [x] **Use the robust-tier leftover carriers - DONE 2026-10-14 (M5-M7).**
     Measured first: the empty remainder cells are 14-32% at M4 (MID 32%,
     NARROW 30%, ULTRA 24%, WIDE 14%) and up to 30% at M5 (NARROW). They
@@ -1245,15 +1246,47 @@ they are not re-raised. Commands are the original measurements.
     -10.5, NARROW M5/M6 -16.5/-13.5, ULTRA M5/M6 -9.0/-6.0, fading tables
     0.5-1.5 dB lower; M7 (<= 5.5% leftover) measured identical with the
     copies on/off and keeps its values.
-  - [ ] **NARROW link in the ST2 world fails - NEW, pre-existing.** Found
+  - [x] **NARROW link in the ST2 world fails - FIXED 2026-10-15.** Found
     while soaking the leftover copies on other families (new
-    `SKW_ST2_FAMILY` harness switch; every soak before ran WIDE): NARROW
-    churn seed 11 stalls at t=861 s, and the Moderate floor scenario at a
-    6/2 dB set point delivers 0 B with 2 reconnects - identical with the
-    leftover copies on and off, so not caused by them. MID passes. PHY
-    sweeps (bertool) of NARROW are healthy, so the cause is link-level or
-    in the ST2 world (handshake/ARQ timing at NARROW's long robust
-    frames). To investigate.
+    `SKW_ST2_FAMILY` harness switch; every soak before ran WIDE). Not the
+    PHY: link-layer timing that only long frames expose. Traced with the
+    new `SKW_SOAK_EVENTS` trace; five faults, each fixed and A/B'd over
+    six seeds (single seeds swing 0-25 KB on identical code):
+    1. **The IRS keyed its ACK over the ISS's next burst.** The ISS sends
+       a window of bursts back to back; the IRS answered each one, and on
+       NARROW (and partly MID) the ACK landed on the following burst while
+       the ISS was keyed and deaf - every ACK lost, the AMC blind for 55 s.
+       New PHY-header `poll` bit marks the burst after which the ISS
+       listens; the IRS answers that one (PROTOCOL.md "Poll"). The ARQ
+       open-loop timeout now covers a window (it fired mid-window and
+       requeued everything: 84 -> 31 KB until fixed), and the tail flush
+       counts silence from the last burst HEARD. `SKW_NO_POLL` A/B.
+    2. **The CCA gate was blind on NARROW.** The energy meter sits ~4 dB
+       above its own min-tracked floor during a long burst (threshold
+       6 dB). A capture still airing now counts as busy (header airtime
+       once known, else the burst the role expects).
+    3. **Control frames decoded ~13 s late.** A NARROW robust header is
+       648 symbols (~19.8 s), so its airtime is unknowable until the
+       burst's end and the next ladder rung was 34 s. New header-complete
+       decode attempt: handshake 137 -> 86 s, ~70 -> ~45 s per
+       MODE_CHANGE exchange.
+    4. **MODE_ACK and DATA collided.** The ISS keyed DATA straight behind
+       its MODE_CHANGE; it now holds DATA for the MODE_ACK (at most one
+       robust control frame + 2 s). Without it MID fell 85 -> 44 KB.
+    5. **Sessions idled out while demoting.** A header-decoded burst whose
+       payload failed now refreshes the idle clock.
+    Tried and dropped: multi-rung SNR demotion (neutral on NARROW, MID
+    85 -> 67 KB) and holding the ISS's control frames in the listen
+    window (MID 85 -> 56 KB). Results, final code vs v1.2.3, totals over
+    seeds: churn (both directions, seeds 11-13) NARROW 0/3 -> 3/3 pass
+    (66 KB; seed 11 was the reported t=861 s stall), **ULTRA 0/3 -> 3/3**
+    (99 KB; ULTRA churn also stalled at t=320 s on every seed, unnoticed
+    until now), MID 113 -> 145 KB, WIDE 247 -> 293 KB; floor (Moderate,
+    one-way, seeds 1-6) NARROW 9 dB 3/6 -> 5/6 (12.7 -> 26.0 KB), NARROW
+    6 dB 0/6 -> 4/6 (0 -> 16.7 KB), ULTRA 9 dB 4/6 -> 5/6 (22 -> 35 KB),
+    WIDE 9 dB 62 -> 97 KB, MID 9 dB 84 -> 85 KB. STILL WEAK: NARROW on the
+    Moderate floor delivers ~4 KB per 10 min; one rung per ~45 s
+    MODE_CHANGE exchange is the remaining cost.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).

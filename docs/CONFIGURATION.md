@@ -194,6 +194,7 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_DELIVER_TARGET_SEC` | `0.0` (off) | Mode-following coalesce bound; measured and left disabled |
 | `SKW_DATA_STARVE_X` | `3.0` | Data-starvation backstop, in ARQ timeouts |
 | `SKW_NO_NAK` | (unset) | Disables negative acknowledgements |
+| `SKW_NO_POLL` | (unset) | Under turn-taking the IRS answers every DATA burst instead of only the one whose PHY header carries POLL, and the ARQ open-loop timeout covers one burst instead of a window (the pre-1.2.4 behaviour; A/B) |
 | `SKW_NO_ACK_PIGGYBACK` | (unset) | Disables ACK piggybacking on data frames |
 | `SKW_NO_LOSSY_CAP` | (unset) | Removes the lossy-channel cap on the seal |
 | `SKW_NO_APPLY_AT_ANNOUNCE` | (unset) | Applies a mode change only on ACK, never at announce |

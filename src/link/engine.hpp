@@ -162,12 +162,28 @@ class LinkEngine {
            fsm_.state() == FsmState::Connected;
   }
   bool turnIss() const { return turnRole_ == TurnRole::Iss; }
+  // Under turn-taking the IRS answers only the burst whose PHY header
+  // carries POLL (PROTOCOL.md "Poll"). SKW_NO_POLL=1: per-burst feedback,
+  // the pre-1.2.4 behaviour (diagnostic A/B).
+  bool pollFeedback() const {
+    static const bool kOff = std::getenv("SKW_NO_POLL") != nullptr;
+    return turnSchedActive() && !kOff;
+  }
   // On-air duration implied by the PHY header of the capture the LAST
   // rxBurst() call decoded a header for (0 when it decoded none). The
   // header survives payload failure, so the worker's decode ladder can
   // tell when a failing burst is fully in hand and go straight to the
   // final attempt instead of climbing rungs of trailing noise.
   double lastRxBurstAirtimeSec() const { return lastRxAirtimeSec_; }
+  // How long a burst from the peer is expected to stay on the air when
+  // its own header has not said so yet: under turn-taking the ISS hears
+  // feedback and the IRS hears DATA bursts; otherwise the longer of the
+  // two, or the last decoded burst's airtime before a session exists.
+  double expectedPeerBurstSec() const {
+    if (fsm_.state() != FsmState::Connected) return lastRxAirtimeSec_;
+    if (turnSchedActive()) return turnIss() ? ackAirSec_ : dataFrameAirSec_;
+    return std::max(ackAirSec_, dataFrameAirSec_);
+  }
 
   // --- GUI instrument taps -----------------------------------------------
   // Equalized payload symbols from the most recent decode. Collected only
@@ -237,7 +253,10 @@ class LinkEngine {
   uint16_t bcastSenderTag() const;
   void drainFsmActions(double now);
   void pumpData(double now);
-  std::vector<cfloat> buildBurst(const OutFrame& f);
+  std::vector<cfloat> buildBurst(const OutFrame& f, bool poll = false);
+  // True when the DATA burst being built is the last before this station
+  // stops and listens (PhyHeader::poll).
+  bool burstEndsWindow() const;
   void applyTxShift(std::vector<cfloat>& burst) const;
   void onFrame(const ParsedFrame& f, const QualityMeasurement& q,
                double now);
@@ -372,6 +391,8 @@ class LinkEngine {
   double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
   bool txWasDraining_ = false;   // edge detector: own burst just aired
   bool lastBurstHadData_ = false;  // the burst that just drained carried DATA
+  bool lastBurstModeChange_ = false;  // ... or announced a MODE_CHANGE
+  double modeReplyUntil_ = -1.0;      // hold DATA for the MODE_ACK until
   double ctrlWaitStart_ = -1.0;  // control busy-hold start
   double ctrlJitterUntil_ = 0.0; // post-clear anti-race jitter deadline
   int ctrlRun_ = 0;              // consecutive control bursts (fairness)
@@ -528,6 +549,10 @@ class LinkEngine {
   // attempt; the next ACK carries kRxFlagRxFail (PACTOR's CS-NAK).
   bool rxFailPending_ = false;
   double lastRxAirtimeSec_ = 0.0;  // see lastRxBurstAirtimeSec()
+  bool rxPoll_ = false;  // PHY poll bit of the burst being dispatched
+  // Last time a burst's PHY header decoded in session (payload or not):
+  // the peer was keyed until about then.
+  double lastPeerHeardAt_ = -1.0;
   // Adaptive proto seal cap: unlimited coalescing while the link is
   // clean (a flat cap measurably cost the VHF/ramp throughput gates),
   // bounded to ~8 frames once the retry ratio says it is lossy so a

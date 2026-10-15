@@ -187,9 +187,28 @@ int main() {
     return e ? size_t(std::atol(e)) : size_t(4096);
   }();
 
+  // SKW_SOAK_EVENTS=1 prints each node's EVT:/MON: lines with sim time.
+  const bool traceEvents = std::getenv("SKW_SOAK_EVENTS") != nullptr;
+  size_t evPosA = w.a.ctrlAcc.size(), evPosB = w.b.ctrlAcc.size();
+  auto traceNode = [&](const char* tag, Node& n, size_t& pos, double t) {
+    while (true) {
+      const size_t eol = n.ctrlAcc.find('\n', pos);
+      if (eol == std::string::npos) break;
+      const std::string l = n.ctrlAcc.substr(pos, eol - pos);
+      pos = eol + 1;
+      if (l.rfind("EVT:", 0) == 0 || l.rfind("MON:", 0) == 0) {
+        std::printf("  %8.2f %s %s\n", t, tag, l.c_str());
+      }
+    }
+  };
+
   while (simNow() < simSecTarget) {
     w.round();
     const double now = simNow();
+    if (traceEvents) {
+      traceNode("A", w.a, evPosA, now);
+      traceNode("B", w.b, evPosB, now);
+    }
 
     // --- keep the directions loaded. The window bounds UNDELIVERED
     // bytes, and proto delivery is head-of-line, so it is a

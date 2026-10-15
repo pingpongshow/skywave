@@ -140,6 +140,27 @@ bool ModemWorker::peerBusyLocked(double now) const {
   return (now - busySince_) < kBusyClassifySec;
 }
 
+// The energy meter is deaf inside fades, and on the long NARROW/MID bursts
+// that let the IRS key its ACK over the ISS's next burst: B decoded burst
+// k, saw no energy, and keyed - while its own receiver had already caught
+// burst k+1's preamble and was capturing it (measured on ST2 Moderate:
+// every ACK lost, AMC blind for 55 s, the idle clock tearing the session
+// down). A detected preamble is proof a station is keyed, for as long as
+// one of its bursts lasts; the capture is erased the moment it decodes.
+bool ModemWorker::captureAiringLocked() const {
+  const double expected = engine_->expectedPeerBurstSec();
+  const uint64_t histEnd = histBase_ + hist_.size();
+  for (const auto& p : pendingRx_) {
+    // The capture's own header, once decoded, states its exact airtime.
+    const double burstSec = p.airtimeSec > 0.0 ? p.airtimeSec : expected;
+    if (burstSec <= 0.0 || p.start > histEnd) continue;
+    if (double(histEnd - p.start) / kFsBaseband < burstSec + kRxPreMarginSec) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // RX spectrum for the GUI waterfall. Welch-style: a Hann-windowed FFT
 // over a fixed block, magnitude-averaged into the telemetry bins. Rate
 // limited to ~10 Hz - the GUI renders at frame rate and a spectrum per
@@ -584,7 +605,15 @@ bool ModemWorker::ingestChunkLocked(double now) {
       pendingRx_.pop_front();
       ++rxCapturesDropped_;
     }
-    pendingRx_.push_back({uint64_t(s), 0});
+    PendingRx cap{uint64_t(s), 0};
+    if (d.sig != ChirpSig::Css) {
+      TxFrameParams shortest;
+      shortest.family = d.family;
+      shortest.sig = d.sig;
+      shortest.mode = d.sig == ChirpSig::Robust ? kFirstMode : 8;
+      cap.minAirSec = double(computeGeometry(shortest).totalSamples) / kFsBaseband;
+    }
+    pendingRx_.push_back(cap);
     ++rxCapturesOpened_;
     // A chirp preamble proves this busy period is a STATION, not noise.
     // The claim is sticky for the whole busy period and is dropped the
@@ -674,6 +703,38 @@ void ModemWorker::decodePendingLocked(double now) {
         if (engineEligible) timedRxBurst(win, now, /*final=*/true);
         runMonitorLocked(win);
         done = true;
+      }
+    }
+    // HEADER-COMPLETE attempt: a robust header on NARROW is 648 symbols
+    // (~19.8 s), so a control frame is nearly all header and its header -
+    // the only source of the burst's airtime - completes at the burst's
+    // very end. The quiet-try before that point cannot learn it, and the
+    // next rung (34 s) decoded every NARROW control frame ~13 s late
+    // (ST2: ~70 s per MODE_CHANGE exchange). One attempt the moment the
+    // shortest frame this preamble can start is in hand: header-only
+    // frames decode there, longer ones learn their airtime.
+    if (!done && decodeBudget > 0 && !it->minAirTried && it->minAirSec > 0.0 &&
+        it->airtimeSec <= 0.0 && it->tries < kRxTries) {
+      const uint64_t span = uint64_t(
+          (it->minAirSec + kRxPreMarginSec + kBurstEndMarginSec) * kFsBaseband);
+      if (histEnd >= it->start + span) {
+        it->minAirTried = true;
+        const uint64_t w0 = std::max(it->start, histBase_);
+        std::span<const cfloat> win(hist_.data() + size_t(w0 - histBase_),
+                                    size_t(it->start + span - w0));
+        const bool engineEligible =
+            listen_ || engine_->state() != FsmState::Idle;
+        --decodeBudget;
+        double air = 0.0;
+        if (engineEligible ? timedRxBurst(win, now, false)
+                           : runMonitorLocked(win, /*final=*/false, &air)) {
+          if (engineEligible) runMonitorLocked(win);
+          done = true;
+        } else {
+          it->airtimeSec = std::max(
+              it->airtimeSec,
+              engineEligible ? engine_->lastRxBurstAirtimeSec() : air);
+        }
       }
     }
     if (!done && decodeBudget > 0 && it->tries < kRxTries && !chanBusy_ &&
@@ -1071,7 +1132,8 @@ size_t ModemWorker::processChunk() {
   const double now = nowSec();
   const size_t availBefore = rx_.readAvailable();
   pumpRxLocked(now);
-  engine_->setChannelBusy(peerBusyLocked(now));  // Pre-TX CCA gate input
+  engine_->setChannelBusy(peerBusyLocked(now) ||  // Pre-TX CCA gate input
+                          captureAiringLocked());
   engine_->setTxQueueSec(
       (double(txPending_.size() - txPendingOff_) + double(tx_.readAvailable())) /
       double(kFsAudio));

@@ -231,6 +231,21 @@ bool LinkEngine::ccaDataGated(double now) {
       // (`!canSend()` permanently true) the initiator's MODE_CHANGE
       // retries kept the data path in a listen turn almost continuously
       // (measured: zero data retransmitted across a 100 s stall).
+      // A MODE_CHANGE owes a listen window too: the responder answers it
+      // the moment it decodes it, and DATA keyed straight behind the
+      // announcement is on the air exactly then (ST2 NARROW: the MODE_ACK
+      // and the data burst destroyed each other, the initiator heard
+      // nothing for 120 s and idled the session out). Held until the
+      // MODE_ACK arrives, at most one robust control frame and slack.
+      if (lastBurstModeChange_ && pendingMode_ >= 0) {
+        TxFrameParams ctl;
+        ctl.family = cfg_.policy.family;
+        ctl.sig = sigForMode(kFirstMode);
+        ctl.mode = kFirstMode;
+        const std::vector<uint8_t> shape(24);
+        ctl.payload = shape;
+        modeReplyUntil_ = now + frameAirtimeSec(ctl) + 2.0;
+      }
       if (batchDue && arqTx_.inFlight() > 0 && lastBurstHadData_) {
         yieldInFlight_ = arqTx_.inFlight();
         listenTurnStart_ = now;
@@ -264,6 +279,13 @@ bool LinkEngine::ccaDataGated(double now) {
     if (turnRole_ != TurnRole::Iss) {
       ccaReason_ = 5;
       return true;
+    }
+    if (modeReplyUntil_ >= 0.0) {
+      if (pendingMode_ >= 0 && now < modeReplyUntil_) {
+        ccaReason_ = 7;
+        return true;
+      }
+      modeReplyUntil_ = -1.0;  // MODE_ACK in, or the wait ran out
     }
     if (ccaProceedAt_ >= 0.0) {
       // Feedback ends the listen turn early (see the legacy path note).
@@ -1583,9 +1605,22 @@ LinkEngine::OutFrame LinkEngine::makeAckFrame() {
   return f;
 }
 
-std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f) {
+bool LinkEngine::burstEndsWindow() const {
+  // Mirrors ccaDataGated(): a full window always takes a listen turn,
+  // even with retransmissions already queued behind this burst (after a
+  // demotion shrinks the window below what is in flight, every burst
+  // ends one). Otherwise the sender stops only when it runs dry.
+  if (!arqTx_.canSend()) return true;
+  for (const auto& q : outQueue_) {
+    if (q.env.type == LinkType::Data) return false;  // more data follows
+  }
+  return protoTx_.backlogBytes() == 0;
+}
+
+std::vector<cfloat> LinkEngine::buildBurst(const OutFrame& f, bool poll) {
   auto raw = packFrame(f.env, f.body);
   TxFrameParams tp;
+  tp.poll = poll;
   tp.family = cfg_.policy.family;
   tp.sig = f.sig;
   tp.mode = f.mode;
@@ -1703,9 +1738,17 @@ void LinkEngine::updateArqTimeout() {
   // M4, M4 for the OFDM robust tier, the session mode above.
   ta.mode = mode_ <= 3 ? mode_ : (mode_ <= 6 ? 4 : mode_);
   ta.sig = sigForMode(ta.mode);
-  // Batched-ACK modes wait up to a 4-burst batch before feedback.
-  const double batch =
-      (activeBand() == Band::VhfFm && mode_ >= 13) ? 4.0 : 1.0;
+  // Batched-ACK modes wait up to a 4-burst batch before feedback. Under
+  // turn-taking the IRS answers only the POLL burst that closes a window,
+  // so the first frame's ACK comes back a whole window later: a one-burst
+  // open-loop timeout fired mid-window and requeued every frame in flight
+  // (MID floor soak 84 -> 31 KB over six seeds with the poll bit alone).
+  const int windowBursts =
+      std::max(1, (macWindow(mode_) + std::max(fpb, 1) - 1) / std::max(fpb, 1));
+  const bool pollCaps = (sessionCaps_ & kCapTurnSched) && !getenv("SKW_NO_POLL");
+  const double batch = (activeBand() == Band::VhfFm && mode_ >= 13)
+                           ? 4.0
+                           : (pollCaps ? double(windowBursts) : 1.0);
   const double dataAir = frameAirtimeSec(tp);
   dataFrameAirSec_ = dataAir;
   dataBurstBytes_ = size_t(fpb) * dataBudget_;
@@ -2466,9 +2509,16 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
   }
+  // Under turn-taking the silence is measured from the last burst HEARD,
+  // decoded or not: from the last DECODED one, a failed burst in the
+  // middle of the sender's window ran the clock out while it was still
+  // sending, and the ACK keyed over its next burst.
+  const double quietSince = turnSchedActive()
+                                ? std::max(lastDataRxAt_, lastPeerHeardAt_)
+                                : lastDataRxAt_;
   if (!ackPending_ && dataSinceAck_ > 0 &&
       fsm_.state() == FsmState::Connected &&
-      now - lastDataRxAt_ > ackFlushSec_) {
+      now - quietSince > ackFlushSec_) {
     ackPending_ = true;  // tail flush: batch closed by silence
     dataSinceAck_ = 0;
   }
@@ -2717,6 +2767,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // this is what the post-drain listen-turn decision sees.
   if (txQueueSec_ <= 0.35) {
     lastBurstHadData_ = pick->env.type == LinkType::Data;
+    lastBurstModeChange_ = pick->env.type == LinkType::ModeChange;
     if (pick->env.type == LinkType::Data) {
       ++turnBursts_;
     }
@@ -2779,9 +2830,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       outQueue_.pop_front();
     }
     if (getenv("SKW_PROTO_DEBUG")) {
-      fprintf(stderr, "%s emit group=%zu queue=%zu mode=%d\n",
+      fprintf(stderr, "%s emit group=%zu queue=%zu mode=%d poll=%d inflight=%zu/%d backlog=%zu\n",
               cfg_.policy.ownCall.c_str(), group.size(), outQueue_.size(),
-              group[0].mode);
+              group[0].mode, int(burstEndsWindow()), arqTx_.inFlight(),
+              macWindow(mode_), protoTx_.backlogBytes());
     }
     if (group.size() > 1) {
       std::vector<uint8_t> payload;
@@ -2797,6 +2849,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       tp.mode = group[0].mode;
       tp.frameType = kBurstContainerFrameType;
       tp.seqLow = uint8_t(group[0].env.sequence & 0xFF);
+      tp.poll = burstEndsWindow();
       tp.cpMode = cpMode_;
       tp.payload = payload;
       if (modeUsesCarrierMask(group[0].mode) &&
@@ -2814,7 +2867,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     }
     f = std::move(group[0]);
   }
-  auto solo = buildBurst(f);
+  auto solo = buildBurst(f, f.env.type == LinkType::Data && burstEndsWindow());
   static const bool soloDbg = getenv("SKW_PROTO_DEBUG") != nullptr;
   if (f.env.type == LinkType::Data && quota > 1 && soloDbg) {
     // Why a container shipped short (retransmit, window, handover).
@@ -2873,6 +2926,8 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
   // per call so a stale value from an earlier capture can never be
   // attributed to this one.
   lastRxAirtimeSec_ = 0.0;
+  rxPoll_ = res && res->header.poll;
+  if (res && fsm_.state() == FsmState::Connected) lastPeerHeardAt_ = now;
   if (res && res->header.mode < kNumModes) {
     TxFrameParams tp;
     tp.family = rxFamily;
@@ -2987,7 +3042,16 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
         (res->header.frameType == uint8_t(LinkType::Data) ||
          res->header.frameType == kBurstContainerFrameType)) {
       rxFailPending_ = true;
-      ackPending_ = true;
+      // The peer is alive and keyed toward us even though this payload
+      // failed: a session at a mode the channel has just outgrown must
+      // not idle out before the AMC's demotion reaches the air (NARROW:
+      // 120 s is ~6 data bursts plus a 20 s MODE_CHANGE).
+      fsm_.rxTraffic(now);
+      // Under turn-taking the sender's bursts run back to back: answering
+      // a burst that did not poll keys over the next one (and the ISS,
+      // keyed, never hears it). The fail flag waits for the poll burst
+      // or the tail flush.
+      if (!pollFeedback() || rxPoll_) ackPending_ = true;
     }
     // A PROBE whose header decoded but payload failed still gets its
     // verdict: the probeId rides the PHY header's seqLow.
@@ -3444,8 +3508,15 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       // M13 the traffic is interactive/small and a lost tail-flush ACK
       // stalls the sender for the batch-scaled timeout (observed as a
       // 50 s data freeze in the real-device soak).
-      if (activeBand() != Band::VhfFm || mode_ < 13 ||
-          dataSinceAck_ >= 12) {
+      // Under turn-taking only the POLL burst is answered: the ISS sends
+      // its window back to back and listens after the burst that polls,
+      // so a per-burst ACK lands on the next burst while the ISS is keyed
+      // and deaf (ST2 NARROW Moderate: every ACK lost, the session torn
+      // down by the idle clock). A lost poll burst is covered by the tail
+      // flush below and by the sender's retransmission timer.
+      const bool batchFull = activeBand() != Band::VhfFm || mode_ < 13 ||
+                             dataSinceAck_ >= 12;
+      if (pollFeedback() ? rxPoll_ : batchFull) {
         ackPending_ = true;
         dataSinceAck_ = 0;
       }

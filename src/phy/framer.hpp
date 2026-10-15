@@ -32,6 +32,10 @@ struct PhyHeader {
   // receiver learns the layout from copy 1, which it decodes before it
   // needs to know where the payload starts.
   uint8_t cssHeaderCopies = 2;
+  // POLL: the sender stops after this burst and listens - the peer may
+  // answer now. Lives in the PHY header so a burst whose payload failed
+  // still tells the receiver whether another burst is following it.
+  bool poll = false;
 };
 
 inline constexpr int kPhyHeaderBytes = 9;  // 50 field bits + pad + crc16
@@ -81,6 +85,7 @@ struct TxFrameParams {
   // CSS frames: header copies on air (2 = v1 time-diversity layout; 1 =
   // connected-session short layout, capability-gated). See PhyHeader.
   uint8_t cssHeaderCopies = 2;
+  bool poll = false;  // see PhyHeader::poll
   std::span<const uint8_t> payload;  // link frame bytes, <= 4095
   // Session carrier mask, PAYLOAD symbols only (LINK_ADAPTATION.md);
   // nullptr = all carriers usable.

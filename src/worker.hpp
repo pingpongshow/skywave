@@ -249,6 +249,10 @@ class ModemWorker : public ControlBackend {
     // no header yet). Once that much audio is in hand the burst is
     // complete and the capture goes straight to its FINAL attempt.
     double airtimeSec = 0.0;
+    // Shortest frame the detected preamble can start (preamble + sync +
+    // header, no payload), and whether the attempt at that point ran.
+    double minAirSec = 0.0;
+    bool minAirTried = false;
   };
   std::deque<PendingRx> pendingRx_;
   uint64_t rxDropsReported_ = 0;  // RX ring overrun samples already logged
@@ -297,6 +301,8 @@ class ModemWorker : public ControlBackend {
   // True when the busy channel is (or may still be) a station rather
   // than noise; only this defers transmission.
   bool peerBusyLocked(double now) const;
+  // True while a detected preamble's burst cannot have finished airing.
+  bool captureAiringLocked() const;
   // Monitor pass over a capture. With `final` false a header-only decode
   // is NOT published (the frame may simply not have arrived yet): its
   // header airtime is returned so the capture can wait for the whole

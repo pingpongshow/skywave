@@ -85,7 +85,8 @@ void packPhyHeader(const PhyHeader& h, uint8_t out[kPhyHeaderBytes]) {
   w.put(h.length, 12);
   w.put(h.seqLow, 8);
   w.put(h.cssHeaderCopies == 1 ? 1u : 0u, 1);  // CSS single-header layout
-  w.put(0, 5);  // pad to 56 bits = 7 bytes
+  w.put(h.poll ? 1u : 0u, 1);
+  w.put(0, 4);  // pad to 56 bits = 7 bytes
   uint16_t crc = crc16({w.bytes.data(), w.bytes.size()});
   w.put(crc, 16);
   std::copy(w.bytes.begin(), w.bytes.end(), out);
@@ -109,6 +110,7 @@ std::optional<PhyHeader> parsePhyHeader(std::span<const uint8_t> bytes) {
   h.length = uint16_t(r.get(12));
   h.seqLow = uint8_t(r.get(8));
   h.cssHeaderCopies = r.get(1) ? 1 : 2;
+  h.poll = r.get(1) != 0;
   return h;
 }
 
@@ -128,6 +130,7 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
   h.frameType = p.frameType;
   h.length = uint16_t(p.payload.size());
   h.seqLow = p.seqLow;
+  h.poll = p.poll;
   uint8_t hdr[kPhyHeaderBytes];
   packPhyHeader(h, hdr);
 
@@ -343,6 +346,7 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
   h.length = uint16_t(p.payload.size());
   h.seqLow = p.seqLow;
   h.cssHeaderCopies = p.cssHeaderCopies == 1 ? 1 : 2;
+  h.poll = p.poll;
   uint8_t hdr[kPhyHeaderBytes];
   packPhyHeader(h, hdr);
 

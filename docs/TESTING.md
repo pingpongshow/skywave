@@ -121,6 +121,14 @@ loopback TCP hand-offs landed in whichever simulated round the kernel
 delivered them, and parallel load changed whole timelines. Harnesses
 must send through `Node::sendData` (never a raw `::send` on `dataFd`).
 
+**Event trace.** `SKW_SOAK_EVENTS=1` makes `soak_st2` print every
+`EVT:`/`MON:` line each modem's control port emits, stamped with
+simulated time; combined with `SKW_TX_DEBUG`/`SKW_FRAME_DEBUG` it shows
+who keyed when and what each side decoded. **Single-seed soak results
+are not evidence**: the floor scenario delivers in ~4 KB steps, so one
+seed swings 0–25 KB on identical code. Compare totals over six seeds or
+more.
+
 **The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
 each modem's calibrated measured SNR, next to the schedule's set point.
 That field found the radio chain referencing its noise to unit power

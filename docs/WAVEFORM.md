@@ -367,7 +367,8 @@ handshake):
 | `length` | 12 | payload bytes |
 | `seq_low` | 8 | low 8 bits of link sequence (dedup aid) |
 | `css_hdr1` | 1 | CSS frames only: `1` = a single header copy is on air (connected-session short layout, capability-gated), `0` = two copies (the v1 time-diversity layout). Former pad bit, so v1 frames are byte-identical. The receiver decodes copy 1 before it needs the payload position, so the layout never has to be known in advance |
-| `pad` | 5 | zero |
+| `poll` | 1 | `1` = the sender stops after this burst and listens: under turn-taking the peer answers the burst that polls ([PROTOCOL.md](PROTOCOL.md) "Poll"). In the PHY header so a burst whose payload failed still says whether another burst follows |
+| `pad` | 4 | zero |
 | `crc16` | 16 | header CRC |
 
 Header transport (fixed, family-wide, never negotiated):

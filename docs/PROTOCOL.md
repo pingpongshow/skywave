@@ -391,6 +391,27 @@ round-trip-scaled cadence when the ISS has gone idle and no ACK is
 otherwise due. The bit mirrors current state: a later ACK without it
 withdraws the request.
 
+**Poll.** The ISS sends a window of bursts back to back and listens only
+after the last, so it marks that burst with the PHY header's `poll` bit
+([WAVEFORM.md](WAVEFORM.md)): the window is full, or nothing more is
+queued or waiting. The IRS answers the burst that polls — with the gap
+bitmap and any `rx_fail` flag its earlier bursts earned — and holds its
+feedback otherwise. Answering every burst, as before, keyed the ACK into
+the ISS's next burst while the ISS was transmitting and deaf (two-station
+world, NARROW Moderate: every ACK lost, the AMC blind for 55 s, the
+session idled out). The bit is in the PHY header because a burst whose
+payload failed must still say whether another follows. Backstops: the
+tail flush (airtime-scaled silence, measured from the last burst HEARD,
+decoded or not) and the sender's ARQ timer, whose open-loop value covers
+a whole window of bursts plus the ACK, since the first frame's ACK now
+comes back a window later. After a `MODE_CHANGE` the ISS also holds DATA
+until the `MODE_ACK` arrives (at most one robust control frame plus 2 s),
+because the responder answers the announcement the moment it decodes
+it. A burst from the peer whose PHY header decoded refreshes the idle
+clock even when its payload failed: the peer is alive and keyed toward
+us, and a session at a mode the channel just outgrew must not idle out
+before the demotion reaches the air.
+
 **Handover.** When the peer has requested the turn, the ISS keeps it for
 a **minimum hold** of 4 measured round trips (two send-and-acknowledge
 cycles; at 2 the ISS used 7–40% of its own turn — one window, its ACK

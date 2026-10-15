@@ -130,6 +130,14 @@ frame runs 35–55 s. Two shortcuts retire a capture early:
   the same samples plus more trailing noise.
 - **Quiet try**: when the channel goes quiet between rungs, decode with
   exactly the audio that exists rather than waiting for the next rung.
+- **Header-complete try**: one attempt the moment the shortest frame the
+  detected preamble can start (preamble + sync + header, no payload) is
+  in hand. A robust-tier header on NARROW is 648 symbols (~19.8 s), so a
+  control frame is nearly all header and its airtime is unknowable
+  before its very end; the next rung (34 s) decoded every NARROW control
+  frame ~13 s late. Header-only frames now decode ~0.7 s after the burst
+  ends (the NARROW handshake went 137 → 86 s), and longer frames learn
+  their airtime here for burst-end finalization.
 
 Two bounds keep the ladder from consuming the receiver:
 
@@ -306,6 +314,14 @@ queue) while the channel is busy.
   control frame queued behind it (no priority inversion)
 - engine-level tests and bertool never feed the busy flag: the gate is
   inert there by construction
+- **a capture still airing counts as busy**: a detected preamble proves a
+  station is keyed for as long as its burst lasts - the capture's own
+  header airtime once decoded, else the burst the role expects (DATA at
+  the IRS, feedback at the ISS); the capture is retired the moment it
+  decodes. The energy meter alone is deaf inside fades and on NARROW
+  (a long burst lifts the min-tracked floor until the signal sits ~4 dB
+  above it, under the 6 dB threshold), which let the IRS key its ACK
+  over the ISS's next burst
 
 ## CW ID Renderer
 
