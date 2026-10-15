@@ -199,7 +199,10 @@ struct Node {
       const std::string v(f);
       if (v == "mid") cfg.family = Family::Mid;
       else if (v == "narrow") cfg.family = Family::Narrow;
-      else if (v == "ultra") cfg.family = Family::Ultra;
+      else if (v == "ultra") {
+        cfg.family = Family::Ultra;
+        cfg.ultraEnable = true;  // required for ULTRA, as in main.cpp
+      }
     }
     cfg.pttLeadMs = 20;
     cfg.pttTailMs = 10;

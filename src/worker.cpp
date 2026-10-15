@@ -337,6 +337,7 @@ void ModemWorker::rebuildEngine() {
   const bool css = cfg_.cssTier && prof.cssTier;
   if (css) caps |= kCapCssTier;
   ec.policy.cssEnable = css;
+  ec.policy.ultraEnable = cfg_.ultraEnable;
   ec.policy.caps = caps;
   ec.arqMaxRetries = cfg_.maxRetries;
   // `CHANMEM OFF` withholds the pointer, which disables seeding AND
