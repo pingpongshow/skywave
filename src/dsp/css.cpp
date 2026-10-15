@@ -384,35 +384,4 @@ std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
   return out;
 }
 
-std::vector<cfloat> cssModulateBytes(Family f, int sf,
-                                     std::span<const uint8_t> bytes) {
-  return cssModulate(f, sf, cssEncode(bytes, sf));
-}
-
-std::vector<uint8_t> cssDemodBytes(Family f, int sf,
-                                   std::span<const cfloat> section,
-                                   size_t byteCount,
-                                   std::span<const CssTap> taps) {
-  const size_t symLen = cssSymbolSamples(f, sf);
-  const size_t need = cssSymbolsForBytes(byteCount, sf);
-  const size_t nsym = std::min(section.size() / symLen, need);
-  std::vector<uint16_t> syms(nsym);
-  for (size_t s = 0; s < nsym; ++s) {
-    syms[s] = cssDemodSymbolTaps(f, sf, section.subspan(s * symLen, symLen),
-                                 taps, nullptr);
-  }
-  return cssDecode(syms, sf, byteCount);
-}
-
-std::vector<cfloat> cssModulatePayload(Family f, int mode,
-                                       std::span<const uint8_t> bytes) {
-  return cssModulateBytes(f, cssSf(mode), bytes);
-}
-
-std::vector<uint8_t> cssDemodPayload(Family f, int mode,
-                                     std::span<const cfloat> section,
-                                     size_t byteCount) {
-  return cssDemodBytes(f, cssSf(mode), section, byteCount);
-}
-
 }  // namespace skw

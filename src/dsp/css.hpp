@@ -42,7 +42,8 @@ inline int cssSf(int mode) {
 
 // CSS tier design floors (dB SNR, 3 kHz noise reference, AWGN): lowest
 // SNR with one-shot FER <= ~15%, measured 2026-07-29 with the matched-
-// filter demod (40 trials/point, sweep in bertool --css). Floors track
+// filter demod (40 trials/point; now FULL-FRAME, bertool --css-frames -
+// see kFloors). Floors track
 // the chip rate: a family's CSS band IS its noise bandwidth, so the
 // narrow families reach far below the WAVEFORM.md "-14 dB" tier target
 // while WIDE bottoms out near -13. Stored in kFloors alongside the OFDM
@@ -139,22 +140,5 @@ std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
                                    size_t byteCount);
 // Symbols required to carry `byteCount` payload bytes at `sf`.
 size_t cssSymbolsForBytes(size_t byteCount, int sf);
-
-// --- frame payload layer -------------------------------------------------------
-// Modulate a byte payload into a CSS baseband section (encode + modulate);
-// demodulate an aligned section back into bytes. The SF-level pair is
-// what the PHY framer uses (header transport is fixed SF8); the mode
-// wrappers map through cssSf().
-std::vector<cfloat> cssModulateBytes(Family f, int sf,
-                                     std::span<const uint8_t> bytes);
-std::vector<uint8_t> cssDemodBytes(Family f, int sf,
-                                   std::span<const cfloat> section,
-                                   size_t byteCount,
-                                   std::span<const CssTap> taps = {});
-std::vector<cfloat> cssModulatePayload(Family f, int mode,
-                                       std::span<const uint8_t> bytes);
-std::vector<uint8_t> cssDemodPayload(Family f, int mode,
-                                     std::span<const cfloat> section,
-                                     size_t byteCount);
 
 }  // namespace skw

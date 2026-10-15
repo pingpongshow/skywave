@@ -1365,7 +1365,10 @@ MID M0 fading floor.
   - FOLLOW-UP DONE (same day): the payload-only `bertool --css` gate
     measured the legacy Hamming payload layer (84-99% FER where full
     frames ran <= 7%) and blocked every CSS floor at that layer's limits.
-    `--css` is now a report-only diagnostic, `test_css` pins that layer's
+    `--css` became a report-only diagnostic (REMOVED later the same day,
+    with the legacy `cssModulatePayload`/`cssDemodPayload` API and its
+    three payload-layer tests - nothing in the modem used them; the
+    Hamming bit layer stays as the CSS header transport), `test_css` pinned that layer's
     own floors, and the CSS release gate is the full-frame sweep. ALL CSS
     floors re-measured on full frames (100 trials per 0.5 dB, curves in
     docs/conformance/css_frames_floors_2026-10-14/): WIDE -13.0/-10.5/

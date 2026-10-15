@@ -85,9 +85,9 @@ on breaking wire changes, never for releases. Both are 1.
    Every sweep must print `== all points pass ==`. **Every sweep writes a
    CSV.** The CSS gate is the FULL-FRAME sweep (`--css-frames`: preamble,
    sync, header copies, LDPC payload through `receiveFrame`), checked at
-   floor+1 (≤ 10%) and floor+3 like the OFDM sweeps. The old payload-only `--css` sweep is a
-   diagnostic of the legacy Hamming modem-layer API and is not a gate
-   (since 2026-10-14): NARROW `M0` passed it for months while full frames
+   floor+1 (≤ 10%) and floor+3 like the OFDM sweeps. The payload-only `--css` sweep of the
+   legacy Hamming modem-layer API was retired (2026-10-14) and then
+   removed with that API: NARROW `M0` passed it for months while full frames
    lost 30% at floor+3 (v1.2.1), and gating it against the full-frame
    floors then blocked them at the Hamming layer's own limits. The three
    fading commands previously had no `--csv`, so `rel_mod.csv` and

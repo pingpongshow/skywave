@@ -1,12 +1,11 @@
-// CSS deep tier (ROADMAP 6.1): symbol round-trips, gray/Hamming/interleave
-// properties, CFO tolerance of the non-coherent demod, and the FER-vs-SNR
-// gate down to the tier design floor (WAVEFORM.md: floors -9 -> -14 dB).
+// CSS deep tier (ROADMAP 6.1): symbol round-trips and the gray/Hamming/
+// interleave bit layer (the PHY header's transport). Channel FER, CFO and
+// floors are full-frame tests in test_css_phy (the payload-only modem-
+// layer tests went with that legacy API, 2026-10-14).
 #include <cstdio>
 #include <vector>
 
 #include "dsp/css.hpp"
-#include "fec/crc.hpp"
-#include "sim/chansim.hpp"
 #include "skytest.hpp"
 
 using namespace skw;
@@ -25,34 +24,7 @@ std::vector<uint8_t> noiseBytes(size_t n, uint64_t seed) {
   return v;
 }
 
-// One CSS frame trial: payload + CRC-32 through modulate -> channel ->
-// demodulate; success = CRC clean.
-bool cssTrial(Family fam, int mode, double snr3kDb, uint64_t seed,
-              size_t payloadBytes = 24, double cfoHz = 0.0) {
-  auto payload = noiseBytes(payloadBytes, seed);
-  const uint32_t crc = crc32(payload);
-  for (int i = 0; i < 4; ++i) payload.push_back(uint8_t(crc >> (8 * i)));
-  auto tx = cssModulatePayload(fam, mode, payload);
-  ChansimParams cp;
-  cp.fading = false;
-  cp.snr3kDb = snr3kDb;
-  cp.cfoHz = cfoHz;
-  cp.seed = seed * 31 + 7;
-  auto rx = Chansim::run(cp, tx);
-  rx.resize(tx.size());  // symbols are aligned from sample 0
-  auto got = cssDemodPayload(fam, mode, rx, payload.size());
-  if (got.size() != payload.size()) return false;
-  uint32_t wantCrc = 0;
-  for (int i = 0; i < 4; ++i) {
-    wantCrc |= uint32_t(got[got.size() - 4 + size_t(i)]) << (8 * i);
-  }
-  got.resize(got.size() - 4);
-  return crc32(got) == wantCrc;
-}
-
 }  // namespace
-
-// --- geometry ----------------------------------------------------------------
 
 TEST_CASE(css_plan_geometry) {
   for (Family f :
@@ -141,99 +113,6 @@ TEST_CASE(css_whole_symbol_loss_survives) {
       bad[victim] = uint16_t((int(bad[victim]) + N / 2 + 1) % N);
       CHECK(cssDecode(bad, sf, bytes.size()) == bytes);
     }
-  }
-}
-
-// --- payload layer over the channel ------------------------------------------
-
-TEST_CASE(css_payload_clean_channel_all_modes_families) {
-  for (Family f :
-       {Family::Wide, Family::Mid, Family::Narrow, Family::Ultra}) {
-    for (int mode = 0; mode <= 3; ++mode) {
-      CHECK(cssTrial(f, mode, 40.0, uint64_t(900 + mode)));
-    }
-  }
-}
-
-TEST_CASE(css_cfo_tolerance) {
-  // Non-coherent dechirp: a CFO shifts the post-FFT tone by cfo/binHz
-  // bins. WIDE SF8 bins are ~9.4 Hz apart; a residual of a few Hz (what
-  // the preamble estimate leaves at this aligned modem layer) must decode
-  // after gray+Hamming absorb the occasional adjacent-bin hit. Test at
-  // moderate SNR, both signs.
-  constexpr double kResidualHz = 5.0;
-  for (double cfo : {-kResidualHz / 2.0, 2.0, kResidualHz / 2.0}) {
-    CHECK(cssTrial(Family::Wide, 0, 0.0, 4242, 24, cfo));
-  }
-  // SF5 bins are 8x wider; the full residual is harmless.
-  CHECK(cssTrial(Family::Wide, 3, 5.0, 777, 24, kResidualHz));
-}
-
-// --- ROADMAP 6.1 gate: FER vs SNR down to -14 dB -----------------------------
-
-// Floors of THIS layer - the aligned Hamming(7,4) modem-layer API, no
-// preamble/sync/header (measured 2026-07-29, bertool --css). They are no
-// longer kFloors: frames carry an LDPC payload, and kFloors holds what a
-// FULL frame achieves (bertool --css-frames). Pinned here so the layer's
-// own regression test does not move with the frame floors.
-double payloadLayerFloorDb(Family f, int mode) {
-  static const double t[kNumFamilies][4] = {
-      {-13.0, -10.5, -8.0, -5.0},   // WIDE
-      {-16.5, -14.0, -12.0, -9.0},  // MID
-      {-19.5, -17.5, -15.0, -12.0}, // NARROW
-      {-12.5, -11.0, -8.0, -5.0},   // ULTRA
-  };
-  return t[size_t(f)][mode];
-}
-
-TEST_CASE(css_fer_gate_floors) {
-  // Every (family, mode) at this layer's floor: FER <= ~15% by definition
-  // of the floor, gated at 32% for 25-trial binomial + seed slack. The
-  // full curves are bertool --css (diagnostic).
-  const int kTrials = 25;
-  const Family fams[] = {Family::Wide, Family::Mid, Family::Narrow,
-                         Family::Ultra};
-  std::printf("  CSS FER at design floors (AWGN, %d trials)\n", kTrials);
-  for (Family f : fams) {
-    for (int mode = 0; mode <= 3; ++mode) {
-      int fails = 0;
-      for (int t = 0; t < kTrials; ++t) {
-        if (!cssTrial(f, mode, payloadLayerFloorDb(f, mode),
-                      uint64_t(f) * 77777 + uint64_t(mode) * 1000 +
-                          uint64_t(t) + 1)) {
-          ++fails;
-        }
-      }
-      const double fer = double(fails) / kTrials;
-      std::printf("    %-6s M%d SF%d %+6.1f dB : FER %3.0f%%\n",
-                  plan(f).name, mode, cssSf(mode), payloadLayerFloorDb(f, mode),
-                  100.0 * fer);
-      CHECK(fer <= 0.32);
-    }
-  }
-  // Curve shape above the floor (WIDE): +3 dB must be nearly clean.
-  for (int mode = 0; mode <= 3; ++mode) {
-    int fails = 0;
-    for (int t = 0; t < kTrials; ++t) {
-      if (!cssTrial(Family::Wide, mode, payloadLayerFloorDb(Family::Wide, mode) + 3.0,
-                    uint64_t(9000 + mode * 100 + t))) {
-        ++fails;
-      }
-    }
-    CHECK(double(fails) / kTrials <= 0.12);
-  }
-  // ROADMAP 6.1 gate: usable FER down to -14 dB. MID and NARROW M0
-  // floors sit below -14, so -14 itself must be nearly clean there.
-  for (Family f : {Family::Mid, Family::Narrow}) {
-    int fails = 0;
-    for (int t = 0; t < 20; ++t) {
-      if (!cssTrial(f, 0, -14.0, uint64_t(f) * 331 + uint64_t(t) + 40)) {
-        ++fails;
-      }
-    }
-    std::printf("    %-6s M0 SF8  -14.0 dB : FER %3.0f%%\n", plan(f).name,
-                5.0 * fails);
-    CHECK(fails <= 2);
   }
 }
 

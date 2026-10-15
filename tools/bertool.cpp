@@ -7,12 +7,13 @@
 // Usage:
 //   bertool [--trials N] [--offsets "0,3,10"] [--families wide,narrow]
 //           [--modes 4,8,13] [--preset good|moderate|poor|awgn]
-//           [--csv path] [--seed S] [--css] [--cfo HZ] [--drift HZ_PER_S]
-//           [--base awgn]
+//           [--csv path] [--seed S] [--css-frames] [--cfo HZ]
+//           [--drift HZ_PER_S] [--base awgn]
 //
-// --css sweeps the CSS deep tier (M0-M3) instead of the OFDM ladder:
-// aligned modem-level FER (no PHY sync - that is ROADMAP 6.2), offsets
-// relative to the per-family cssFloorDb table.
+// --css-frames sweeps the CSS deep tier (M0-M3) through the full PHY
+// frame path instead of the OFDM ladder. (The payload-only --css sweep of
+// the legacy Hamming modem-layer API was removed 2026-10-14: frames carry
+// an LDPC payload.)
 //
 // --cfo / --drift apply a static carrier offset and a linear drift (from
 // the start of each trial's signal) in the channel; the table then also
@@ -47,11 +48,9 @@ struct Args {
   std::string preset = "moderate";
   std::string csv;
   uint64_t seed = 1000;
-  bool css = false;
   // --css-frames: run the FULL PHY frame path (chirp preamble, sync,
   // header copies, LDPC payload -> receiveFrame) for the CSS modes
-  // M0-M3, unlike --css which measures payload-only FER through the
-  // modem-layer API and cannot see header loss. --css-hdr N sets the
+  // M0-M3. --css-hdr N sets the
   // header copies on air (2 = v1 layout, 1 = connected-session short
   // layout) so the time-diversity trade-off can be measured.
   bool cssFrames = false;
@@ -115,78 +114,6 @@ struct ConfigResult {
   }
 };
 
-// One aligned CSS frame trial (24-byte payload + CRC-32), success = CRC
-// clean after modulate -> chansim -> matched-filter demod.
-bool cssFrameTrial(Family fam, int mode, const ChansimParams& cp) {
-  std::vector<uint8_t> payload(24);
-  uint64_t s = cp.seed * 2654435761u + 1;
-  for (auto& b : payload) {
-    s ^= s << 13;
-    s ^= s >> 7;
-    s ^= s << 17;
-    b = uint8_t(s >> 32);
-  }
-  const uint32_t crc = crc32(payload);
-  for (int i = 0; i < 4; ++i) payload.push_back(uint8_t(crc >> (8 * i)));
-  auto tx = cssModulatePayload(fam, mode, payload);
-  auto rx = Chansim::run(cp, tx);
-  rx.resize(tx.size());
-  auto got = cssDemodPayload(fam, mode, rx, payload.size());
-  if (got.size() != payload.size()) return false;
-  uint32_t want = 0;
-  for (int i = 0; i < 4; ++i) {
-    want |= uint32_t(got[got.size() - 4 + size_t(i)]) << (8 * i);
-  }
-  got.resize(got.size() - 4);
-  return crc32(got) == want;
-}
-
-// CSS PAYLOAD-LAYER sweep (diagnostic, NOT a release gate): FER vs SNR
-// for M0-M3 through the aligned modem-layer API - Hamming(7,4) bit layer,
-// no preamble/sync/header - at offsets around the per-family floors.
-// Frames carry an LDPC payload and the floors are FULL-FRAME floors
-// (--css-frames is the CSS gate), so this layer is reported only: gating
-// it against the frame floors blocked them at the Hamming layer's limits
-// (MID M1-M3 84-99% FER where full frames ran <= 7%).
-int cssSweep(const Args& a, FILE* csv) {
-  if (csv) fprintf(csv, "family,mode,sf,snr3k,trials,fails,fer\n");
-  printf("%-7s %-4s %-3s %7s %7s | %5s %7s\n", "family", "mode", "sf",
-         "floor", "snr", "fails", "FER");
-  for (Family fam : a.families) {
-    for (int mode : a.modes) {
-      if (cssSf(mode) == 0) continue;  // CSS modes only
-      const double floor = cssFloorDb(fam, mode);
-      for (double off : a.offsets) {
-        ChansimParams base = presetParams(a.preset);
-        int fails = 0;
-        for (int t = 0; t < a.trials; ++t) {
-          ChansimParams cp = base;
-          cp.snr3kDb = floor + off;
-          cp.cfoHz = a.cfo;
-          cp.cfoDriftHzPerSec = a.drift;
-          cp.seed = a.seed + uint64_t(t) * 7919 + uint64_t(mode) * 131 +
-                    uint64_t(fam) * 100003 +
-                    uint64_t(std::llround(off * 2.0 + 64.0)) * 15485863ull;
-          if (!cssFrameTrial(fam, mode, cp)) ++fails;
-        }
-        const double fer = double(fails) / a.trials;
-        printf("%-7s M%-3d %-3d %7.1f %7.1f | %5d %6.1f%%\n",
-               plan(fam).name, mode, cssSf(mode), floor, floor + off, fails,
-               100.0 * fer);
-        fflush(stdout);
-        if (csv) {
-          fprintf(csv, "%s,%d,%d,%.1f,%d,%d,%.4f\n", plan(fam).name, mode,
-                  cssSf(mode), floor + off, a.trials, fails, fer);
-          fflush(csv);
-        }
-
-      }
-    }
-  }
-  printf("== CSS payload-layer sweep (diagnostic; the CSS gate is "
-         "--css-frames) ==\n");
-  return 0;
-}
 
 }  // namespace
 
@@ -219,7 +146,6 @@ int main(int argc, char** argv) {
     } else if (!strcmp(argv[i], "--preset")) a.preset = need("--preset");
     else if (!strcmp(argv[i], "--csv")) a.csv = need("--csv");
     else if (!strcmp(argv[i], "--seed")) a.seed = strtoull(need("--seed").c_str(), nullptr, 10);
-    else if (!strcmp(argv[i], "--css")) a.css = true;
     else if (!strcmp(argv[i], "--cfo")) a.cfo = atof(need("--cfo").c_str());
     else if (!strcmp(argv[i], "--base")) a.baseAwgn = need("--base") == "awgn";
     else if (!strcmp(argv[i], "--table")) a.table = need("--table");
@@ -249,12 +175,7 @@ int main(int argc, char** argv) {
 
   // The OFDM mode list default does not apply to the CSS tier.
   const std::vector<int> ofdmDefault = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
-  if ((a.css || a.cssFrames) && a.modes == ofdmDefault) a.modes = {0, 1, 2, 3};
-  if (a.css) {
-    const int rc = cssSweep(a, csv);
-    if (csv) fclose(csv);
-    return rc;
-  }
+  if (a.cssFrames && a.modes == ofdmDefault) a.modes = {0, 1, 2, 3};
 
   if (csv) {
     fprintf(csv,

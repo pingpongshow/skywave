@@ -519,8 +519,8 @@ band is the noise bandwidth, so narrow families reach deepest:
 | ULTRA | −14.0 | −12.5 | −10.0 | −7.5 |
 
 These are 1.5–3 dB below the 2026-07-29 table, which was measured on the
-legacy Hamming payload layer alone (`bertool --css`, now a report-only
-diagnostic of that layer). NARROW `M0`/`M1` once sat ABOVE it instead
+legacy Hamming payload layer alone (`bertool --css`; that layer and the
+sweep have since been removed - frames carry LDPC). NARROW `M0`/`M1` once sat ABOVE it instead
 (−16.0/−15.5 in v1.2.1): the 4-rep preamble could not acquire what the
 payload decoded; the 12-rep NARROW/MID preamble and the branch check
 and retry below fixed that. The table holds what a

@@ -201,7 +201,7 @@ using FloorTable = std::array<double, kNumModes>;
 // -14.0/-12.0/-10.0/-7.5 (M0/M1 one step up: exactly 15% at -14.5/
 // -12.5, and the 40-trial gate seed read 17.5/20%) - 1.5-3 dB below the 2026-07-29 values, which
 // were measured on the legacy Hamming payload layer (`bertool --css`,
-// now a report-only diagnostic; frames carry LDPC). Curves archived in
+// since removed with that layer; frames carry LDPC). Curves archived in
 // docs/conformance/css_frames_floors_2026-10-14/.
 // Then the CSS branch retry was fixed (it had fought the sync branch
 // check and covered only +-1 branch) and every floor re-measured (100
