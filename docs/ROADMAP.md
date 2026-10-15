@@ -1258,6 +1258,15 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### v1.2.3 (2026-10-15)
+
+Released with all seven gates passing on the candidate; two small fixes
+after the gates (TCP immediate reconnect, no retries on truncated
+captures) with the default suite re-run. Real-device ST3 soak cycle
+counts vary about +-15% run to run (15-minute runs 226-311 cycles across
+configurations), so soak cycle totals are not a throughput A/B; the
+deterministic ST2 soaks are. Release notes: docs/releases/v1.2.3.md.
+
 ### Remaining-gaps round (2026-10-13, after v1.2.2)
 
 Worked in dependency order: the search cost first (a cheaper search
