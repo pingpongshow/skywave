@@ -69,6 +69,19 @@ std::vector<uint8_t> TcpServer::poll() {
   for (;;) {
     int fd = ::accept(listen_, nullptr, nullptr);
     if (fd < 0) break;
+    // A client that reconnects at once (the companion app's Connect while
+    // connected, or a restart) closes its old socket a moment before the
+    // new one arrives, and accept ran BEFORE the read that notices the
+    // close - so the newcomer was refused as an "extra" and the app saw
+    // a data-socket error. If the current client has already closed (EOF
+    // with nothing left unread), drop it and take the newcomer.
+    if (client_ >= 0) {
+      uint8_t probe;
+      const ssize_t n = ::recv(client_, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        dropClient();
+      }
+    }
     if (client_ < 0) {
       setNonBlocking(fd);
       int one = 1;

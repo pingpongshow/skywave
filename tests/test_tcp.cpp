@@ -412,6 +412,37 @@ TEST_CASE(socket_data_port_byte_stream) {
   ::close(fd);
 }
 
+// An immediate reconnect must be accepted: the old socket closes a moment
+// before the new one arrives, and accept ran before the read that notices
+// the close, so the newcomer was refused as an extra client (found by the
+// companion app's scripted test: Connect after auto-connect failed).
+TEST_CASE(immediate_reconnect_is_accepted) {
+  TcpServer srv;
+  CHECK(srv.open(0));
+  int fd = connectLoopback(srv.boundPort());
+  for (int i = 0; i < 50 && !srv.clientConnected(); ++i) {
+    srv.poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(srv.clientConnected());
+  ::close(fd);                                  // no poll in between
+  int fd2 = connectLoopback(srv.boundPort());
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  srv.poll();                                   // accept + liveness in one
+  std::vector<uint8_t> payload = {0x52, 0x45};
+  ::send(fd2, payload.data(), payload.size(), 0);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 100 && got.size() < payload.size(); ++i) {
+    auto rx = srv.poll();
+    got.insert(got.end(), rx.begin(), rx.end());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(got == payload);
+  srv.send(payload);
+  CHECK_EQ(int(recvSome(fd2).size()), int(payload.size()));
+  ::close(fd2);
+}
+
 // A client that stops reading briefly must NOT be disconnected: the send
 // path buffers the remainder and retries it on the next poll. Dropping the
 // client on EAGAIN cost a companion app its session mid-transfer whenever
