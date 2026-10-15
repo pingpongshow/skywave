@@ -209,19 +209,26 @@ using FloorTable = std::array<double, kNumModes>;
 // (it was branch errors, not the payload, that limited it), ULTRA M1
 // -12.0 -> -12.5, NARROW M3 -15.0 -> -14.5 (raised: 19% at -15.0 here,
 // 12% before - too close to the line).
+// M5/M6 on MID/NARROW/ULTRA RE-MEASURED 2026-10-14 for the leftover-cell
+// copies (layout.hpp; floor_campaign subset, 200/100 trials, same
+// derivation): AWGN MID M6 -10.0 -> -10.5, NARROW M5/M6 -16.0/-13.0 ->
+// -16.5/-13.5, ULTRA M5/M6 -8.5/-5.5 -> -9.0/-6.0; fading tables likewise
+// 0.5-1.5 dB lower (NARROW M6 Moderate -6.5 -> -8.0). M7 (<= 5.5%
+// leftover) measured unchanged with the copies on/off and keeps its
+// values. Curves: docs/conformance/leftover_m5m7_2026-10-14/.
 inline constexpr std::array<FloorTable, kNumFamilies> kFloors = {{
     // WIDE
     {{-14.5, -12.5, -10.0, -7.5,
       -11.0, -8.5, -6.0, -3.0, 0.5, 3.0, 5.5, 9.5, 13.5, 17.0, 99.0}},
     // MID
     {{-17.5, -16.0, -14.0, -11.5,
-      -15.0, -13.0, -10.0, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
+      -15.0, -13.0, -10.5, -7.5, -3.5, -0.5, 2.0, 6.0, 9.5, 13.5, 99.0}},
     // NARROW
     {{-18.5, -18.0, -17.0, -14.5,
-      -17.5, -16.0, -13.0, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
+      -17.5, -16.5, -13.5, -10.5, -6.5, -3.5, -1.0, 2.5, 6.5, 10.5, 99.0}},
     // ULTRA
     {{-14.0, -12.5, -10.0, -7.5,
-      -11.0, -8.5, -5.5, -3.0, 1.0, 3.5, 6.0, 10.0, 14.0, 17.5, 99.0}},
+      -11.0, -9.0, -6.0, -3.0, 1.0, 3.5, 6.0, 10.0, 14.0, 17.5, 99.0}},
 }};
 inline double floorDb(Family f, int mode);  // reads the active profile
 
@@ -262,16 +269,16 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
       -5.5, -3.0, -0.5, 4.0, 7.5, 11.0, 13.0, 17.5, 21.0, 25.0, kFadingNA}},
     // MID
     {{-11.0, -10.0, -8.5, -6.5,
-      -9.0, -7.5, -5.0, -2.5, 6.0, 10.5, 10.5, 14.5, 17.5, 23.0, kFadingNA}},
+      -9.0, -8.0, -5.5, -2.5, 6.0, 10.5, 10.5, 14.5, 17.5, 23.0, kFadingNA}},
     // NARROW (all modes on CCIR Good - see above). M5 RAISED -8.5 -> -8.0
     // for v1.2.1: 400 trials gave 15.2% at the old floor+1 (the 15% gate
     // passed on slack alone) and 12.2% at -7.0; the fixed-seed 40-trial
     // release sweep failed the point identically at v1.2.0 and v1.2.1.
     {{-11.5, -11.0, -10.0, -7.5,
-      -10.5, -8.0, -4.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
+      -10.5, -8.0, -5.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
     // ULTRA
     {{-7.5, -6.5, -4.0, -1.5,
-      -5.0, -2.5, 1.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
+      -5.0, -3.0, 0.0, 2.5, 7.5, 11.5, 13.0, 18.0, 21.5, 26.0, kFadingNA}},
 }};
 
 // Per-channel-class fading floors (v1.2.0, GAP_CLOSURE_PLAN.md 8.9): the
@@ -297,13 +304,13 @@ inline constexpr std::array<FloorTable, kNumFamilies> kModerateFloors = {{
       -5.5, -3.0, -0.5, 4.0, 10.0, 13.5, 14.0, 19.0, 22.0, 28.5, kFadingNA}},
     // MID
     {{-11.0, -10.0, -8.5, -6.5,
-      -9.0, -7.5, -5.0, -2.5, 4.5, 7.5, 10.5, 14.5, 17.0, 24.5, kFadingNA}},
+      -9.0, -8.0, -5.5, -2.5, 4.5, 7.5, 10.5, 14.5, 17.0, 24.5, kFadingNA}},
     // NARROW
     {{-14.0, -13.5, -11.5, -9.0,
-      -10.0, -9.5, -6.5, -5.0, 3.5, 6.5, 8.5, 13.0, 16.0, kFadingNA, kFadingNA}},
+      -10.0, -10.0, -8.0, -5.0, 3.5, 6.5, 8.5, 13.0, 16.0, kFadingNA, kFadingNA}},
     // ULTRA
     {{-7.5, -6.5, -4.0, -1.5,
-      -5.0, -2.5, 1.0, 2.5, 8.5, 12.5, 15.0, 19.0, 22.5, 26.5, kFadingNA}},
+      -5.0, -3.0, 0.0, 2.5, 8.5, 12.5, 15.0, 19.0, 22.5, 26.5, kFadingNA}},
 }};
 inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
     // WIDE
@@ -311,13 +318,13 @@ inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
       -4.0, -2.5, 0.5, 2.0, 11.5, 19.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // MID
     {{-9.0, -5.0, -5.0, 2.5,
-      -8.0, -6.5, -4.5, 0.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+      -8.0, -7.0, -4.5, 0.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // NARROW
     {{-13.0, -12.0, -9.5, -6.0,
-      -10.0, -9.0, -7.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+      -10.0, -9.5, -8.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // ULTRA
     {{-3.0, 1.5, kFadingNA, kFadingNA,
-      -4.0, -1.5, 0.0, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
+      -4.0, -2.5, 0.5, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile
 

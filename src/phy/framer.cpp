@@ -173,7 +173,7 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
 int appendOfdmSymbols(Family family, Constellation constellation, int spread,
                       CpMode cp, std::span<const uint8_t> codedBits,
                       int symIdx0, std::vector<cfloat>& out,
-                      const CarrierMask* mask) {
+                      const CarrierMask* mask, bool leftoverCopies) {
   const int bps = bitsPerSymbol(constellation);
   Fft fft(kFftBaseband);
   const int cpLen = cpSamplesAudio(cp) / kDecimation;
@@ -197,6 +197,8 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
       for (int c : lay.dataCarriers) pool.push_back({g, c});
     }
     const int nSrc = int(pool.size()) / spread;
+    std::vector<cfloat> srcVal;
+    srcVal.reserve(size_t(nSrc));
 
     for (int i = 0; i < nSrc; ++i) {
       uint32_t v = 0;
@@ -210,6 +212,17 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
         auto [g, c] = pool[size_t(i + k * nSrc)];
         freq[size_t(g)][size_t(carrierToBasebandBin(family, c))] =
             s * spreadPhase(i, k, symIdx);
+      }
+      srcVal.push_back(s);
+    }
+    // Leftover cells: extra copies (layout.hpp leftoverCopiesEnabled).
+    if (nSrc > 0 && leftoverCopies && leftoverCopiesForSpread(spread)) {
+      const int rem = int(pool.size()) - nSrc * spread;
+      for (int j = 0; j < rem; ++j) {
+        const int i = j % nSrc;
+        auto [g, c] = pool[size_t(nSrc * spread + j)];
+        freq[size_t(g)][size_t(carrierToBasebandBin(family, c))] =
+            srcVal[size_t(i)] * spreadPhase(i, spread + j / nSrc, symIdx);
       }
     }
     const float ts = ofdmTimeScale(family);
@@ -436,7 +449,8 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
     }
     if (!allBits.empty()) {
       sym += appendOfdmSymbols(p.family, md.constellation, md.spread,
-                               p.cpMode, allBits, sym, frame, p.mask);
+                               p.cpMode, allBits, sym, frame, p.mask,
+                               leftoverCopiesEnabled());
     }
   }
 

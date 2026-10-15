@@ -3,6 +3,8 @@
 // between transmitter and receiver.
 #pragma once
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -124,6 +126,27 @@ inline int sourceSymbolsPerGroup(Family f, int symIdx, int spread,
     pool += int(symbolLayout(f, symIdx + s, mask).dataCarriers.size());
   }
   return pool / spread;
+}
+
+// LEFTOVER CELLS. A spread group's pool rarely divides by the spreading
+// factor; the remainder cells (up to 32% at M4) used to stay empty. When
+// on, remainder cell j carries an extra copy of source (j % nSrc), copy
+// index S + j / nSrc - more frequency diversity, same rate. Both ends
+// must agree (on by default; SKW_LEFTOVER_COPIES=0 is the A/B).
+// Spreads it applies to: S <= 8 (M5-M7). The frame is normalized to unit
+// RMS, so filling the cells moves energy INTO the payload and away from
+// the preamble/ZC/header: at M5/M6 the payload is the limit and gains
+// (NARROW M5 at its floor 77 -> 13%), at M4 (S=16) the header is and
+// lost (NARROW M4 47 -> 83%, header failures 20 -> 37).
+inline bool leftoverCopiesForSpread(int spread) {
+  return spread > 1 && spread <= 8;
+}
+inline bool leftoverCopiesEnabled() {
+  static const bool on = [] {
+    const char* e = std::getenv("SKW_LEFTOVER_COPIES");
+    return !(e && e[0] == '0');
+  }();
+  return on;
 }
 
 // Map a family carrier index to a baseband FFT bin (0..319).

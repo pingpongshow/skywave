@@ -1228,9 +1228,32 @@ they are not re-raised. Commands are the original measurements.
     inserted or dropped k x 5.33 ms; 2026-10-12 on-air finding). Needs a
     slip impairment in chansim/bertool and a conformance re-run; the
     risk is false re-syncs under deep fades.
-  - [ ] **Use the robust-tier leftover carriers** (top ~12% of WIDE
-    carries pilots only in M4-M7, because the carrier count is not a
-    multiple of the spreading factor).
+  - [x] **Use the robust-tier leftover carriers - DONE 2026-10-14 (M5-M7).**
+    Measured first: the empty remainder cells are 14-32% at M4 (MID 32%,
+    NARROW 30%, ULTRA 24%, WIDE 14%) and up to 30% at M5 (NARROW). They
+    were never wasted POWER - the frame is normalized to unit RMS - so
+    using them moves energy rather than creating it. Carrying data into
+    them would trade rate for SNR ~1:1 (Eb/N0-neutral). Extra COPIES keep
+    the rate and shift energy into the payload: at M5/M6 the payload is
+    the limit and it gains (AWGN NARROW M5 at its floor 73 -> 13%, M6
+    45 -> 9%; CCIR Good NARROW summed FER 108 -> 87; Moderate/Poor
+    neutral), at M4 the header is the limit and it lost (header failures
+    20 -> 37, NARROW M4 47 -> 83%) - so S <= 8 only, payload only (the
+    first attempt also filled HEADER cells and cost every mode).
+    `SKW_LEFTOVER_COPIES=0` A/B. Floors re-measured for MID/NARROW/ULTRA
+    M5-M7 (curves docs/conformance/leftover_m5m7_2026-10-14/): AWGN MID M6
+    -10.5, NARROW M5/M6 -16.5/-13.5, ULTRA M5/M6 -9.0/-6.0, fading tables
+    0.5-1.5 dB lower; M7 (<= 5.5% leftover) measured identical with the
+    copies on/off and keeps its values.
+  - [ ] **NARROW link in the ST2 world fails - NEW, pre-existing.** Found
+    while soaking the leftover copies on other families (new
+    `SKW_ST2_FAMILY` harness switch; every soak before ran WIDE): NARROW
+    churn seed 11 stalls at t=861 s, and the Moderate floor scenario at a
+    6/2 dB set point delivers 0 B with 2 reconnects - identical with the
+    leftover copies on and off, so not caused by them. MID passes. PHY
+    sweeps (bertool) of NARROW are healthy, so the cause is link-level or
+    in the ST2 world (handshake/ARQ timing at NARROW's long robust
+    frames). To investigate.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).

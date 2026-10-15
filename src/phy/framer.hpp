@@ -133,6 +133,7 @@ FrameBits buildFrameBits(const TxFrameParams& p);
 int appendOfdmSymbols(Family family, Constellation constellation, int spread,
                       CpMode cp, std::span<const uint8_t> codedBits,
                       int symIdx0, std::vector<cfloat>& out,
-                      const CarrierMask* mask = nullptr);
+                      const CarrierMask* mask = nullptr,
+                      bool leftoverCopies = false);
 
 }  // namespace skw

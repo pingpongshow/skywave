@@ -214,6 +214,7 @@ variable that changes MAC behaviour is worse than a documented one.
 | `SKW_CSS_BRANCH_RETRY` | (unset = on) | `0`: a CSS frame whose payload failed is not re-received on the neighbouring CFO branches (A/B) |
 | `SKW_CSS_TAP_SPAN_MS` | `3` | CSS RAKE tap search span either side of the anchor, at least this many ms (and >= 3 chips) |
 | `SKW_CSS_FAR_TAP_PEAK` / `SKW_CSS_FAR_TAP_NOISE` | `0.35` / `3.5` | a CSS tap beyond 3 chips must reach this fraction of the peak and this multiple of the noise median |
+| `SKW_LEFTOVER_COPIES` | (unset = on) | `0`: M5-M7 leave a spread group's remainder cells empty instead of filling them with extra copies; BOTH ends must agree (A/B) |
 | `SKW_CHIRP_ALT` | (unset = on) | `0`: a failed frame is not retried on the detector's runner-up signatures (A/B) |
 | `SKW_CSS_SEARCH_HDR_TAPS` | (unset) | set: drift-search passes start from the header walk's tap state instead of the sync profile (pre-2026-10-13; A/B) |
 | `SKW_CHANCLASS_SPREAD_EMA` | (unset) | set: the Severe gate reads the delay-spread EMA (pre-v1.2.2) instead of the 9-frame median (A/B) |

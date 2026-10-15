@@ -193,6 +193,14 @@ struct Node {
   Node(FakeClock& clk, const char* call) {
     cfg.callsign = call;
     cfg.listen = true;
+    // SKW_ST2_FAMILY=wide|mid|narrow|ultra runs both modems on another
+    // bandwidth family (default WIDE).
+    if (const char* f = std::getenv("SKW_ST2_FAMILY")) {
+      const std::string v(f);
+      if (v == "mid") cfg.family = Family::Mid;
+      else if (v == "narrow") cfg.family = Family::Narrow;
+      else if (v == "ultra") cfg.family = Family::Ultra;
+    }
     cfg.pttLeadMs = 20;
     cfg.pttTailMs = 10;
     w.emplace(cfg, clk, rxRing, txRing);

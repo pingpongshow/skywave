@@ -92,6 +92,12 @@ Robust modes repeat each modulated symbol across `S` carriers before IFFT:
   carriers per symbol) pools **two consecutive symbols**, making its
   deepest mode frequency+time spread. The scattered pilot positions rotate
   every symbol, so the pool is computed per group, identically at TX and RX
+- a group's pool rarely divides by `S`; at `S ≤ 8` (`M5`–`M7`) the
+  remainder cells carry **extra copies** (cell j → source j mod nSrc), so
+  no data cell is left empty. Rate is unchanged; because the frame is
+  normalized to unit RMS, filling them moves energy into the payload
+  (NARROW `M5`/`M6`: ~1 dB lower floors). `M4` (`S16`) leaves them empty:
+  there the header is the limit and losing energy to the payload hurt
 - each copy is rotated by a per-copy pseudorandom phase (whitening the PAPR
   and decorrelating narrowband interference)
 - the receiver maximum-ratio-combines the `S` copies **after** equalization,
@@ -166,8 +172,8 @@ ordered strictly by robustness.
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
 | `M4` | 257 | 128 | −11.0 dB |
-| `M5` | 514 | 257 | −8.5 dB |
-| `M6` | 1027 | 514 | −5.5 dB |
+| `M5` | 514 | 257 | −9.0 dB |
+| `M6` | 1027 | 514 | −6.0 dB |
 | `M7` | 2054 | 1027 | −3.0 dB |
 | `M8` | 4109 | 2054 | +1.0 dB |
 | `M9` | 4109 | 3082 | +3.5 dB |
@@ -215,7 +221,7 @@ without re-running `bertool` breaks it.
 |---|---:|---:|---:|
 | `M4` | 96 | 48 | −15.0 dB |
 | `M5` | 193 | 96 | −13.0 dB |
-| `M6` | 385 | 193 | −10.0 dB |
+| `M6` | 385 | 193 | −10.5 dB |
 | `M7` | 770 | 385 | −7.5 dB |
 | `M8` | 1540 | 770 | −3.5 dB |
 | `M9` | 1540 | 1155 | −0.5 dB |
@@ -229,8 +235,8 @@ without re-running `bertool` breaks it.
 | Mode | GROSS bps | NET bps | Floor |
 |---|---:|---:|---:|
 | `M4` | 46 | 23 | −17.5 dB |
-| `M5` | 93 | 46 | −16.0 dB |
-| `M6` | 186 | 93 | −13.0 dB |
+| `M5` | 93 | 46 | −16.5 dB |
+| `M6` | 186 | 93 | −13.5 dB |
 | `M7` | 371 | 186 | −10.5 dB |
 | `M8` | 742 | 371 | −6.5 dB |
 | `M9` | 742 | 557 | −3.5 dB |
@@ -660,9 +666,9 @@ mode never reaches 15% FER on that channel inside the measured range
 | Family | Moderate M4…M13 (dB) | Poor M4…M13 (dB) |
 |---|---|---|
 | WIDE | −5.5 −3.0 −0.5 4.0 10.0 13.5 14.0 19.0 22.0 28.5 | −4.0 −2.5 0.5 2.0 11.5 19.0 NA NA NA NA |
-| MID | −9.0 −7.5 −5.0 −2.5 4.5 7.5 10.5 14.5 17.0 24.5 | −8.0 −6.5 −4.5 0.0 NA NA NA NA NA NA |
-| NARROW | −10.0 −9.5 −6.5 −5.0 3.5 6.5 8.5 13.0 16.0 NA | −10.0 −9.0 −7.0 −5.0 10.5 NA NA NA NA NA |
-| ULTRA | −5.0 −2.5 1.0 2.5 8.5 12.5 15.0 19.0 22.5 26.5 | −4.0 −1.5 0.0 3.5 12.5 20.0 NA NA NA NA |
+| MID | −9.0 −8.0 −5.5 −2.5 4.5 7.5 10.5 14.5 17.0 24.5 | −8.0 −7.0 −4.5 0.0 NA NA NA NA NA NA |
+| NARROW | −10.0 −10.0 −8.0 −5.0 3.5 6.5 8.5 13.0 16.0 NA | −10.0 −9.5 −8.0 −5.0 10.5 NA NA NA NA NA |
+| ULTRA | −5.0 −3.0 0.0 2.5 8.5 12.5 15.0 19.0 22.5 26.5 | −4.0 −2.5 0.5 3.5 12.5 20.0 NA NA NA NA |
 
 All fading tables use FER ≤ 15% at the floor (the conformance base),
 measured with `tools/floor_campaign.sh` (100 trials per 1.5 dB) and

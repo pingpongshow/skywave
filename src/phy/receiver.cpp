@@ -164,6 +164,7 @@ struct SymbolWalker {
   // Loop gain for this walk; < 0 takes fllGain() (the drift retry in
   // receiveFrame sets fllDriftGain()).
   double fllGainOverride = -1.0;
+  bool leftoverCopies = false;  // payload walk only (layout.hpp)
   // Drift retry: a measured linear drift (Hz/s) pre-derotated as a
   // quadratic phase from `driftOrigin` (absolute sample), so the FLL only
   // tracks what the estimate missed. And the trace the estimate comes
@@ -276,6 +277,10 @@ struct SymbolWalker {
       const auto& h = hS[size_t(last)];
       const float nvar = float(nvS[size_t(last)]);
       const int nSrc = int(pool.size()) / spread;
+      const int rem = (nSrc > 0 && leftoverCopies &&
+                       leftoverCopiesForSpread(spread))
+                          ? int(pool.size()) - nSrc * spread
+                          : 0;
       for (int i = 0; i < nSrc && got < bits; ++i) {
         cfloat z(0, 0);
         float a = 0;
@@ -283,6 +288,15 @@ struct SymbolWalker {
           auto [sk, c] = pool[size_t(i + k * nSrc)];
           cfloat y = bins[size_t(sk)][size_t(carrierToBasebandBin(family, c))];
           cfloat eff = h[size_t(c)] * spreadPhase(i, k, symIdx + grp * G);
+          z += y * std::conj(eff);
+          a += std::norm(eff);
+        }
+        // Leftover cells' extra copies of this source (MRC like the rest).
+        for (int j = i; j < rem; j += nSrc) {
+          auto [sk, c] = pool[size_t(nSrc * spread + j)];
+          cfloat y = bins[size_t(sk)][size_t(carrierToBasebandBin(family, c))];
+          cfloat eff = h[size_t(c)] *
+                       spreadPhase(i, spread + j / nSrc, symIdx + grp * G);
           z += y * std::conj(eff);
           a += std::norm(eff);
         }
@@ -1429,6 +1443,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
         modeUsesCarrierMask(int(hdr->mode)) ? payloadMask : nullptr;
     walker.mask = walkMask;
     tracker.setMask(walkMask);
+    walker.leftoverCopies = leftoverCopiesEnabled();
     // Burst containers repack on retransmission: identical-codeword
     // combining cannot be guaranteed, so HARQ is bypassed for them.
     if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
