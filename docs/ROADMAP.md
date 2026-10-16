@@ -1294,22 +1294,32 @@ they are not re-raised. Commands are the original measurements.
     (~250 s). Every "ULTRA" soak above, v1.2.4's included, ran on WIDE.
     True ULTRA: floor 9 dB 6/6, 97 KB (seeds 1-6); churn 3/3, 119 KB
     A->B (seeds 11-13).
-  - [ ] **NARROW Moderate floor: mode control outweighs data.** Airtime of
-    a 600 s run (seed 1): DATA 252 s, MODE_CHANGE + MODE_ACK 331 s (8
-    exchanges, M7 <-> M8 oscillation), handshake 83 s. The cost is the
-    robust header: 648 symbols (~20 s) on NARROW, so every robust-tier
-    frame is >= 20.7 s. Two link-layer fixes measured WORSE over six
-    seeds and were reverted: (1) promotion timers scaled by the family's
-    control-frame airtime (NARROW 9 dB 26.0 -> 21.3 KB, MID 85 -> 71 KB:
-    on NARROW the fast tier's 2 s header makes M8 worth reaching, so
-    staying longer at M7 costs more than the flaps); (2) MODE_CHANGE /
-    MODE_ACK / ACK on the fast tier whenever the AMC's SNR clears M8's
-    floor (NARROW 6 dB 4/6 -> 1/6, MID 85 -> 48 KB: the estimate is
-    optimistic inside fades and a lost control frame costs far more than
-    the airtime saved). The remaining lever is the PHY: a lighter robust
-    header class (e.g. spread x8 for M5-M7 sessions, its own chirp
-    signature) - a WAVEFORM change with acquisition and floor
-    re-measurement, so an owner decision.
+  - [x] **NARROW Moderate floor: mode control outweighs data - FIXED
+    2026-10-15 (promotion transport).** Airtime of a 600 s run (seed 1):
+    DATA 252 s, MODE_CHANGE + MODE_ACK 331 s (8 exchanges, M7 <-> M8),
+    handshake 83 s; every robust-tier frame is >= 20.7 s on NARROW (the
+    robust header alone is 648 symbols). Measured first whether the
+    header could be lighter: it cannot - a header matched to the M5-M7
+    payload spread costs 1-3 dB on every family's floors, because the
+    header symbols are also the payload's channel/noise training (NARROW
+    M7 AWGN floor+1: x16 0% FER, x4 35% with zero header failures;
+    docs/conformance/header_spread_2026-10-15/). The fix is in the
+    protocol: a PROMOTION's MODE_CHANGE and MODE_ACK ride the target mode
+    instead of the current one (PROTOCOL.md), so a NARROW M7 -> M8 step
+    costs two ~2.3 s fast frames instead of two 20.7 s robust ones, and a
+    promotion the channel cannot carry is refused by its own missing
+    MODE_ACK. Demotions stay on the robust tier. Six seeds, floor:
+    NARROW 9 dB 26.0 -> 30.4 KB and 5/6 -> 6/6, NARROW 6 dB unchanged
+    (16.7 KB, 4/6), WIDE 97 -> 102 KB, MID 85 -> 80 KB (one seed one 4 KB
+    step; five identical), ULTRA unchanged; churn 3/3 every family, WIDE
+    293 -> 296 KB, ULTRA 244 -> 252 KB, NARROW/MID identical;
+    `test_m3_ramp` green. Tried and reverted before it: promotion timers
+    scaled by family airtime (NARROW 9 dB -> 21.3 KB, MID -> 71 KB) and
+    control/ACK on the fast tier whenever the SNR clears M8 (NARROW 6 dB
+    -> 1/6, MID -> 48 KB; the estimate is optimistic inside fades and
+    demotion-time control is exactly when it fails). NARROW 6 dB stays at
+    4/6: there the link lives at M5-M7, whose 20 s robust frames are the
+    physical price of the header's training role.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).

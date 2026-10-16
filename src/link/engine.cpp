@@ -1870,11 +1870,15 @@ void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
   // sessions): riding min(target, mode_) deadlocked - a fast-mode
   // session whose channel collapsed below the fast floor could neither
   // send nor decode the very exchange that demotes it. PROMOTIONS ride
-  // the current committed mode: the channel is healthy by definition,
-  // and robust airtime for every upward step measurably drags ramp
-  // tracking (M3 gate).
+  // the TARGET mode (OFDM to OFDM): the AMC has already judged it
+  // viable with margin, and a header-only frame that cannot cross at the
+  // target says the data could not either - the missing MODE_ACK then
+  // correctly holds the promotion (it applies only on MODE_ACK; the one
+  // re-announcement rides the mode we are leaving). Riding the current
+  // mode made every NARROW M7 -> M8 step two robust 20.7 s frames, and
+  // the ST2 NARROW floor spent more airtime on mode control than DATA.
   const int txMode =
-      mode_ <= 3 ? mode_ : (target < mode_ ? 4 : mode_);
+      mode_ <= 3 ? mode_ : (target < mode_ ? 4 : target);
   queueControl(LinkType::ModeChange,
                ModeChangeBody{uint8_t(target), uint8_t(cp), modeEpoch_}
                    .pack(),
@@ -3590,13 +3594,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (!mc || fsm_.state() != FsmState::Connected) return;
       if (isInitiator_) return;  // only the initiator drives mode control
       // Demote-echo on the ROBUST transport; promote-echo rides the
-      // (lower of target/current) committed mode as before.
+      // target, as the announcement did (OFDM to OFDM: a CSS session's
+      // first step up still echoes at its own CSS mode).
       {
         const int ackMode =
             mode_ <= 3 ? mode_
-                       : (int(mc->targetMode) < mode_
-                              ? 4
-                              : std::min(int(mc->targetMode), mode_));
+                       : (int(mc->targetMode) < mode_ ? 4
+                                                      : int(mc->targetMode));
         queueControl(LinkType::ModeAck, ModeAckBody{mc->epoch}.pack(),
                      sigForMode(ackMode), ackMode);
       }
