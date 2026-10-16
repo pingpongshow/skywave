@@ -1349,6 +1349,13 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### v1.2.5 (2026-10-16)
+
+Fix release: ULTRA handshake policy, promotions on the target mode,
+one dispatch per burst across overlapping captures (see the items
+above). Cut on the owner's instruction without the long gates; suites
+and sanitizers re-run. Release notes: docs/releases/v1.2.5.md.
+
 ### v1.2.4 (2026-10-15)
 
 Fix release for the ST2 NARROW/ULTRA stalls (poll bit, capture-airing
