@@ -829,6 +829,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   res.sig = ChirpSig::Css;
   res.inverted = hit.inverted;
   res.cfoHz = cfoHz;
+  res.frameStartSample = double(region0 + W + dBest);
   res.snrDb = snr3k;
   {
     int maxTapDelay = 0;
@@ -1434,6 +1435,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
   res.sig = hit.sig;
   res.inverted = hit.inverted;
   res.cfoHz = zc.cfoHz;
+  res.frameStartSample = zc.blockStart;
 
   // 4) Payload: piggyback bytes from the header codeword + payload
   // codewords at the header's mode/CP.

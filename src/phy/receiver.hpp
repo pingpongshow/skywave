@@ -79,6 +79,10 @@ struct RxFrameResult {
   ChirpSig sig = ChirpSig::Fast;
   bool inverted = false;
   double cfoHz = 0.0;
+  // Sync point the receiver locked to (ZC block / CSS sync), in samples
+  // from the start of the span it was given: two captures of the same
+  // burst report the same absolute position. -1 = unknown.
+  double frameStartSample = -1.0;
   double snrDb = 0.0;              // tracker estimate at end of frame
   // snrDb is a MEASUREMENT (the tracker's noise estimate converged over
   // >= 8 pilot-bearing symbols) rather than its seed guess. OFDM frames

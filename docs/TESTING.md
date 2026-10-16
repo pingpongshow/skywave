@@ -127,7 +127,11 @@ simulated time; combined with `SKW_TX_DEBUG`/`SKW_FRAME_DEBUG` it shows
 who keyed when and what each side decoded. **Single-seed soak results
 are not evidence**: the floor scenario delivers in ~4 KB steps, so one
 seed swings 0–25 KB on identical code. Compare totals over six seeds or
-more.
+more. The world is chaotic down to single bits: changing one reserved
+ACK flag bit (identical logic otherwise) moved a six-seed MID floor total
+from 79.6 to 65.9 KB, because different bits on the air meet the same
+noise differently. Effects under ~20% need well over six seeds; treat
+smaller differences as noise.
 
 **The two-modem world's SNR axis.** `soak_st2` prints `estA`/`estB`,
 each modem's calibrated measured SNR, next to the schedule's set point.

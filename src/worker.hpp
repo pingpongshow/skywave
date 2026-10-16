@@ -197,7 +197,8 @@ class ModemWorker : public ControlBackend {
   void rebuildEngine();          // IDLE-only reconfiguration
   void pumpRxLocked(double now);
   bool ingestChunkLocked(double now);   // one chunk: convert, meter, detect
-  bool timedRxBurst(std::span<const cfloat> win, double now, bool final);
+  bool timedRxBurst(std::span<const cfloat> win, double now, bool final,
+                    double windowStartSec = -1.0);
   void decodePendingLocked(double now);  // capture ladder, bounded budget
   void pumpTxLocked(double now);
   void drainEngineOutputsLocked();

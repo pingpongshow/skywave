@@ -130,6 +130,15 @@ frame runs 35–55 s. Two shortcuts retire a capture early:
   the same samples plus more trailing noise.
 - **Quiet try**: when the channel goes quiet between rungs, decode with
   exactly the audio that exists rather than waiting for the next rung.
+- **One burst, two captures**: the detector can open a second capture
+  on a burst it already has (measured: a fast-tier ACK also matched the
+  12-rep CSS pattern at quality 0.04, ~1 s earlier, and the runner-up
+  signature retry decoded it from there too). Both decodes lock to the
+  same sync point (`RxFrameResult::frameStartSample`), so the engine
+  drops a decode whose header and payload repeat the last dispatched
+  burst at the same absolute position (within 50 ms); otherwise its SNR
+  and CFO reports were applied twice. A genuine repeat - even an
+  identical ACK sent back to back - sits a whole airtime later.
 - **Header-complete try**: one attempt the moment the shortest frame the
   detected preamble can start (preamble + sync + header, no payload) is
   in hand. A robust-tier header on NARROW is 648 symbols (~19.8 s), so a

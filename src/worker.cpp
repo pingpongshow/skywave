@@ -501,9 +501,9 @@ void ModemWorker::pumpRxLocked(double now) {
 // host must fit in real time. Counted per attempt; reported in
 // telemetry and at shutdown.
 bool ModemWorker::timedRxBurst(std::span<const cfloat> win, double now,
-                               bool final) {
+                               bool final, double windowStartSec) {
   const auto t0 = std::chrono::steady_clock::now();
-  const bool ok = engine_->rxBurst(win, now, final);
+  const bool ok = engine_->rxBurst(win, now, final, windowStartSec);
   const uint64_t us = uint64_t(std::chrono::duration_cast<
                                    std::chrono::microseconds>(
                                    std::chrono::steady_clock::now() - t0)
@@ -701,7 +701,7 @@ void ModemWorker::decodePendingLocked(double now) {
                   cfg_.callsign.c_str(), now, it->airtimeSec, it->tries);
         }
         --decodeBudget;
-        if (engineEligible) timedRxBurst(win, now, /*final=*/true);
+        if (engineEligible) timedRxBurst(win, now, /*final=*/true, double(w0) / kFsBaseband);
         runMonitorLocked(win);
         done = true;
       }
@@ -727,7 +727,7 @@ void ModemWorker::decodePendingLocked(double now) {
             listen_ || engine_->state() != FsmState::Idle;
         --decodeBudget;
         double air = 0.0;
-        if (engineEligible ? timedRxBurst(win, now, false)
+        if (engineEligible ? timedRxBurst(win, now, false, double(w0) / kFsBaseband)
                            : runMonitorLocked(win, /*final=*/false, &air)) {
           if (engineEligible) runMonitorLocked(win);
           done = true;
@@ -760,7 +760,7 @@ void ModemWorker::decodePendingLocked(double now) {
         const bool engineEligible =
             listen_ || engine_->state() != FsmState::Idle;
         --decodeBudget;
-        if (engineEligible && timedRxBurst(win, now, false)) {
+        if (engineEligible && timedRxBurst(win, now, false, double(w0) / kFsBaseband)) {
           // The burst-end fast path used to return without ever running
           // the monitor, so every frame it caught was invisible to
           // MONITOR clients.
@@ -802,7 +802,7 @@ void ModemWorker::decodePendingLocked(double now) {
       double monAir = 0.0;
       const bool decoded =
           engineEligible
-              ? timedRxBurst(win, now, lastRung)
+              ? timedRxBurst(win, now, lastRung, double(w0) / kFsBaseband)
               : runMonitorLocked(win, /*final=*/lastRung, &monAir);
       --decodeBudget;
       ++it->tries;

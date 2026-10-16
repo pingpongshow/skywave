@@ -1320,6 +1320,31 @@ they are not re-raised. Commands are the original measurements.
     demotion-time control is exactly when it fails). NARROW 6 dB stays at
     4/6: there the link lives at M5-M7, whose 20 s robust frames are the
     physical price of the header's training role.
+  - [x] **Overlapping captures dispatched one burst twice - FIXED
+    2026-10-16.** Found in a throughput/reliability review: a fast-tier
+    ACK also matched the 12-rep CSS pattern (quality 0.04, ~1 s early)
+    and the runner-up-signature retry decoded it from that capture too, so
+    its SNR/CFO reports were applied twice and the classifier fed twice
+    (0-3 per run, ACK/MODE_ACK). The engine now drops a burst whose
+    header + payload repeat the last one at the same receiver-measured
+    sync point (within 50 ms) - a first version keyed on capture start
+    times also dropped a genuine back-to-back identical ACK
+    (`m2_overlapping_captures_dispatch_once`).
+  - [-] **Faster loss recovery / tail-loss probe - MEASURED, NOT ADOPTED
+    (2026-10-16).** The review's airtime accounting (data 54-80% of
+    keyed time, frame loss 13-28%, duplicates 0-3%, ACK loss ~1% on
+    WIDE/ULTRA but 15-21% on MID/NARROW) and one WIDE trace (a lost
+    window recovered one frame per round trip; 26 s idle after a
+    demotion shrank the window under 15 frames in flight) suggested
+    (1) requeueing every frame a POLL-answering ACK leaves uncovered and
+    (2) probing with the head-of-line frame when a poll goes unanswered.
+    Implemented and measured over 6 floor + 5 churn seeds per family:
+    both at or below baseline almost everywhere (requeue: floor MID
+    65.9 -> 40.5 KB, churn WIDE 288 -> 251 KB, ULTRA 234 -> 203 KB; with
+    the probe: churn NARROW 2 failures, MID 143 -> 124 KB); sending all
+    due retransmissions before the poll was worse still (NARROW 6 dB
+    1/6). Reverted. Carrier masking A/B: neutral (+-10%, 3 seeds).
+    Robust-header shortening: see the 2026-10-15 measurement.
 - Later: stage 2 on-air (distant receivers), two-way on-air (second
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).

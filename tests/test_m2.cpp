@@ -4,6 +4,8 @@
 // loss), disconnect_paths. CI runs a scaled bulk size; the full 100 KiB
 // soak is a manual/nightly run of the same scenario.
 #include <cstdio>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include "link/engine.hpp"
@@ -267,6 +269,42 @@ TEST_CASE(m2_bidirectional_bulk_is_fair) {
   // not the goal - half-duplex turn-taking is lumpy - but an order of
   // magnitude means one side has captured the channel.
   CHECK(hi <= 4 * lo);
+}
+
+// One burst reaching the receiver through two overlapping captures (the
+// detector matched it twice) must be dispatched once; the same bytes a
+// whole airtime later are a genuine repeat.
+TEST_CASE(m2_overlapping_captures_dispatch_once) {
+  Pair p(20.0);
+  CHECK(p.connect(400));
+  p.a.sendData(noiseBlob(40, 3));
+  std::optional<std::vector<cfloat>> burst;
+  for (int i = 0; i < 40 && !burst; ++i) {
+    burst = p.a.tick(p.now);
+    p.now += 0.05;
+  }
+  CHECK(burst.has_value());
+  std::vector<cfloat> x(1500, cfloat(0, 0));
+  x.insert(x.end(), burst->begin(), burst->end());
+  x.insert(x.end(), 2000, cfloat(0, 0));
+  ChansimParams cp = p.chanAB;
+  const auto y = Chansim::run(cp, x);
+  const double start = 100.0;
+  const uint64_t ok0 = p.b.framesOk();
+  CHECK(p.b.rxBurst(y, p.now, true, start));
+  const uint64_t ok1 = p.b.framesOk();
+  CHECK(ok1 == ok0 + 1);
+  // A second capture of the SAME burst: its window opens 1000 samples
+  // later over the same audio, so the sync point is the same instant.
+  const size_t k = 1000;
+  CHECK(p.b.rxBurst(std::span<const cfloat>(y).subspan(k), p.now, true,
+                    start + double(k) / kFsBaseband));
+  CHECK(p.b.framesOk() == ok1);
+  // The same bytes a whole airtime later (an identical ACK sent back to
+  // back, a re-sent CALL) are a new burst.
+  const double air = double(burst->size()) / kFsBaseband;
+  CHECK(p.b.rxBurst(y, p.now, true, start + air + 0.2));
+  CHECK(p.b.framesOk() == ok1 + 1);
 }
 
 TEST_CASE(m2_connect_clean) {

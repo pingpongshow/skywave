@@ -2892,7 +2892,7 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
 }
 
 bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
-                         bool finalAttempt) {
+                         bool finalAttempt, double windowStartSec) {
   lastNow_ = now;
   RxStage stage;
   auto res = receiveFrame(cfg_.policy.family, samples, &stage,
@@ -2949,6 +2949,36 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
                   ? &rxMask_
                   : nullptr;
     lastRxAirtimeSec_ = frameAirtimeSec(tp);
+  }
+  // ONE BURST, TWO CAPTURES. The detector can open a second capture on a
+  // burst it already has - measured: a fast-tier ACK also matched the
+  // 12-rep CSS pattern at quality 0.04 a second earlier, and the
+  // runner-up-signature retry decoded the ACK from that capture too. The
+  // burst was then processed twice (SNR and CFO reports applied twice,
+  // the classifier fed twice; a MODE_CHANGE followed the second copy).
+  // Both decodes lock to the same sync point, so the same header and
+  // payload at the same absolute position is that same burst: drop it.
+  // A genuine repeat - even an identical ACK sent back to back - sits a
+  // whole airtime later.
+  if (res && res->payloadOk && windowStartSec >= 0.0 &&
+      res->frameStartSample >= 0.0) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint8_t b) { h = (h ^ b) * 1099511628211ull; };
+    mix(res->header.frameType);
+    mix(res->header.mode);
+    mix(res->header.seqLow);
+    for (uint8_t b : res->payload) mix(b);
+    const double at = windowStartSec + res->frameStartSample / kFsBaseband;
+    if (h == lastRxDigest_ && std::abs(at - lastRxFrameAtSec_) < 0.05) {
+      if (getenv("SKW_FRAME_DEBUG")) {
+        fprintf(stderr, "%s RXDUP t=%.1f type=%d at=%.3f\n",
+                cfg_.policy.ownCall.c_str(), now, int(res->header.frameType),
+                at);
+      }
+      return true;  // already dispatched from the other capture
+    }
+    lastRxDigest_ = h;
+    lastRxFrameAtSec_ = at;
   }
   if (res && !res->constellation.empty()) {
     lastConstellation_ = res->constellation;

@@ -232,8 +232,10 @@ class LinkEngine {
   // real failures fed ~50% fake FER per container into every adaptive
   // layer (observed as mode/mask churn strangling two-way traffic on a
   // clean +25 dB channel).
+  // `windowStartSec` (absolute time of samples[0], -1 = unknown) lets a
+  // burst decoded from two overlapping captures be dispatched once.
   bool rxBurst(std::span<const cfloat> samples, double now,
-               bool finalAttempt = true);
+               bool finalAttempt = true, double windowStartSec = -1.0);
 
  private:
   struct OutFrame {
@@ -550,6 +552,9 @@ class LinkEngine {
   bool rxFailPending_ = false;
   double lastRxAirtimeSec_ = 0.0;  // see lastRxBurstAirtimeSec()
   bool rxPoll_ = false;  // PHY poll bit of the burst being dispatched
+  // Last dispatched burst, for the overlapping-capture de-duplication.
+  uint64_t lastRxDigest_ = 0;
+  double lastRxFrameAtSec_ = -1e9;  // absolute sync point of that burst
   // Last time a burst's PHY header decoded in session (payload or not):
   // the peer was keyed until about then.
   double lastPeerHeardAt_ = -1.0;
