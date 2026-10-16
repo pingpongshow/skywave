@@ -126,7 +126,13 @@ void Chansim::process(std::span<const cfloat> in, std::vector<cfloat>& out) {
     }
 
     cfloat y;
-    if (p_.fading) {
+    if (p_.fading && delaySamples_ == 0) {
+      // delaySpreadMs = 0 is FLAT fading: one tap. (The history buffer
+      // has a minimum length of 1, so the two-tap path below silently
+      // added a 1-sample echo.) Each tap carries power 1/2, so the lone
+      // tap is scaled back to unit mean power.
+      y = s * tapGain(0) * float(M_SQRT2);
+    } else if (p_.fading) {
       cfloat delayed = history_[histPos_];
       history_[histPos_] = s;
       histPos_ = (histPos_ + 1) % history_.size();

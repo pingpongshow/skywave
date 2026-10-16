@@ -99,7 +99,9 @@ std::optional<std::vector<uint8_t>> CryptoSession::acceptKexInit(
   std::vector<uint8_t> blob(kKexBlobBytes);
   std::memcpy(blob.data(), ephPublic_.data(), kKexPublicBytes);
   hmacTrunc16(psk_, tf, blob.data() + kKexPublicBytes);
-  deriveMaster(ctx, peerPub);
+  // A rejected peer key (low-order point) leaves no session key: refuse
+  // the exchange rather than answer it and run "encrypted" under zeros.
+  if (!deriveMaster(ctx, peerPub)) return std::nullopt;
   return blob;
 }
 
@@ -114,17 +116,19 @@ bool CryptoSession::acceptKexResponse(const KexContext& ctx,
   uint8_t want[16];
   hmacTrunc16(psk_, tf, want);
   if (sodium_memcmp(want, respBlob.data() + 32, 16) != 0) return false;
-  deriveMaster(ctx, peerPub);
-  return true;
+  return deriveMaster(ctx, peerPub);
 }
 
-void CryptoSession::deriveMaster(const KexContext& ctx,
+bool CryptoSession::deriveMaster(const KexContext& ctx,
                                  std::span<const uint8_t, 32> peerPub) {
   uint8_t ss[crypto_scalarmult_BYTES];
   if (crypto_scalarmult(ss, ephSecret_.data(), peerPub.data()) != 0) {
-    // All-zero peer public: leave un-established; caller NAKs.
+    // Low-order peer public: leave un-established; the caller fails the
+    // handshake (acceptKexInit / acceptKexResponse report it).
     sodium_memzero(ss, sizeof(ss));
-    return;
+    sodium_memzero(ephSecret_.data(), ephSecret_.size());
+    established_ = false;
+    return false;
   }
   // Full transcript hash binds the exchange into the schedule. Both
   // sides hash E_i then E_r, so order by role.
@@ -156,6 +160,10 @@ void CryptoSession::deriveMaster(const KexContext& ctx,
   deriveEpochKeys(1, tx_, rx_);
   replay_[0] = Replay{};
   replay_[1] = Replay{};
+  // The ephemeral secret has done its job; keeping it let a replayed
+  // START_ACK re-run the exchange and reset the epoch mid-session.
+  sodium_memzero(ephSecret_.data(), ephSecret_.size());
+  return true;
 }
 
 void CryptoSession::deriveEpochKeys(uint16_t epoch, Dir& tx, Dir& rx) const {
@@ -206,6 +214,7 @@ std::array<uint8_t, 12> CryptoSession::nonceFor(const Dir& d,
 std::vector<uint8_t> CryptoSession::seal(uint8_t stream, uint64_t seq48,
                                          std::span<const uint8_t> aad,
                                          std::span<const uint8_t> plain) const {
+  if (!established_) return {};
   std::vector<uint8_t> out(plain.size() + kGcmTagBytes);
   const auto n = nonceFor(tx_, epoch_, stream, seq48);
   unsigned long long clen = 0;

@@ -608,4 +608,146 @@ TEST_CASE(voice_loop_conceals_lost_frames) {
   CHECK(!heard.empty());
 }
 
+// --- review fixes (B4, B5, C14, C15, C16) ------------------------------------
+
+TEST_CASE(voice_unit_frame_count_fits_u8) {
+  // B4: a big codeword at C700 holds >255 frames; the u8 count must never
+  // wrap (306 -> 50 made every unit fail the receiver's length check).
+  VoiceEncoder enc(VoiceCodec::C700);
+  enc.pushPcm(std::vector<int16_t>(size_t(400) * 320, 100));
+  auto u = enc.nextUnit(1300, false);
+  CHECK(u.has_value());
+  if (u) {
+    CHECK_EQ(int(u->frameCount), 255);
+    const auto wire = u->pack();
+    auto back = VoiceDataBody::parse(wire);
+    CHECK(back.has_value());
+    if (back) CHECK_EQ(int(back->frameCount), 255);
+  }
+}
+
+TEST_CASE(voice_encoder_flush_and_discard) {
+  // C16: a flush drains the whole tail, including the sub-frame
+  // remainder (padded), and discardPcm drops stale mic audio.
+  VoiceEncoder enc(VoiceCodec::C3200);
+  const int spf = voiceCodecSamplesPerFrame(VoiceCodec::C3200);
+  enc.pushPcm(std::vector<int16_t>(size_t(spf) * 3 + 7, 50));
+  CHECK(!enc.nextUnit(300, false).has_value());  // not a full unit yet
+  int frames = 0;
+  while (auto u = enc.nextUnit(300, true)) frames += u->frameCount;
+  CHECK_EQ(frames, 4);
+  CHECK_EQ(int(enc.pendingSamples()), 0);
+  enc.pushPcm(std::vector<int16_t>(1000, 50));
+  enc.discardPcm();
+  CHECK_EQ(int(enc.pendingSamples()), 0);
+  // Backlog is bounded even if nobody drains it.
+  for (int i = 0; i < 40; ++i) enc.pushPcm(std::vector<int16_t>(8000, 1));
+  CHECK(enc.pendingSamples() <= VoiceEncoder::kMaxPendingSamples);
+}
+
+TEST_CASE(voice_gap_concealment_bounded) {
+  // B5: the gap size comes from the air; any value must stay bounded.
+  VoiceEncoder enc(VoiceCodec::C1300);
+  VoiceDecoder dec;
+  enc.pushPcm(testSpeech(1.0));
+  auto u = enc.nextUnit(62, true);
+  CHECK(u.has_value());
+  if (u) dec.onVoiceData(*u);
+  (void)dec.takePcm();
+  dec.onGap(2000000000);
+  const auto pcm = dec.takePcm();
+  CHECK(!pcm.empty());
+  CHECK(int(pcm.size()) <=
+        VoiceDecoder::kMaxConcealMs * kVoiceSampleRate / 1000);
+}
+
+TEST_CASE(voice_conceal_after_zero_frame_codec_switch) {
+  // C14: a zero-frame unit under a bigger codec must not make concealment
+  // decode the old (smaller) frame with the new codec's frame size.
+  VoiceEncoder enc(VoiceCodec::C700);
+  VoiceDecoder dec;
+  enc.pushPcm(testSpeech(1.0));
+  auto u = enc.nextUnit(40, true);
+  CHECK(u.has_value());
+  if (u) dec.onVoiceData(*u);
+  (void)dec.takePcm();
+  VoiceDataBody empty;
+  empty.codec = VoiceCodec::C3200;
+  empty.frameCount = 0;
+  dec.onVoiceData(empty);
+  dec.onGap(2);
+  // Still concealing with the codec the stored frame belongs to.
+  CHECK_EQ(int(dec.takePcm().size()),
+           2 * voiceCodecSamplesPerFrame(VoiceCodec::C700));
+}
+
+TEST_CASE(voice_jitter_buffer_bounded) {
+  JitterBuffer jb;
+  const std::vector<int16_t> chunk(8000, 7);  // 1 s
+  for (int i = 0; i < 60; ++i) jb.push(chunk);
+  CHECK(jb.depthMs() <= JitterBuffer::kMaxMs);
+  CHECK(jb.depthMs() >= JitterBuffer::kMaxMs - 1);
+}
+
+TEST_CASE(voice_fsm_recovers_lost_grant_and_end) {
+  // C15: neither a lost PTT_GRANT nor a lost PTT_END may lock the voice
+  // channel for the 180 s hold cap.
+  auto drain = [](VoiceFsm& f) {
+    std::vector<VoiceAction> acts;
+    while (auto x = f.nextAction()) acts.push_back(*x);
+    return acts;
+  };
+  auto has = [](const std::vector<VoiceAction>& v, VoiceAction a) {
+    for (auto x : v) {
+      if (x == a) return true;
+    }
+    return false;
+  };
+  VoiceFsm a, b;
+  a.rxOpen(VoiceCodec::C1300, 0.0);
+  b.rxOpen(VoiceCodec::C1300, 0.0);
+  (void)drain(a);
+  (void)drain(b);
+
+  // Lost grant: A re-requests on timeout, B (already Receiving) re-grants.
+  a.cmdPttOn(1.0);
+  CHECK(has(drain(a), VoiceAction::SendPttReq));
+  b.rxPttReq(1.1, false);
+  CHECK(has(drain(b), VoiceAction::SendPttGrant));  // ...lost on the air
+  a.tick(1.0 + 8.5);
+  CHECK(has(drain(a), VoiceAction::SendPttReq));    // retry
+  CHECK(a.state() == VoiceState::Requesting);
+  b.rxPttReq(9.6, false);
+  CHECK(has(drain(b), VoiceAction::SendPttGrant));  // re-grant
+  a.rxPttGrant(9.7);
+  CHECK(a.talking());
+
+  // Lost end: B heard speech, then nothing - it frees itself after the
+  // idle window, well before the hold cap.
+  b.rxVoiceActivity(12.0);
+  a.cmdPttOff(13.0);
+  (void)drain(a);  // PTT_END lost
+  b.tick(12.0 + 19.0);
+  CHECK(b.state() == VoiceState::Receiving);
+  b.tick(12.0 + 21.0);
+  CHECK(has(drain(b), VoiceAction::IndicateStopped));
+  CHECK(b.state() == VoiceState::Open);
+
+  // Lost end, but A keys again first: B re-grants instead of ignoring.
+  VoiceFsm c;
+  c.rxOpen(VoiceCodec::C1300, 0.0);
+  (void)drain(c);
+  c.rxPttReq(1.0, false);
+  (void)drain(c);
+  c.rxPttReq(5.0, false);  // peer's next spurt; its END was lost
+  CHECK(has(drain(c), VoiceAction::SendPttGrant));
+  CHECK(c.state() == VoiceState::Receiving);
+
+  // Capture gating: mic audio only belongs to a spurt while holding PTT.
+  CHECK(!c.capturing());  // Receiving
+  CHECK(!a.capturing());  // Open after releasing
+  a.cmdPttOn(40.0);
+  CHECK(a.capturing());   // Requesting: speech before the grant is kept
+}
+
 SKYTEST_MAIN

@@ -67,9 +67,18 @@ class VoiceEncoder {
   // frame boundary, flushing whatever is already encoded.
   void setCodec(VoiceCodec c);
 
+  // Most mic PCM held while waiting to be encoded (oldest is dropped).
+  static constexpr size_t kMaxPendingSamples = 30 * kVoiceSampleRate;
+
   void pushPcm(std::span<const int16_t> pcm);
+  // Drop buffered (not yet encoded) mic PCM, keeping codec state and the
+  // timestamp: called at talkspurt start/end so speech captured outside a
+  // talkspurt is never replayed as stale audio.
+  void discardPcm();
   // Next unit, or nullopt until a unit's worth of speech is buffered.
-  // flush=true emits a short final unit at PTT end.
+  // flush=true emits a short final unit at PTT end (the trailing partial
+  // frame is padded with silence); call it until it returns nullopt to
+  // drain the whole tail.
   std::optional<VoiceDataBody> nextUnit(size_t bytesBudget, bool flush);
   size_t pendingSamples() const { return pcm_.size(); }
   void reset();
@@ -95,9 +104,13 @@ class VoiceDecoder {
   VoiceDecoder(VoiceDecoder&&) noexcept;
   VoiceDecoder& operator=(VoiceDecoder&&) noexcept;
 
+  // Longest stretch one onGap() call fills (see onGap).
+  static constexpr int kMaxConcealMs = 640;
+
   void onVoiceData(const VoiceDataBody& body);
-  // A detected gap in the voice sequence space: conceal `units` worth of
-  // missing speech (never a NAK - late voice is worthless).
+  // A detected gap in the voice sequence space: conceal `frames` frames of
+  // missing speech (never a NAK - late voice is worthless). Clamped to
+  // kMaxConcealMs, so any input is safe.
   void onGap(int frames);
   std::vector<int16_t> takePcm();
   uint32_t concealedFrames() const { return concealed_; }

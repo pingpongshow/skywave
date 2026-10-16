@@ -38,6 +38,7 @@ struct ControlBackend {
   virtual bool setMonitor(bool on) = 0;
   virtual bool monitoring() = 0;
   virtual bool txTest(double seconds) = 0;  // false: refused
+  virtual void txTestStop() = 0;            // TXTEST OFF: end it now
   virtual std::string version() = 0;
 
   // --- 4.6 completions --------------------------------------------------
@@ -52,7 +53,8 @@ struct ControlBackend {
   virtual bool setCpMode(const std::string& m) = 0;
   virtual std::string harqStr() = 0;             // AUTO/CHASE/IR
   virtual bool setHarq(const std::string& m) = 0;
-  // Feature toggles: CHANMEM / PROBE / MASKING / RESUME.
+  // Feature toggles: CHANMEM / PROBE / MASKING / RESUME / ULTRA. A
+  // feature that cannot be switched off refuses OFF (setFeature false).
   virtual std::optional<bool> feature(const std::string& name) = 0;
   virtual bool setFeature(const std::string& name, bool on) = 0;
   virtual std::string statusJson() = 0;  // one-line JSON object

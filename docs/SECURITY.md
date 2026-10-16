@@ -62,9 +62,14 @@ Applied in the payload pipeline after compression, before segmentation:
   rotation grace window must be opened with the previous epoch *number*
   as well as the previous key — swapping the key alone produces a wrong
   nonce and a silent authentication failure
-- retransmissions re-seal under the **same** sequence number, so the
-  nonce and resulting ciphertext are byte-identical; HARQ chase
-  combining across attempts is unaffected by encryption
+- a retransmission resends the **original ciphertext** with the envelope
+  fields it was authenticated under (`flags`, `ack_base`), byte-identical:
+  re-sealing the same sequence (same nonce) over a plaintext whose `rv`
+  and `ack_base` had moved was an AES-GCM nonce reuse (fixed 2026-10-16).
+  Only after an epoch change is a frame re-sealed - a new key is a new
+  nonce space. HARQ chase combining across attempts is unaffected
+- the 48-bit sequence extension keeps a **separate high-water mark per
+  stream** (data, voice): the two counters are independent
 - a cleartext `DATA` frame inside an encrypted session (and an encrypted
   frame with no session crypto) is dropped, not interpreted: there is no
   per-frame downgrade path
@@ -79,11 +84,17 @@ crypto.
 - epoch starts at 1 per session; u16, monotonically increasing
 - `KEYROTATE` (manual) or automatic rotation every 2^20 frames or 4 hours,
   whichever first
-- rotation: initiator sends `KEY_UPDATE(new_epoch)` encrypted under the
-  current keys; both derive the new directional keys from `K_master` and the
-  new epoch; a 8-frame grace window accepts either epoch during transition
-- max tolerated epoch skew: 1 (grace window only); larger skew forces
-  disconnect
+- rotation is a two-way exchange: the initiator sends
+  `KEY_UPDATE(new_epoch & 0xFF)` and keeps sealing under the current epoch;
+  the responder switches on receipt (it still opens the previous epoch in
+  the grace window) and echoes the `KEY_UPDATE`; the initiator switches on
+  the echo, and re-announces if no echo arrives within max(30 s, 2 ARQ
+  timeouts). The responder resolves the low byte to the epoch just above
+  its own (255 -> 256), and re-echoes a repeat of its current epoch. Both
+  sides derive the new directional keys from `K_master` and the epoch
+- the frame-count trigger counts frames sealed **since the last
+  rotation**
+- max tolerated epoch skew: 1 (grace window only)
 
 ## Key Material Handling
 
@@ -95,6 +106,11 @@ crypto.
 - if encryption is negotiated but the exchange cannot complete (no PSK,
   auth failure, missing kex material), the session is **refused** —
   `START_NAK` on the responder side, teardown on the initiator side.
+  This includes a peer public key the X25519 step rejects (low-order
+  point): the exchange fails, and `seal()` refuses outright when no
+  session key is established. The ephemeral secret is wiped once the
+  keys are derived, and `START_ACK` is honoured only while awaiting it,
+  so a replayed `START_ACK` cannot re-run the exchange mid-session.
   Session end zeroizes the keys, which also invalidates any resume
   context (a crypto state change is a resume invalidator)
 - zeroization: session keys and `K_master` are wiped (`sodium_memzero`) at

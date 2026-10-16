@@ -57,8 +57,16 @@ class Monitor {
   struct BcastChain {
     uint8_t count = 0;
     std::vector<std::vector<uint8_t>> frags;
+    // Presence per fragment: a ZERO-length fragment is legal, so "empty"
+    // cannot mean "missing" (such a chain never completed).
+    std::vector<bool> have;
     std::string src;
+    int lastFrame = 0;  // decoded_ when the chain last advanced
   };
+  // A chain that has not advanced for this many decoded frames is
+  // abandoned (its sender gave up or a fragment was lost): rxBurst has no
+  // clock, and frame count is the honest proxy for "time on frequency".
+  static constexpr int kBcastChainMaxFrames = 64;
   std::map<uint16_t, BcastChain> bcastChains_;
   // Completed payloads with the callsign they were attributed to.
   std::vector<std::pair<std::string, std::vector<uint8_t>>> bcastOut_;

@@ -1,4 +1,5 @@
 // Skywave process entry: CLI, wiring, headless loop (ARCHITECTURE.md).
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -206,10 +207,18 @@ int main(int argc, char** argv) {
     skw::VoiceRecordParser voiceParse;
     uint32_t voiceTxSeq = 0;
     uint64_t voiceSamples = 0;
+    uint32_t voiceGen = voiceSrv.clientGeneration();
 #endif
     SKW_INFO("tcp: data=%u control=%u", dataSrv.boundPort(),
              ctrlSrv.boundPort());
     skw::LineBuffer ctrlLines;
+    uint32_t ctrlGen = ctrlSrv.clientGeneration();
+    // Data-port intake stops while the modem's own TX backlog (coalesce
+    // window + sealed messages) is this deep: unread bytes then stay in
+    // the kernel socket buffer and TCP flow control pushes back on the
+    // client. Several minutes of air time even at the fastest modes, so
+    // normal transfers never notice.
+    constexpr size_t kDataInBacklogCap = 4u << 20;  // 4 MiB
     // Delivered payload waiting for a data client. Bounded: an unattended
     // modem receiving a large file must not grow this without limit, and
     // stale payload is worthless to a client that attaches later anyway,
@@ -237,7 +246,11 @@ int main(int argc, char** argv) {
 #endif
     while (!g_stop) {
       // Data port: client bytes -> engine; delivered bytes -> client.
-      auto inBytes = dataSrv.poll();
+      const size_t backlog = worker.txBufferBytes();
+      const size_t room =
+          backlog >= kDataInBacklogCap ? 0 : kDataInBacklogCap - backlog;
+      auto inBytes =
+          dataSrv.poll(std::min(room, skw::TcpServer::kDefaultReadCap));
       if (!inBytes.empty()) worker.submitAppData(inBytes);
       auto outBytes = worker.takeAppData();
       dataOut.insert(dataOut.end(), outBytes.begin(), outBytes.end());
@@ -260,7 +273,14 @@ int main(int argc, char** argv) {
 #ifdef SKW_HAVE_VOICE
       // Voice port: uplink PCM records -> encoder; decoded downlink PCM
       // back out as records (INTERFACES.md; media is PCM only).
-      voiceParse.feed(voiceSrv.poll());
+      {
+        auto vin = voiceSrv.poll();
+        if (voiceSrv.clientGeneration() != voiceGen) {
+          voiceGen = voiceSrv.clientGeneration();
+          voiceParse.reset();  // a new client starts on a record boundary
+        }
+        voiceParse.feed(vin);
+      }
       for (auto& rec : voiceParse.take()) {
         if (rec.type == skw::kVoiceRecUplink) worker.submitVoicePcm(rec.pcm);
       }
@@ -278,7 +298,14 @@ int main(int argc, char** argv) {
       }
 #endif
       // Control port: lines -> dispatcher; EVT:/MON: notifications out.
-      ctrlLines.feed(ctrlSrv.poll());
+      // A dropped client's unterminated line ("CONNECT W1A") must not
+      // prefix the next client's first command.
+      auto ctrlIn = ctrlSrv.poll();
+      if (ctrlSrv.clientGeneration() != ctrlGen) {
+        ctrlGen = ctrlSrv.clientGeneration();
+        ctrlLines.reset();
+      }
+      ctrlLines.feed(ctrlIn);
       for (auto& line : ctrlLines.takeLines()) {
         ctrlSrv.send(worker.control(line) + "\n");
       }
@@ -352,6 +379,19 @@ int main(int argc, char** argv) {
                            : 0.0,
            double(t.rxDecodeUsMax) * 1e-3);
 
-  if (!pre.configPath.empty()) cfg.save(pre.configPath);
+  // Save what the modem is running NOW: the worker's copy carries every
+  // control-port change (MYCALL, FAMILY, PTT*, ENCRYPTKEY...), while
+  // main's `cfg` is the startup snapshot plus the audio devices that only
+  // main manages. Saving the startup copy threw away all runtime changes.
+  if (!pre.configPath.empty()) {
+    skw::Config out = worker.config();
+    out.inputDevice = cfg.inputDevice;
+    out.outputDevice = cfg.outputDevice;
+    out.inputDeviceName = cfg.inputDeviceName;
+    out.outputDeviceName = cfg.outputDeviceName;
+    if (!out.save(pre.configPath)) {
+      SKW_WARN("config: cannot write %s", pre.configPath.c_str());
+    }
+  }
   return 0;
 }

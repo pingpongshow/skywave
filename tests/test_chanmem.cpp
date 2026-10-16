@@ -113,6 +113,51 @@ TEST_CASE(persistence_round_trip) {
   remove(path.c_str());
 }
 
+namespace {
+double g_fakeWall = 1.7e9;
+double fakeWall() { return g_fakeWall; }
+}  // namespace
+
+TEST_CASE(persisted_ages_use_wall_clock) {
+  // C3: the engine clock restarts at boot; persisted entries must age by
+  // wall time, and a timestamp in the future must never raise the mode.
+  std::string path = "/tmp/skw_test_chanmem_wall.bin";
+  g_fakeWall = 1.7e9;
+  {
+    ChannelMemory cm;
+    cm.setWallClockForTest(&fakeWall);
+    cm.record(key(1), stats(10), 5000.0);  // boot-relative engine time
+    CHECK(cm.save(path));
+  }
+  ChannelMemory cm;
+  cm.setWallClockForTest(&fakeWall);
+  CHECK(cm.load(path));
+  // After a reboot the engine clock is small again; age is wall time.
+  g_fakeWall = 1.7e9 + 6 * 60.0;
+  CHECK_EQ(int(*cm.recommend(key(1), 3.0, 13)), 9);  // 6 min: -1
+  g_fakeWall = 1.7e9 + 2 * 3600.0;
+  CHECK(!cm.recommend(key(1), 3.0, 13).has_value());  // expired
+  // Slightly in the future (clock skew): no decay, and never a raise.
+  g_fakeWall = 1.7e9 - 60.0;
+  CHECK_EQ(int(*cm.recommend(key(1), 3.0, 13)), 10);
+  // Far in the future: untrustworthy, ignored.
+  g_fakeWall = 1.7e9 - 86400.0;
+  CHECK(!cm.recommend(key(1), 3.0, 13).has_value());
+  // In-process entries still use the caller's clock; a negative age is
+  // clamped rather than raising the mode.
+  cm.record(key(2), stats(9), 100.0);
+  CHECK_EQ(int(*cm.recommend(key(2), 40.0, 13)), 9);
+  remove(path.c_str());
+}
+
+TEST_CASE(recommend_clamp_with_odd_max_mode) {
+  // C2: maxMode 255 ("auto") or below M4 must not hit std::clamp lo>hi.
+  ChannelMemory cm;
+  cm.record(key(), stats(12), 0.0);
+  CHECK_EQ(int(*cm.recommend(key(), 1.0, 255)), 12);
+  CHECK_EQ(int(*cm.recommend(key(), 1.0, 2)), 4);
+}
+
 TEST_CASE(start_seeding_lower_of_two) {
   // The START proposal takes min(memory recommendation, live quality).
   ChannelMemory cm;

@@ -53,6 +53,8 @@ class Gui {
 
   // Exposed for tests: run the dispatcher exactly as the widgets do.
   std::string submit(const std::string& cmd);
+  // The form of `cmd` the on-screen log shows (secrets masked).
+  static std::string redactForLog(const std::string& cmd);
   // --- audio device selection (Settings panel) ------------------------
   // The AUDIO STREAM is owned by main(), not the worker, so a device
   // change is a request the main loop performs between frames: it

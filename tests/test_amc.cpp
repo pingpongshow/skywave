@@ -316,4 +316,29 @@ TEST_CASE(max_mode_cap) {
   CHECK(a.evaluate(8.0).kind == AmcDecision::Kind::None);
 }
 
+TEST_CASE(max_mode_255_stays_in_table) {
+  // C2: max_mode "auto" once reached the AMC as 255; every upward walk
+  // then indexed past the floor tables at M13. The ladder top is now
+  // bounded by the mode table whatever maxMode says.
+  AmcConfig c = cfg();
+  c.maxMode = 255;
+  c.maxPromoteStep = 4;
+  Amc a(c, 12, 0.0);
+  cleanFrames(a);
+  a.onLocalSnr(60.0);
+  a.onProbeResult(true, 0.0);
+  double t = 0.0;
+  for (int i = 0; i < 200; ++i) {
+    t += 1.0;
+    auto d = a.evaluate(t);
+    if (d.kind == AmcDecision::Kind::Promote) {
+      CHECK(d.targetMode <= kNumModes - 1);
+      a.onModeApplied(d.targetMode, t);
+    }
+    if (auto p = a.probeWanted(t)) CHECK(*p <= kNumModes - 1);
+    cleanFrames(a, 4);
+  }
+  CHECK(a.mode() <= kNumModes - 1);
+}
+
 SKYTEST_MAIN

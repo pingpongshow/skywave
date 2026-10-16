@@ -2,6 +2,7 @@
 
 #include "gui/gui.hpp"
 
+#include <cctype>
 #include <SDL.h>
 
 #include <algorithm>
@@ -48,6 +49,18 @@ void GuiInstruments::push(const Telemetry& t) {
   trim(modeHistory);
 }
 
+// The command log is on screen (and in screenshots): a secret argument
+// is never put in it. ENCRYPTKEY's argument is the PSK itself.
+std::string Gui::redactForLog(const std::string& cmd) {
+  const size_t a = cmd.find_first_not_of(" \t");
+  if (a == std::string::npos) return cmd;
+  const size_t b = cmd.find_first_of(" \t", a);
+  std::string verb = cmd.substr(a, b == std::string::npos ? b : b - a);
+  for (char& ch : verb) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  if (verb != "ENCRYPTKEY" || b == std::string::npos) return cmd;
+  return cmd.substr(0, b) + " ********";
+}
+
 Gui::Gui(ModemWorker& worker) : worker_(worker) {}
 Gui::~Gui() { shutdown(); }
 
@@ -55,7 +68,7 @@ std::string Gui::submit(const std::string& cmd) {
   // THE rule: no privileged path. Everything the GUI changes goes through
   // the same dispatcher the TCP control port uses.
   const std::string resp = worker_.control(cmd);
-  log_.push_back({cmd, resp});
+  log_.push_back({redactForLog(cmd), resp});
   if (log_.size() > 200) log_.erase(log_.begin());
   return resp;
 }

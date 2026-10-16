@@ -66,19 +66,37 @@ std::optional<MonitorEvent> Monitor::rxBurst(
             // The sender's 16-bit tag rides the envelope session-id
             // field, which is meaningless for a connectionless frame.
             const uint16_t tag = f->env.sessionId;
+            // Retire chains that stopped advancing, so a lost fragment
+            // cannot hold a sender's next broadcast hostage.
+            for (auto it = bcastChains_.begin(); it != bcastChains_.end();) {
+              if (decoded_ - it->second.lastFrame > kBcastChainMaxFrames) {
+                it = bcastChains_.erase(it);
+              } else {
+                ++it;
+              }
+            }
             BcastChain& ch = bcastChains_[tag];
-            if (b->fragCount != ch.count) {
+            // A new message from the same sender: different geometry, or
+            // a fragment index we already hold (the old chain lost a
+            // fragment and the sender has moved on). Start over rather
+            // than splice two messages together.
+            const bool repeat = b->fragIndex < ch.have.size() &&
+                                ch.have[b->fragIndex];
+            if (b->fragCount != ch.count || repeat) {
               ch.count = b->fragCount;
               ch.frags.assign(size_t(b->fragCount), {});
+              ch.have.assign(size_t(b->fragCount), false);
             }
+            ch.lastFrame = decoded_;
             // Attribute to whatever callsign context we have; a sender
             // that announced itself (CQ/BEACON/CALL) is named exactly.
             if (lastSrc_ != "?") ch.src = lastSrc_;
             if (b->fragIndex < b->fragCount) {
               ch.frags[b->fragIndex] = std::move(b->payload);
+              ch.have[b->fragIndex] = true;
               bool all = true;
-              for (auto& fr : ch.frags) {
-                if (fr.empty()) all = false;
+              for (bool h : ch.have) {
+                if (!h) all = false;
               }
               if (all) {
                 std::vector<uint8_t> whole;

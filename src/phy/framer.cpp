@@ -111,6 +111,16 @@ std::optional<PhyHeader> parsePhyHeader(std::span<const uint8_t> bytes) {
   h.seqLow = uint8_t(r.get(8));
   h.cssHeaderCopies = r.get(1) ? 1 : 2;
   h.poll = r.get(1) != 0;
+  // A CRC-16 pass is no guarantee of sane fields (any station can send a
+  // well-formed header, and 1 in 65536 noise headers passes): every field
+  // that indexes a table is range-checked here, once, for all callers.
+  // mode is 4 bits but the ladder has kNumModes rungs (mode 15 read past
+  // kModes and hung the payload loop on a zero code rate); cpMode is 2
+  // bits over 3 CP modes.
+  if (h.mode >= kNumModes || int(h.cpMode) > int(CpMode::Long) ||
+      (h.waveform != Waveform::Ofdm && h.waveform != Waveform::Css)) {
+    return std::nullopt;
+  }
   return h;
 }
 
@@ -301,11 +311,12 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
     remaining -= std::min(remaining, size_t(pcode.k()));
     totalCoded += pcode.n();
   }
-  const int pG = spreadGroupSymbols(p.family, md.spread, p.mask);
+  const CarrierMask* pmask = effectiveMask(p.mask, p.family, p.mode);
+  const int pG = spreadGroupSymbols(p.family, md.spread, pmask);
   int psym = 0;
   while (totalCoded > 0) {
     totalCoded -= sourceSymbolsPerGroup(p.family, g.headerSymbols + psym,
-                                        md.spread, p.mask) *
+                                        md.spread, pmask) *
                   bitsPerSymbol(md.constellation);
     psym += pG;
   }
@@ -453,7 +464,8 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
     }
     if (!allBits.empty()) {
       sym += appendOfdmSymbols(p.family, md.constellation, md.spread,
-                               p.cpMode, allBits, sym, frame, p.mask,
+                               p.cpMode, allBits, sym, frame,
+                               effectiveMask(p.mask, p.family, p.mode),
                                leftoverCopiesEnabled());
     }
   }

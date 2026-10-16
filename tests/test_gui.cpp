@@ -83,6 +83,21 @@ TEST_CASE(gui_mutations_route_through_dispatcher) {
   CHECK(f.worker.monitoring());
 }
 
+TEST_CASE(gui_log_never_shows_the_psk) {
+  // C10: the command log is on screen; ENCRYPTKEY's argument is the PSK.
+  Fixture f;
+  const std::string psk =
+      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  f.gui.submit("ENCRYPTKEY " + psk);
+  f.gui.submit("encryptkey " + psk);
+  for (const auto& l : f.gui.log()) {
+    CHECK(l.cmd.find(psk) == std::string::npos);
+    CHECK(l.cmd.find("********") != std::string::npos);
+  }
+  CHECK(Gui::redactForLog("STATUS") == "STATUS");
+  CHECK(Gui::redactForLog("ENCRYPTKEY") == "ENCRYPTKEY");
+}
+
 TEST_CASE(gui_instruments_track_telemetry) {
   Fixture f;
   // Feed the worker some audio so telemetry has something to report.

@@ -33,7 +33,10 @@ Every frame shares one link-layer envelope inside the PHY payload:
 byte 0      frame_type (matches PHY header frame_type)
 byte 1      flags: [0] compressed  [1] encrypted  [2] more-fragments
                    [3] resume-context  [4..7] reserved
-bytes 2-3   session_id (0 for pre-session frames)
+bytes 2-3   session_id (0 for pre-session frames; chosen non-zero by the
+            initiator and carried in its START envelope, adopted by the
+            responder, echoed in START_ACK/RESUME_ACK, kept by a resumed
+            session)
 bytes 4-5   sequence (per-direction, wraps mod 65536)
 bytes 6-7   ack_base (cumulative receive floor, piggybacked)
 bytes 8..   type-specific body
@@ -400,6 +403,18 @@ first turn to whichever end had reason to re-establish the link.
 round-trip-scaled cadence when the ISS has gone idle and no ACK is
 otherwise due. The bit mirrors current state: a later ACK without it
 withdraws the request.
+
+**Session filter.** In-session frames (everything except CALL, CALL_ACK,
+START, START_ACK, START_NAK, RESUME_REQ, RESUME_ACK, CQ, BEACON,
+BCAST_DATA) are processed only while our session is up and only with its
+`session_id`; others are dropped before they can touch ARQ, timers or the
+TX frequency (every session used to run as id 0, so another pair's DISC
+or ACK on the channel was acted on). Handshake frames are state-gated:
+CALL_ACK only while Calling; START_ACK, RESUME_ACK and START_NAK only
+while awaiting them and with our id; a CALL from a third station is
+ignored while busy. A peer MASK_UPDATE excluding more carriers than our
+own detector ever proposes (30%) is refused, and the PHY ignores any mask
+leaving under half the carriers.
 
 **Poll.** The ISS sends a window of bursts back to back and listens only
 after the last, so it marks that burst with the PHY header's `poll` bit

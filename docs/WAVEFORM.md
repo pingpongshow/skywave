@@ -371,6 +371,10 @@ handshake):
 | `pad` | 4 | zero |
 | `crc16` | 16 | header CRC |
 
+A header that passes its CRC-16 is still range-checked before use:
+`mode < 15`, `cp_mode <= 2`, `waveform` OFDM or CSS (a CRC-valid header
+with mode 15 used to index past the mode table and hang the receiver).
+
 Header transport (fixed, family-wide, never negotiated):
 
 - **fast header**: QPSK, LDPC `N=648 r1/2`, spread ×2 — ~0.35 s (`WIDE`),

@@ -1461,7 +1461,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     // DATA frame below M8 failed for the rest of the session once a mask
     // existed, while piggyback-only control frames kept passing.
     const CarrierMask* walkMask =
-        modeUsesCarrierMask(int(hdr->mode)) ? payloadMask : nullptr;
+        effectiveMask(payloadMask, family, int(hdr->mode));
     walker.mask = walkMask;
     tracker.setMask(walkMask);
     walker.leftoverCopies = leftoverCopiesEnabled();

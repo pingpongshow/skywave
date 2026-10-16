@@ -353,6 +353,43 @@ TEST_CASE(crypto_session_two_modem_with_rotation) {
   CHECK_EQ(int(p.b.cryptoEpoch()), 2);  // peer followed the KEY_UPDATE
 }
 
+// KEY_UPDATE is a handshake: the initiator keeps its epoch until the
+// responder echoes. Losing the update used to kill the session (the
+// initiator switched at once, and every frame then failed authentication
+// at the peer); now it is re-announced and the data keeps flowing.
+TEST_CASE(crypto_lost_key_update_is_retried) {
+  CryptoPair p(true, true);
+  CHECK(p.connect());
+  CHECK(p.a.rotateKeys(p.now));
+  auto lost = p.a.tick(p.now);  // the KEY_UPDATE: never delivered
+  CHECK(lost.has_value());
+  p.now += double(lost->size()) / kFsBaseband + 0.05;
+  CHECK_EQ(int(p.a.cryptoEpoch()), 1);  // still on the old keys
+  auto blob = noise(3000, 77);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 6000 && (got.size() < blob.size() ||
+                               p.a.cryptoEpoch() != 2);
+       ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+    if (p.a.state() != FsmState::Connected) break;
+  }
+  CHECK(got == blob);
+  CHECK_EQ(int(p.a.cryptoEpoch()), 2);
+  CHECK_EQ(int(p.b.cryptoEpoch()), 2);
+}
+
+// No session key, no ciphertext: seal() used to encrypt under the zeroed
+// key after a failed exchange.
+TEST_CASE(crypto_seal_refuses_without_key) {
+  CryptoSession s;
+  CHECK(s.setPsk(testPsk()));
+  const std::vector<uint8_t> aad(8, 0), plain(20, 0x11);
+  CHECK(s.seal(0, 1, aad, plain).empty());
+}
+
 TEST_CASE(crypto_psk_mismatch_refuses_session) {
   // Responder holds no PSK: the negotiated encryption cannot complete, so
   // the session is REFUSED - it must never come up in cleartext.

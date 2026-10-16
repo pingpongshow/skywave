@@ -75,17 +75,15 @@ depends on it.)
 | `ultra_enable` | `false` | permit the opt-in 2.7 kHz ULTRA family (radio must pass ~100–2900 Hz) |
 | `family_fallback` | `true` | unanswered ULTRA calls retry at WIDE |
 | `mode` | `auto` | `auto` or `m4..m13` pin |
-| `max_mode` | `m13` | AMC promotion cap |
+| `max_mode` | `m13` | AMC promotion cap; `auto` = highest active mode (m14); values clamp to m4..m14 |
 | `cp_mode` | `auto` | `auto/short/medium/long` |
 | `listen` | `true` | start listening |
 | `max_retries` | `10` | ARQ retry cap per frame |
 | `harq` | `auto` | `auto/chase/ir` |
 | `channel_memory` | `true` | reconnect seeding; OFF disables both seeding and recording. Store: `~/.skywave/chanmem.bin`, overridden by `SKW_CHANMEM_PATH` (empty value = no persistence) |
-| `probe_promote` | `true` | probe-before-promote |
 | `carrier_masking` | `true` | mask exchange |
 | `turn_taking` | `true` | scheduled ISS/IRS turn-taking (`CAP_TURN_SCHED`); `false` = legacy occupancy-gate scheduler, needed only to call a pre-`CAP_TURN_SCHED` build |
 | `resume` | `true` | session resume |
-| `pre_tx_cca` | `true` | originate-time busy gate |
 | `impulse_blanker` | `false` | RX impulse blanker |
 | `multi_notch` | `false` | RX adaptive notch bank |
 | `freq_align` | `true` | TX frequency alignment to peer-reported CFO |

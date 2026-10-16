@@ -581,6 +581,10 @@ void LinkEngine::noteHandshakeRtt(double now) {
   if (hsTxAt_ < 0.0) return;
   const double rtt = now - hsTxAt_;
   hsTxAt_ = -1.0;
+  if (hsTxAmbiguous_) {
+    hsTxAmbiguous_ = false;
+    return;
+  }
   if (rtt <= 0.0 || rtt > 300.0) return;
   hsRttSec_ = hsRttSec_ > 0.0 ? std::min(hsRttSec_, rtt) : rtt;
 }
@@ -594,6 +598,9 @@ void LinkEngine::connectTo(const std::string& call, double now) {
   remoteCall_ = call;
   isInitiator_ = true;
   callTxCount_ = 0;  // CALL transport ladder restarts (handshake-on-CSS)
+  hsRttSec_ = 0.0;   // a new handshake measures its own channel
+  hsTxAt_ = -1.0;
+  hsTxAmbiguous_ = false;
   hsOnCss_ = false;
   fsm_.cmdConnect(now);
   drainFsmActions(now);
@@ -654,6 +661,16 @@ std::array<uint8_t, 8> LinkEngine::mintToken(double now) {
   std::array<uint8_t, 8> t{};
   for (int i = 0; i < 8; ++i) t[size_t(i)] = uint8_t(h >> (8 * i));
   return t;
+}
+
+uint16_t LinkEngine::newSessionId(double now) {
+  const uint64_t h = skwHash(
+      uint64_t(now * 1e6) ^ (uint64_t(callsignHash24(cfg_.policy.ownCall))
+                             << 40) ^
+      (uint64_t(callsignHash24(remoteCall_)) << 16) ^ ++tokenCtr_ ^
+      0x5E55ull);
+  const uint16_t id = uint16_t(h ^ (h >> 16) ^ (h >> 32) ^ (h >> 48));
+  return id != 0 ? id : uint16_t(1);
 }
 
 void LinkEngine::confirmDeliveredMessages() {
@@ -802,6 +819,7 @@ bool LinkEngine::openVoice(std::optional<VoiceCodec> want, double now) {
 }
 
 void LinkEngine::closeVoice(double now) {
+  if (voiceFsm_.talking()) emitVoiceUnits(/*flush=*/true);  // the tail
   voiceFsm_.cmdClose(now);
   drainVoiceActions(now);
   jitter_.reset();
@@ -813,15 +831,45 @@ void LinkEngine::closeVoice(double now) {
 bool LinkEngine::setVoicePtt(bool on, double now) {
   if (voiceFsm_.state() == VoiceState::Closed) return false;
   if (on) {
+    // A new spurt starts with what is said from now on - never stale
+    // audio left over from before (the encoder kept it).
+    voiceEnc_.discardPcm();
     voiceFsm_.cmdPttOn(now);
-  } else {
-    voiceFsm_.cmdPttOff(now);
+    drainVoiceActions(now);
+    return true;
   }
+  // Release: the partial unit at the end of the spurt used to be dropped
+  // (up to ~3.7 s of C700 at M9). Send it, then PTT_END BEHIND it -
+  // control frames otherwise jump ahead of voice and the peer would go
+  // back to Open before the tail arrived.
+  const bool wasTalking = voiceFsm_.talking();
+  if (wasTalking) emitVoiceUnits(/*flush=*/true);
+  voiceFsm_.cmdPttOff(now);
   drainVoiceActions(now);
+  if (wasTalking) {
+    auto end = std::find_if(outQueue_.begin(), outQueue_.end(),
+                            [](const OutFrame& q) {
+                              return q.env.type == LinkType::VoicePttEnd;
+                            });
+    if (end != outQueue_.end()) {
+      OutFrame pttEnd = std::move(*end);
+      outQueue_.erase(end);
+      auto lastVoice = std::find_if(
+          outQueue_.rbegin(), outQueue_.rend(), [](const OutFrame& q) {
+            return q.env.type == LinkType::VoiceData;
+          });
+      outQueue_.insert(lastVoice.base(), std::move(pttEnd));
+    }
+  }
+  voiceEnc_.discardPcm();
   return true;
 }
 
 void LinkEngine::pushVoicePcm(std::span<const int16_t> pcm) {
+  // Only while a spurt is being requested or spoken: the app streams mic
+  // audio continuously, and the encoder used to accumulate it all and
+  // replay it at the next PTT.
+  if (!voiceFsm_.capturing()) return;
   voiceEnc_.pushPcm(pcm);
 }
 
@@ -892,10 +940,14 @@ void LinkEngine::pumpVoice(double now) {
       return;
     }
   }
+  emitVoiceUnits(/*flush=*/false);
+}
+
+void LinkEngine::emitVoiceUnits(bool flush) {
   // Stream units back-to-back while the talkspurt holds the channel.
   // Voice preempts queued DATA but never control (queueControl pushes
   // control ahead of data already).
-  while (auto unit = voiceEnc_.nextUnit(dataBudget_, false)) {
+  while (auto unit = voiceEnc_.nextUnit(dataBudget_, flush)) {
     OutFrame f;
     f.env.type = LinkType::VoiceData;
     f.env.sessionId = sessionId_;
@@ -905,7 +957,7 @@ void LinkEngine::pumpVoice(double now) {
 #ifdef SKW_HAVE_CRYPTO
     if (cryptoOn_) {
       f.env.flags |= kFlagEncrypted;
-      sealPayload(f.env, f.body);
+      if (!sealPayload(f.env, f.body)) return;  // no key: never send
     }
 #endif
     f.sig = sigForMode(mode_);
@@ -945,16 +997,21 @@ bool LinkEngine::rotateKeys(double now) {
   }
   if (pendingEpoch_ != 0) return false;  // one rotation in flight
   pendingEpoch_ = uint16_t(crypto_.epoch() + 1);
-  // KEY_UPDATE rides the CURRENT epoch's keys (it is a normal control
-  // frame); the local switch happens when the peer's frames arrive under
-  // the new epoch - the grace window covers the crossover either way.
+  sendKeyUpdate(now);
+  return true;
+}
+
+// KEY_UPDATE is a two-way exchange. We keep sealing under the current
+// epoch until the responder ECHOES the update (it switches on receipt and
+// can still open our old-epoch frames in its grace window); only then do
+// we switch. Switching at the announcement made one lost KEY_UPDATE fatal:
+// every later DATA frame failed authentication at the peer until the ARQ
+// gave up on the session.
+void LinkEngine::sendKeyUpdate(double now) {
   queueControl(LinkType::KeyUpdate,
                KeyUpdateBody{uint8_t(pendingEpoch_ & 0xFF)}.pack(),
                sigForMode(mode_), std::min(mode_, 8));
-  crypto_.setEpoch(pendingEpoch_);
-  pendingEpoch_ = 0;
-  epochRotateAt_ = now;
-  return true;
+  keyUpdateSentAt_ = now;
 }
 
 // DATA payload sealing. AAD = the envelope's first 8 bytes, so any
@@ -973,10 +1030,11 @@ bool LinkEngine::sealPayload(const LinkEnvelope& env,
   aad.push_back(uint8_t(env.ackBase));
   aad.push_back(uint8_t(env.ackBase >> 8));
   const uint8_t stream = usesVoiceSequence(env.type) ? 1 : 0;
-  const uint64_t seq = CryptoSession::extendSeq(txSeqHi_, env.sequence);
-  txSeqHi_ = std::max(txSeqHi_, seq);
+  const uint64_t seq =
+      CryptoSession::extendSeq(txSeqHi_[stream], env.sequence);
+  txSeqHi_[stream] = std::max(txSeqHi_[stream], seq);
   body = crypto_.seal(stream, seq, aad, body);
-  return true;
+  return !body.empty();  // empty = no session key: never send
 }
 
 bool LinkEngine::openPayload(const LinkEnvelope& env,
@@ -993,10 +1051,11 @@ bool LinkEngine::openPayload(const LinkEnvelope& env,
   aad.push_back(uint8_t(env.ackBase));
   aad.push_back(uint8_t(env.ackBase >> 8));
   const uint8_t stream = usesVoiceSequence(env.type) ? 1 : 0;
-  const uint64_t seq = CryptoSession::extendSeq(rxSeqHi_, env.sequence);
+  const uint64_t seq =
+      CryptoSession::extendSeq(rxSeqHi_[stream], env.sequence);
   auto plain = crypto_.open(stream, seq, aad, body);
   if (!plain) return false;  // tag/replay failure: drop, never deliver
-  rxSeqHi_ = std::max(rxSeqHi_, seq);
+  rxSeqHi_[stream] = std::max(rxSeqHi_[stream], seq);
   body = std::move(*plain);
   return true;
 }
@@ -1122,6 +1181,16 @@ void LinkEngine::drainFsmActions(double now) {
         break;
       }
       case FsmAction::SendStart: {
+        // The session id rides START's envelope; the responder adopts it
+        // and every in-session frame must carry it (onFrame drops the
+        // rest - another pair's ACK/DISC on the same channel used to be
+        // acted on, since every session ran as id 0). Kept across START
+        // retries; a resumed session keeps the id it had.
+        if (resumeUsable(now) && resumeCtx_.sessionId != 0) {
+          sessionId_ = resumeCtx_.sessionId;
+        } else if (sessionId_ == 0) {
+          sessionId_ = newSessionId(now);
+        }
         if (resumeUsable(now)) {
           // Reconnect within the window: RESUME_REQ rides the START
           // slot; capability set and pipeline continue.
@@ -1195,6 +1264,7 @@ void LinkEngine::drainFsmActions(double now) {
           resumeCtx_.family = cfg_.policy.family;
           resumeCtx_.caps = sessionCaps_;
           resumeCtx_.freshAt = now;
+          resumeCtx_.sessionId = sessionId_;
         }
         lastStartAckBody_ = sa.pack();  // kept for duplicate-START re-ack
         queueControl(LinkType::StartAck, lastStartAckBody_, hsSig(),
@@ -1230,6 +1300,19 @@ void LinkEngine::drainFsmActions(double now) {
                      mode_ <= 3 ? mode_ : 4);
         break;
       case FsmAction::IndicateConnected: {
+        // Per-channel verdicts and per-session requests start fresh: the
+        // last session's CP spread estimate, codeword targets, pending NAK
+        // and mode request belonged to another channel (or peer).
+        spreadEmaMs_ = 0.0;
+        haveSpread_ = false;
+        cpWantStreak_ = 0;
+        cssCwTarget_ = 2;
+        cssCleanRun_ = 0;
+        robustCwTarget_ = kRobustCwMin;
+        robustCleanRun_ = 0;
+        rxFailPending_ = false;
+        peerModeRequest_ = -1;
+        peerModeAutoSends_ = 0;
         // TX-alignment bootstrap: center both signals in both passbands
         // before data traffic starts. (Since GAP_CLOSURE_PLAN 8.2 every
         // frame acquires within +-55 Hz, so this is filter hygiene, no
@@ -1281,6 +1364,8 @@ void LinkEngine::drainFsmActions(double now) {
 #ifdef SKW_HAVE_CRYPTO
         epochRotateAt_ = now;
         pendingEpoch_ = 0;
+        keyUpdateSentAt_ = -1.0;
+        sealedAtRotate_ = crypto_.framesSealed();
 #endif
         if (resuming_) {
           // RESUME: sequence spaces continue - keep both ARQ engines,
@@ -1389,10 +1474,12 @@ void LinkEngine::drainFsmActions(double now) {
           resumeCtx_.mode = mode_;
           resumeCtx_.cp = cpMode_;
           resumeCtx_.freshAt = now;  // window runs from the drop
+          resumeCtx_.sessionId = sessionId_;
         } else {
           discardPausedPipeline();
         }
         ackPending_ = false;
+        sessionId_ = 0;  // the next fresh session draws a new one
         break;
       }
     }
@@ -1509,10 +1596,24 @@ void LinkEngine::pumpData(double now) {
                  .pack();
 #ifdef SKW_HAVE_CRYPTO
     if (cryptoOn_) {
-      // Retransmissions re-seal under the SAME sequence, so the nonce
-      // and ciphertext are identical - HARQ soft-combining still works.
-      f.env.flags |= kFlagEncrypted;
-      sealPayload(f.env, f.body);
+      // Resend the ORIGINAL ciphertext (and the envelope fields it was
+      // authenticated with): the seq - and so the nonce - is the same,
+      // but rv and ackBase have moved, and re-sealing changed plaintext
+      // under one nonce is a GCM nonce reuse. Identical bytes also keep
+      // HARQ soft-combining working. (The receiver's retry statistics
+      // see rv 0 on these; only an epoch change re-seals - a new key is
+      // a new nonce space.)
+      auto it = sealedData_.find(r->seq);
+      if (it != sealedData_.end() && it->second.epoch == crypto_.epoch()) {
+        f.env.flags = it->second.flags;
+        f.env.ackBase = it->second.ackBase;
+        f.body = it->second.body;
+      } else {
+        f.env.flags |= kFlagEncrypted;
+        if (!sealPayload(f.env, f.body)) return;
+        sealedData_[r->seq] = {crypto_.epoch(), f.env.ackBase, f.env.flags,
+                               f.body};
+      }
     }
 #endif
     // HARQ AUTO: IR when both peers advertise it - the retransmission
@@ -1577,7 +1678,17 @@ void LinkEngine::pumpData(double now) {
 #ifdef SKW_HAVE_CRYPTO
     if (cryptoOn_) {
       f.env.flags |= kFlagEncrypted;
-      sealPayload(f.env, f.body);
+      if (!sealPayload(f.env, f.body)) return;  // no key: never send
+      // Prune what the window has left behind, then remember this one
+      // for any retransmission (see the retransmit path).
+      if (auto oldest = arqTx_.oldestInFlight()) {
+        for (auto it = sealedData_.begin(); it != sealedData_.end();) {
+          it = seqDiff(it->first, *oldest) < 0 ? sealedData_.erase(it)
+                                                : std::next(it);
+        }
+      }
+      sealedData_[*seq] = {crypto_.epoch(), f.env.ackBase, f.env.flags,
+                           f.body};
     }
 #endif
     f.sig = sigForMode(mode_);
@@ -1970,6 +2081,7 @@ bool LinkEngine::pinMode(int mode, double now) {
 void LinkEngine::unpinMode() {
   if (!isInitiator_ && fsm_.state() == FsmState::Connected) {
     peerModeRequest_ = int(kRxModeAuto);   // ask the initiator to free it
+    peerModeAutoSends_ = 0;
     ackPending_ = true;
     return;
   }
@@ -2025,7 +2137,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // Session-end edge: the store learns from completed sessions only.
   // A call ladder that exhausted without connecting also hands the radio
   // back on the configured family.
-  if (fsm_.state() == FsmState::Idle &&
+  // (Not on the tick a session ends: the edge below records channel
+  // memory first, keyed by the family the session actually ran on.)
+  if (fsm_.state() == FsmState::Idle && !wasConnected_ &&
       cfg_.policy.family != configuredFamily_) {
     cfg_.policy.family = configuredFamily_;
   }
@@ -2192,11 +2306,19 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
       }
     }
 #ifdef SKW_HAVE_CRYPTO
-    // Automatic rotation (SECURITY.md): every 2^20 frames or 4 hours.
-    if (cryptoOn_ && isInitiator_ &&
-        (now - epochRotateAt_ > 4.0 * 3600.0 ||
-         crypto_.framesSealed() >= (1u << 20))) {
-      rotateKeys(now);
+    // Automatic rotation (SECURITY.md): every 2^20 frames or 4 hours -
+    // frames sealed SINCE the last rotation (framesSealed() is a lifetime
+    // count: comparing it raw rotated on every tick past 2^20).
+    if (cryptoOn_ && isInitiator_) {
+      if (pendingEpoch_ == 0 &&
+          (now - epochRotateAt_ > 4.0 * 3600.0 ||
+           crypto_.framesSealed() - sealedAtRotate_ >= (1u << 20))) {
+        rotateKeys(now);
+      } else if (pendingEpoch_ != 0 && keyUpdateSentAt_ >= 0.0 &&
+                 now - keyUpdateSentAt_ >
+                     std::max(30.0, 2.0 * arqTx_.timeoutSec())) {
+        sendKeyUpdate(now);  // no echo yet: the update or its echo was lost
+      }
     }
 #endif
     probeGate_.tick(now);
@@ -2790,6 +2912,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   // timeout must cover - the peer's decode-and-reply turnaround.
   if (f.env.type == LinkType::Call || f.env.type == LinkType::CallAck ||
       f.env.type == LinkType::Start || f.env.type == LinkType::StartAck) {
+    // Karn: a leg whose frame went out more than once is ambiguous (the
+    // reply may answer the first copy), so it is not sampled - restamping
+    // on every retry measured a too-short leg and seeded a too-small srtt.
+    hsTxAmbiguous_ = hsTxAt_ >= 0.0;
     hsTxAt_ = now;
   }
   {
@@ -2806,6 +2932,10 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
     f.env.ackBase = arqRx_.ackBase();
     const uint8_t rxFlags = ackRxFlags();
     rxFailPending_ = false;  // the NAK rides THIS ACK; never repeat it
+    if (peerModeRequest_ == int(kRxModeAuto) && ++peerModeAutoSends_ >= 3) {
+      peerModeRequest_ = -1;
+      peerModeAutoSends_ = 0;
+    }
     f.body = arqRx_.makeAck(
                  int8_t(std::clamp(reportSnrDb() * 2.0, -127.0, 127.0)),
                  rxFlags,
@@ -3138,6 +3268,30 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
             cfg_.policy.ownCall.c_str(), now, int(f.env.type),
             unsigned(f.env.sequence));
   }
+  // SESSION FILTER. In-session frames count only inside our session and
+  // only with its id: another pair's ACK, DISC or CFO report on the same
+  // channel - or a stray frame while idle - used to be acted on (every
+  // session ran as id 0, so the check matched everything).
+  switch (f.env.type) {
+    case LinkType::Call:
+    case LinkType::CallAck:
+    case LinkType::Start:
+    case LinkType::StartAck:
+    case LinkType::StartNak:
+    case LinkType::ResumeReq:
+    case LinkType::ResumeAck:
+    case LinkType::Cq:
+    case LinkType::Beacon:
+    case LinkType::BcastData:
+      break;  // pre-session / connectionless: their handlers gate them
+    default:
+      if ((fsm_.state() != FsmState::Connected &&
+           fsm_.state() != FsmState::Disconnecting) ||
+          f.env.sessionId != sessionId_) {
+        return;
+      }
+      break;
+  }
   // The peer's SNR report (ACK snrHalfDb) and the AMC read this: keep
   // the last MEASURED figure, not a short frame's seed guess.
   if (q.snrTrusted || !haveTrustedRxQuality_) {
@@ -3202,6 +3356,13 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Call: {
       auto call = CallBody::parse(f.body);
       if (!call || call->dstCall != cfg_.policy.ownCall) return;
+      // Busy with another station: a CALL from a third party must not
+      // touch the session it is not part of. Falling through used to
+      // overwrite remoteCall_, drop our initiator role and even switch
+      // the live session's family.
+      if (fsm_.state() != FsmState::Idle && call->srcCall != remoteCall_) {
+        return;
+      }
       if ((fsm_.state() == FsmState::Connected ||
            fsm_.state() == FsmState::Disconnecting) &&
           call->srcCall == remoteCall_) {
@@ -3229,6 +3390,11 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
           return;
         }
       }
+      if (fsm_.state() == FsmState::Idle) {
+        hsRttSec_ = 0.0;  // a new handshake measures its own channel
+        hsTxAt_ = -1.0;
+        hsTxAmbiguous_ = false;
+      }
       lastCall_ = *call;
       callRxCfoHz_ = q.cfoHz;  // the caller's UNCORRECTED frequency
       remoteCall_ = call->srcCall;
@@ -3244,7 +3410,10 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     }
     case LinkType::CallAck: {
       auto ack = CallAckBody::parse(f.body);
-      if (!ack) return;
+      // CALL_ACK carries no addressing: outside our own Calling state it
+      // is another pair's handshake (it used to retune our TX by its CFO
+      // report mid-session, and advance our FSM on someone else's ack).
+      if (!ack || fsm_.state() != FsmState::Calling) return;
       noteHandshakeRtt(now);
       lastCallAck_ = *ack;
       onCfoReport(ack->cfoHalfHz * 0.5);
@@ -3256,7 +3425,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       auto start = StartBody::parse(f.body);
       if (!start) return;
       if (fsm_.state() == FsmState::Connected && !isInitiator_ &&
-          !lastStartAckBody_.empty()) {
+          !lastStartAckBody_.empty() && f.env.sessionId == sessionId_) {
         // Duplicate START: our START_ACK was lost on the way back (near
         // the deep-tier floor every leg runs ~50%). Repeat the SAME ack
         // - never re-run session setup or the KEX.
@@ -3265,6 +3434,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         return;
       }
       if (fsm_.state() != FsmState::CallAnswered) return;
+      sessionId_ = f.env.sessionId;  // the initiator's choice (see SendStart)
       // The responder consults its own memory of this peer/channel too:
       // evaluateStart() takes the LOWER of the proposal and its own view.
       applyChanMemSeed(lastCall_.srcCall, now);
@@ -3292,7 +3462,9 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
           ok = false;
         } else {
           cryptoOn_ = true;
-          txSeqHi_ = rxSeqHi_ = 0;
+          txSeqHi_ = {};
+        rxSeqHi_ = {};
+        sealedData_.clear();
         }
       }
 #endif
@@ -3306,7 +3478,15 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     }
     case LinkType::StartAck: {
       auto ack = StartAckBody::parse(f.body);
-      if (!ack) return;
+      // Only the answer to OUR outstanding START. A duplicate (the peer
+      // re-acks a retried START) or a forged/overheard one arriving while
+      // Connected used to re-run the KEX - resetting the epoch and the
+      // nonce high-water - or, on a bad blob, switch crypto OFF and carry
+      // on in cleartext; it also overwrote mode_ behind applyMode's back.
+      if (!ack || fsm_.state() != FsmState::WaitStartAck ||
+          f.env.sessionId != sessionId_) {
+        return;
+      }
       noteHandshakeRtt(now);
 #ifdef SKW_HAVE_CRYPTO
       if (sessionCaps_ & kCapEncryption) {
@@ -3320,7 +3500,9 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
           return;
         }
         cryptoOn_ = true;
-        txSeqHi_ = rxSeqHi_ = 0;
+        txSeqHi_ = {};
+        rxSeqHi_ = {};
+        sealedData_.clear();
       }
 #endif
       mode_ = ack->finalMode;
@@ -3331,12 +3513,21 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
         resumeCtx_.family = cfg_.policy.family;
         resumeCtx_.caps = sessionCaps_;
         resumeCtx_.freshAt = now;
+        resumeCtx_.sessionId = sessionId_;
       }
       fsm_.rxStartAck(now);
       break;
     }
     case LinkType::StartNak: {
       auto nak = StartNakBody::parse(f.body);
+      // Only a refusal of OUR outstanding START/RESUME_REQ. A late
+      // duplicate NAK arriving after the session came up used to replay
+      // the whole pipeline (duplicate messages), abort transfers and
+      // queue a stray START.
+      if (fsm_.state() != FsmState::WaitStartAck ||
+          f.env.sessionId != sessionId_) {
+        return;
+      }
       // ResumeInvalid is NEVER fatal (frame.hpp, PROTOCOL.md): the peer
       // kept nothing to continue from, so fall back to a clean START on
       // this same call. This used to be gated on sentResumeReq_, which
@@ -3390,6 +3581,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::ResumeReq: {
       auto rr = ResumeReqBody::parse(f.body);
       if (!rr || fsm_.state() != FsmState::CallAnswered) return;
+      sessionId_ = f.env.sessionId;  // a resume continues the session id
       const bool ok = resumeCtx_.valid &&
                       rr->token == resumeCtx_.token &&
                       lastCall_.srcCall == resumeCtx_.remoteCall &&
@@ -3429,7 +3621,8 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::ResumeAck: {
       auto ra = ResumeAckBody::parse(f.body);
       if (!ra || !sentResumeReq_ ||
-          fsm_.state() != FsmState::WaitStartAck) {
+          fsm_.state() != FsmState::WaitStartAck ||
+          f.env.sessionId != sessionId_) {
         return;
       }
       sentResumeReq_ = false;
@@ -3695,8 +3888,17 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (!mu || fsm_.state() != FsmState::Connected) return;
       // The peer's RX sees interference on these carriers: zero them in
       // OUR transmissions from now on, and confirm.
-      txMask_ = CarrierMask();  // wire mask covers the HF 72-carrier max
-      std::copy(mu->mask.begin(), mu->mask.end(), txMask_.bits.begin());
+      CarrierMask proposed;  // wire mask covers the HF 72-carrier max
+      std::copy(mu->mask.begin(), mu->mask.end(), proposed.bits.begin());
+      // Never more than our own detector would ever propose: a peer mask
+      // excluding most carriers (all-zero hung the TX symbol loops) is
+      // refused, unacknowledged, and the current mask stays.
+      const int carriers = plan(cfg_.policy.family).carriers();
+      if (proposed.maskedCount(cfg_.policy.family) >
+          int(MaskDetectorConfig{}.maxMaskedRatio * carriers + 0.5)) {
+        return;
+      }
+      txMask_ = proposed;
       static const bool maskDbg = getenv("SKW_MASK_DEBUG") != nullptr;
       if (maskDbg) {
         fprintf(stderr, "%s rxMASKUPD epoch=%d masked=%d\n",
@@ -3728,12 +3930,32 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::KeyUpdate: {
 #ifdef SKW_HAVE_CRYPTO
       auto ku = KeyUpdateBody::parse(f.body);
-      if (!ku || !cryptoOn_ || isInitiator_) return;
-      // Epoch skew tolerance is 1 (grace window only): the low byte on
-      // the wire resolves against the current epoch.
-      const uint16_t want = uint16_t((crypto_.epoch() & 0xFF00) | ku->newEpoch);
-      if (want != uint16_t(crypto_.epoch() + 1)) return;
-      crypto_.setEpoch(want);
+      if (!ku || !cryptoOn_ || fsm_.state() != FsmState::Connected) return;
+      if (isInitiator_) {
+        // The responder's echo: it has switched, so we may too.
+        if (pendingEpoch_ != 0 &&
+            ku->newEpoch == uint8_t(pendingEpoch_ & 0xFF)) {
+          crypto_.setEpoch(pendingEpoch_);
+          pendingEpoch_ = 0;
+          keyUpdateSentAt_ = -1.0;
+          epochRotateAt_ = now;
+          sealedAtRotate_ = crypto_.framesSealed();
+        }
+        return;
+      }
+      // Responder. The wire carries the low byte; resolve it to the epoch
+      // just above ours (255 -> 256 used to resolve to 0 and be refused).
+      const uint16_t cur = crypto_.epoch();
+      uint16_t want = uint16_t((cur & 0xFF00) | ku->newEpoch);
+      if (want <= cur) want = uint16_t(want + 0x100);
+      if (want == uint16_t(cur + 1)) {
+        crypto_.setEpoch(want);
+      } else if (ku->newEpoch != uint8_t(cur & 0xFF)) {
+        return;  // neither the next epoch nor a repeat of the current one
+      }
+      // Echo (also for a repeat: our earlier echo was lost).
+      queueControl(LinkType::KeyUpdate, KeyUpdateBody{ku->newEpoch}.pack(),
+                   sigForMode(mode_), std::min(mode_, 8));
 #endif
       break;
     }
@@ -3793,7 +4015,9 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (haveVoiceRxSeq_) {
         const int16_t gap = seqDiff(f.env.sequence, voiceRxSeq_);
         if (gap > 1) {
-          voiceDec_.onGap((gap - 1) * vd->frameCount);
+          // Bounded here as well as in onGap: a far-off sequence number
+          // (from the air) must not ask for gigabytes of concealment.
+          voiceDec_.onGap(std::min<int>(gap - 1, 16) * vd->frameCount);
         } else if (gap <= 0) {
           return;  // duplicate or reordered: voice has no retransmission
         }
@@ -3801,6 +4025,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       voiceRxSeq_ = f.env.sequence;
       haveVoiceRxSeq_ = true;
       voiceDec_.onVoiceData(*vd);
+      voiceFsm_.rxVoiceActivity(now);  // frees us if PTT_END is lost
       jitter_.push(voiceDec_.takePcm());
       break;
     }

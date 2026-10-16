@@ -63,14 +63,28 @@ class DeviceBackend final : public AudioBackend {
       SKW_ERROR("portaudio: no input/output device");
       return false;
     }
+    // A stored INDEX goes stale when devices come and go (the GUI and
+    // CLI still accept indices): range-check it, and never dereference
+    // the NULL Pa_GetDeviceInfo returns for an index that is gone.
+    const int count = Pa_GetDeviceCount();
+    const PaDeviceInfo* inInfo =
+        inP.device >= 0 && inP.device < count ? Pa_GetDeviceInfo(inP.device)
+                                              : nullptr;
+    const PaDeviceInfo* outInfo =
+        outP.device >= 0 && outP.device < count
+            ? Pa_GetDeviceInfo(outP.device)
+            : nullptr;
+    if (!inInfo || !outInfo) {
+      SKW_ERROR("audio: device index %d/%d does not exist (%d devices)",
+                inP.device, outP.device, count);
+      return false;
+    }
     inP.channelCount = 1;
     inP.sampleFormat = paFloat32;
-    inP.suggestedLatency =
-        Pa_GetDeviceInfo(inP.device)->defaultLowInputLatency;
+    inP.suggestedLatency = inInfo->defaultLowInputLatency;
     outP.channelCount = 1;
     outP.sampleFormat = paFloat32;
-    outP.suggestedLatency =
-        Pa_GetDeviceInfo(outP.device)->defaultLowOutputLatency;
+    outP.suggestedLatency = outInfo->defaultLowOutputLatency;
 
     err = Pa_OpenStream(&stream_, &inP, &outP, kFsAudio, kFramesPerBuffer,
                         paNoFlag, &DeviceBackend::paCallback, this);
@@ -88,8 +102,8 @@ class DeviceBackend final : public AudioBackend {
     }
     SKW_INFO("audio: duplex stream running (in=%d '%s' out=%d '%s', %d Hz, "
              "output latency %.1f ms)",
-             inP.device, Pa_GetDeviceInfo(inP.device)->name, outP.device,
-             Pa_GetDeviceInfo(outP.device)->name, kFsAudio,
+             inP.device, inInfo->name ? inInfo->name : "?", outP.device,
+             outInfo->name ? outInfo->name : "?", kFsAudio,
              outLatencySec_ * 1e3);
     return true;
   }

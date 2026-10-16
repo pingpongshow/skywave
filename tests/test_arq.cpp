@@ -438,4 +438,27 @@ TEST_CASE(nak_fast_retransmits_the_peers_next_expected_frame) {
   tx.setSuspended(false, t);
 }
 
+TEST_CASE(ack_beyond_next_seq_is_ignored) {
+  // C1: onAck / resumeFrom apply the same "cannot have received what we
+  // never sent" bound as onPiggybackAck. Frames 0-2 are sent; a bogus
+  // base of 8 must release nothing.
+  ArqTx tx(8, 10);
+  tx.setTimeout(10.0);
+  double t = 50.0;
+  for (int i = 0; i < 3; ++i) tx.send({uint8_t(i)}, t);
+  AckBody bogus;
+  bogus.ackBase = 8;
+  tx.onAck(bogus, t);
+  CHECK_EQ(int(tx.inFlight()), 3);
+  tx.resumeFrom(8, t);
+  CHECK_EQ(int(tx.inFlight()), 3);
+  // Plausible values still work.
+  tx.resumeFrom(1, t);
+  CHECK_EQ(int(tx.inFlight()), 2);
+  AckBody good;
+  good.ackBase = 3;
+  tx.onAck(good, t);
+  CHECK_EQ(int(tx.inFlight()), 0);
+}
+
 SKYTEST_MAIN

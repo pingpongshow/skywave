@@ -307,6 +307,65 @@ TEST_CASE(m2_overlapping_captures_dispatch_once) {
   CHECK(p.b.framesOk() == ok1 + 1);
 }
 
+// Both ends run the session under the initiator's non-zero id, and an
+// in-session frame from another pair (different id) is ignored: another
+// link's DISC on the same channel used to tear ours down (every session
+// ran as id 0).
+TEST_CASE(m2_session_id_filters_other_pairs) {
+  Pair p(20.0);
+  CHECK(p.connect(400));
+  CHECK(p.a.sessionId() != 0);
+  CHECK_EQ(int(p.a.sessionId()), int(p.b.sessionId()));
+  Pair q(20.0, 91);
+  q.now = 777.0;  // a different session id
+  CHECK(q.connect(400));
+  CHECK(q.a.sessionId() != p.a.sessionId());
+  q.b.disconnect(q.now);
+  std::optional<std::vector<cfloat>> disc;
+  for (int i = 0; i < 40 && !disc; ++i) {
+    disc = q.b.tick(q.now);
+    q.now += 0.05;
+  }
+  CHECK(disc.has_value());
+  std::vector<cfloat> x(1500, cfloat(0, 0));
+  x.insert(x.end(), disc->begin(), disc->end());
+  x.insert(x.end(), 2000, cfloat(0, 0));
+  ChansimParams cp = p.chanBA;
+  p.a.rxBurst(Chansim::run(cp, x), p.now);
+  for (int i = 0; i < 20; ++i) p.step();
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(p.b.state() == FsmState::Connected);
+}
+
+// A CALL from a third station while a session is up must not touch it:
+// it used to overwrite the peer, drop the initiator role and switch the
+// session's family.
+TEST_CASE(m2_third_party_call_does_not_hijack) {
+  Pair p(20.0);
+  CHECK(p.connect(400));
+  LinkEngine c(Pair::makeCfg("N0XYZ", Family::Wide));
+  c.connectTo("K6XYZ", p.now);
+  std::optional<std::vector<cfloat>> call;
+  for (int i = 0; i < 40 && !call; ++i) call = c.tick(p.now + 0.05 * i);
+  CHECK(call.has_value());
+  std::vector<cfloat> x(1500, cfloat(0, 0));
+  x.insert(x.end(), call->begin(), call->end());
+  x.insert(x.end(), 2000, cfloat(0, 0));
+  ChansimParams cp = p.chanAB;
+  p.b.rxBurst(Chansim::run(cp, x), p.now);
+  CHECK(p.b.remoteCall() == "W1AW");
+  CHECK(p.b.state() == FsmState::Connected);
+  const auto msg = noiseBlob(300, 5);
+  p.a.sendData(msg);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 400 && got.size() < msg.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == msg);
+}
+
 TEST_CASE(m2_connect_clean) {
   Pair p(30.0);
   CHECK(p.connect());

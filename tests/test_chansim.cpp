@@ -110,6 +110,29 @@ TEST_CASE(chansim_delay_spread_two_taps) {
   CHECK(eD > 10.0 * eOther);
 }
 
+TEST_CASE(chansim_zero_delay_spread_is_one_tap) {
+  // Review D: delaySpreadMs = 0 must be flat fading - no 1-sample echo -
+  // and keep unit mean power.
+  ChansimParams p;
+  p.delaySpreadMs = 0.0;
+  p.dopplerSpreadHz = 0.02;  // nearly static: per-sample gain ~constant
+  p.snr3kDb = 99.0;
+  p.seed = 5;
+  std::vector<cfloat> impulse(4000, cfloat(0, 0));
+  impulse[2000] = cfloat(1, 0);
+  auto out = Chansim::run(p, impulse);
+  CHECK(std::abs(out[2000]) > 0.0f);
+  CHECK(std::abs(out[2001]) < 1e-6f);  // no second tap one sample later
+  p.dopplerSpreadHz = 1.0;
+  p.seed = 9;
+  auto flat = Chansim::run(p, ones(size_t(kFsBaseband) * 120));
+  double pow = 0;
+  for (auto& v : flat) pow += std::norm(v);
+  pow /= double(flat.size());
+  CHECK(pow > 0.6);
+  CHECK(pow < 1.5);
+}
+
 TEST_CASE(chansim_awgn_calibration) {
   // Zero input, refPower 1, snr 0 dB(3k): noise var = 1/3000*12000 = 4.
   ChansimParams p;

@@ -1349,6 +1349,38 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### Full bug review (2026-10-16, after v1.2.5)
+
+Eight parallel read-only reviews of both codebases (~56k lines), findings
+verified, then fixed in severity order (details:
+`BUG_REVIEW_2026-10-16.md` beside the repos). Modem highlights:
+
+- **Crypto:** retransmissions resend the original ciphertext (AES-GCM nonce
+  reuse); a rejected peer key fails the KEX instead of encrypting under a
+  zero key; `seal()` refuses without a key; rotation counts frames since
+  the last rotation (it fired every tick past 2^20) and KEY_UPDATE is
+  echoed before the initiator switches (one lost update killed the
+  session; epoch 255->256 was refused); per-stream seq high-water.
+- **Untrusted input:** a non-zero session id is negotiated and in-session
+  frames from other ids are dropped; CALL from a third station, CALL_ACK,
+  START_ACK, START_NAK and RESUME_ACK are state-gated (session hijack,
+  mid-session KEX re-run, pipeline replay); PHY header fields range-checked
+  (mode 15 hung the receiver); peer carrier masks capped and degenerate
+  masks ignored in the PHY (all-zero hung the transmitter); ARQ ACK/resume
+  points sanity-checked; FILE META size capped; voice frame count, gap
+  concealment and jitter buffer bounded.
+- **Correctness:** TXTEST OFF works; data-port intake budgeted; PTT
+  settings apply immediately, failed unkeys are retried and watched; exit
+  saves the live config atomically with mode 0600; control/voice parsers
+  reset per client; `max_mode=auto` validated; channel-memory timestamps
+  are wall-clock; voice talkspurt tail flushed, stale mic audio dropped,
+  lost PTT grant/end recovered; plus the low items (proto resync, monitor
+  reassembly, LDPC zero-evidence, audio index, PTT pads, seqlock fences,
+  chansim single tap, chanmem family, handshake RTT Karn, per-session
+  state resets).
+
+Verification: default suite 46/46, crypto 45/45 (each fix has a test).
+
 ### v1.2.5 (2026-10-16)
 
 Fix release: ULTRA handshake policy, promotions on the target mode,

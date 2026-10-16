@@ -157,7 +157,23 @@ bool LdpcCode::decode(std::span<const float> llr, std::vector<uint8_t>& info,
     return true;
   };
 
-  for (int v = 0; v < n_; ++v) post[size_t(v)] = llr[size_t(v)];
+  // An all-zero (or NaN) LLR vector carries no information, yet hard-
+  // decides to the all-zero codeword, which satisfies every check: an
+  // audio dropout "decoded" successfully and cleared HARQ state. NaN is
+  // treated as an erasure (it would also poison the min-sum compares),
+  // and a word with no evidence at all is a failure, not a codeword.
+  bool anyEvidence = false;
+  for (int v = 0; v < n_; ++v) {
+    float x = llr[size_t(v)];
+    if (std::isnan(x)) x = 0.0f;
+    x = std::clamp(x, -1e4f, 1e4f);
+    if (x != 0.0f) anyEvidence = true;
+    post[size_t(v)] = x;
+  }
+  if (!anyEvidence) {
+    info.assign(size_t(k_), 0);
+    return false;
+  }
   if (hardDecideAndCheck()) {
     info.assign(hard.begin(), hard.begin() + k_);
     return true;

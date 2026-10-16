@@ -12,6 +12,8 @@ namespace skw {
 
 enum class PttMethod : uint8_t { None, Rts, Dtr, Vox, Tcp };
 enum class HarqMode : uint8_t { Auto, Chase, Ir };
+// Upper bound for ptt.lead_ms / ptt.tail_ms (and PTTLEAD / PTTTAIL).
+inline constexpr int kPttPadMaxMs = 5000;
 // Band lives in core/constants.hpp (it selects the numerology profile).
 
 struct Config {
@@ -54,14 +56,15 @@ struct Config {
   int maxRetries = 10;
   HarqMode harq = HarqMode::Auto;
   bool channelMemory = true;
-  bool probePromote = true;
+  // (No probe_promote / pre_tx_cca keys: probe-before-promote and the
+  // pre-TX CCA gate are always on in the engine. The switches were
+  // stored and never read; an old INI's keys are kept as unknown keys.)
   bool carrierMasking = true;
   // Scheduled ISS/IRS turn-taking (PROTOCOL.md "Turn-Taking"), advertised
   // as CAP_TURN_SCHED. Off = legacy occupancy-gate scheduler; needed only
   // to call a pre-CAP_TURN_SCHED build, which rejects the bit.
   bool turnTaking = true;
   bool resume = true;
-  bool preTxCca = true;
   bool impulseBlanker = false;
   bool multiNotch = false;
   bool freqAlign = true;

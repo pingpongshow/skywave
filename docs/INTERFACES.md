@@ -87,7 +87,7 @@ gated feature from a typo.
 | `CPMODE [AUTO\|SHORT\|MEDIUM\|LONG]` | cyclic prefix policy |
 | `HARQ [AUTO\|CHASE\|IR]` | HARQ mode |
 | `CHANMEM ON\|OFF` | channel memory |
-| `PROBE ON\|OFF` | probe-before-promote |
+| `PROBE [ON]` | probe-before-promote: always on (query answers `PROBE ON`; `PROBE OFF` is refused with `ERROR:STATE`) |
 | `MASKING ON\|OFF` | carrier masking |
 | `RESUME ON\|OFF` | session resume |
 | `ULTRA ON\|OFF` | permit the opt-in 2.7 kHz ULTRA family (`ultra_enable`); `FAMILY ULTRA` is refused while this is OFF |

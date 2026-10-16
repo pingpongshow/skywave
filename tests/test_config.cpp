@@ -1,3 +1,6 @@
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <fstream>
 
@@ -161,6 +164,70 @@ TEST_CASE(config_mode_selectors) {
   CHECK_EQ(c.mode, 9);
   CHECK_EQ(c.maxMode, 12);
   CHECK_EQ(c.cpMode, 0);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_max_mode_validated) {
+  // C2: "auto" used to become -1 -> uint8_t 255 in the engine. It now
+  // means the highest active mode; numbers clamp into the active range.
+  auto path = tmpPath("maxmode");
+  {
+    std::ofstream f(path);
+    f << "[modem]\nmax_mode = auto\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK_EQ(c.maxMode, kNumModes - 1);
+  {
+    std::ofstream f(path);
+    f << "[modem]\nmax_mode = m2\n";
+  }
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.maxMode, kFirstMode);
+  CHECK(d.save(path));  // and what it saves loads back the same
+  Config e;
+  CHECK(e.load(path));
+  CHECK_EQ(e.maxMode, kFirstMode);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_ptt_pads_clamped) {
+  // Review D: a negative lead/tail became a huge size_t (bad_alloc).
+  auto path = tmpPath("pttpad");
+  {
+    std::ofstream f(path);
+    f << "[ptt]\nlead_ms = -50\ntail_ms = 999999\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK_EQ(c.pttLeadMs, 0);
+  CHECK_EQ(c.pttTailMs, kPttPadMaxMs);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_save_is_private_and_atomic) {
+  // C8: the file carries the PSK - it must be 0600 (even over an existing
+  // 0644 file) and replaced atomically (no temp file left behind).
+  auto path = tmpPath("private");
+  {
+    std::ofstream f(path);
+    f << "stale\n";
+  }
+  ::chmod(path.c_str(), 0644);
+  Config c;
+  c.cryptoPsk = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  CHECK(c.save(path));
+  struct stat st {};
+  CHECK(::stat(path.c_str(), &st) == 0);
+  CHECK_EQ(int(st.st_mode & 0777), 0600);
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.cryptoPsk, c.cryptoPsk);
+  const std::string tmp = path + ".tmp." + std::to_string(::getpid());
+  CHECK(::access(tmp.c_str(), F_OK) != 0);
+  // An unwritable target directory fails cleanly.
+  CHECK(!c.save("/nonexistent-skywave-dir/skywave.ini"));
   std::remove(path.c_str());
 }
 

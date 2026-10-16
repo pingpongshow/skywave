@@ -317,4 +317,78 @@ TEST_CASE(tx_level_fits_full_scale_and_gain_applies_once) {
   CHECK_NEAR(20.0 * std::log10(l6.rms / l0.rms), -6.0, 0.3);
 }
 
+// --- review fixes (C5, C7, C9) ------------------------------------------------
+
+// C5: TXTEST OFF must actually stop the test transmission.
+TEST_CASE(txtest_off_stops_transmitting) {
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = false;
+  cfg.pttMethod = PttMethod::Vox;
+  cfg.cwId = false;
+  FakeClock clock{1'000'000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+  CHECK_EQ(worker.control("TXTEST 20"), std::string("TXTEST 20"));
+  std::vector<float> sink(4096);
+  bool keyed = false;
+  for (int i = 0; i < 40; ++i) {
+    worker.runOnce();
+    txRing.read(sink);
+    keyed = keyed || worker.telemetry().ptt;
+    clock.advanceSec(0.05);
+  }
+  CHECK(keyed);
+  CHECK_EQ(worker.control("TXTEST OFF"), std::string("TXTEST OFF"));
+  bool released = false;
+  for (int i = 0; i < 40 && !released; ++i) {  // well under 20 s
+    worker.runOnce();
+    txRing.read(sink);
+    released = !worker.telemetry().ptt;
+    clock.advanceSec(0.05);
+  }
+  CHECK(released);
+  // ...and it stays off.
+  bool rekeyed = false;
+  for (int i = 0; i < 100; ++i) {
+    worker.runOnce();
+    txRing.read(sink);
+    rekeyed = rekeyed || worker.telemetry().ptt;
+    clock.advanceSec(0.05);
+  }
+  CHECK(!rekeyed);
+}
+
+// C9 + C7: a release the driver refuses stays pending (telemetry keeps
+// PTT on, the watchdog still sees it) instead of being forgotten, and a
+// PTTMETHOD change takes effect immediately - replacing the broken driver.
+TEST_CASE(failed_unkey_is_retried_and_watched) {
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = false;
+  cfg.pttMethod = PttMethod::Rts;
+  cfg.pttTarget = "/dev/nonexistent-skywave-ptt-test";
+  cfg.txWatchdogSec = 2.0;
+  cfg.cwId = false;
+  FakeClock clock{1'000'000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+  CHECK_EQ(worker.control("TXTEST 1"), std::string("TXTEST 1"));
+  std::vector<float> sink(4096);
+  bool watchdog = false;
+  for (int i = 0; i < 200; ++i) {  // 10 s: burst over, release refused
+    worker.runOnce();
+    txRing.read(sink);
+    clock.advanceSec(0.05);
+    for (const auto& n : worker.takeNotifications()) {
+      if (n.rfind("EVT:TX_WATCHDOG", 0) == 0) watchdog = true;
+    }
+  }
+  CHECK(worker.telemetry().ptt);  // the rig may still be keyed: say so
+  CHECK(watchdog);                // and the watchdog noticed
+  CHECK_EQ(worker.control("PTTMETHOD VOX"), std::string("PTTMETHOD VOX"));
+  worker.runOnce();
+  CHECK(!worker.telemetry().ptt);  // new driver in place at once
+}
+
 SKYTEST_MAIN

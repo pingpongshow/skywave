@@ -188,10 +188,18 @@ void ProtoTx::reset() {
 // --- ProtoRx ----------------------------------------------------------------
 
 void ProtoRx::onSegment(uint8_t flags, std::span<const uint8_t> bytes) {
+  if (resync_) {
+    // Remainder of a chain already dropped as oversize: discard through
+    // its final fragment, or the tail would be parsed as a new message
+    // (its first byte taken as a marker) and corrupt the next one too.
+    if (!(flags & kFlagMoreFragments)) resync_ = false;
+    return;
+  }
   if (assembly_.size() + bytes.size() > kProtoDecompressCap) {
     // Runaway more-fragments chain: drop the whole message.
     assembly_.clear();
     ++bad_;
+    resync_ = (flags & kFlagMoreFragments) != 0;
     return;
   }
   assembly_.insert(assembly_.end(), bytes.begin(), bytes.end());
@@ -256,6 +264,7 @@ std::vector<uint8_t> ProtoRx::takeBytes() {
 
 void ProtoRx::reset() {
   assembly_.clear();
+  resync_ = false;
   out_.clear();
   svcOut_.clear();
   bad_ = 0;

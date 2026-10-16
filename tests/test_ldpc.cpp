@@ -86,6 +86,24 @@ TEST_CASE(ldpc_noiseless_roundtrip) {
   }
 }
 
+TEST_CASE(ldpc_no_evidence_is_not_success) {
+  // Review D: an all-zero (dropout) or all-NaN LLR vector must not
+  // "decode" to the all-zero codeword. A strong all-zero codeword still
+  // decodes, and a stray NaN is only an erasure.
+  for (int n : {648, 1944}) {
+    const LdpcCode& c = LdpcCode::get(n, kRates[0]);
+    std::vector<uint8_t> out;
+    std::vector<float> zero(size_t(c.n()), 0.0f);
+    CHECK(!c.decode(zero, out));
+    std::vector<float> nan(size_t(c.n()), std::nanf(""));
+    CHECK(!c.decode(nan, out));
+    std::vector<float> strong(size_t(c.n()), 8.0f);
+    strong[3] = std::nanf("");
+    CHECK(c.decode(strong, out));
+    CHECK(out == std::vector<uint8_t>(size_t(c.k()), 0));
+  }
+}
+
 TEST_CASE(ldpc_corrects_bit_errors) {
   // Flip a scattering of bits with strong-but-wrong LLRs; decoder must fix.
   const LdpcCode& c = LdpcCode::get(1944, {1, 2});

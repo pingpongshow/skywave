@@ -150,6 +150,47 @@ TEST_CASE(phy_header_roundtrip) {
   CHECK(!parsePhyHeader({buf, kPhyHeaderBytes}).has_value());
 }
 
+// Header fields that index tables are range-checked at parse time: a
+// CRC-valid header with mode 15 (4-bit field, 15-rung ladder) hung the
+// receiver's payload loop; cpMode 3 indexed past the CP table.
+TEST_CASE(phy_header_rejects_out_of_range_fields) {
+  PhyHeader h;
+  h.mode = 15;
+  uint8_t b[kPhyHeaderBytes];
+  packPhyHeader(h, b);
+  CHECK(!parsePhyHeader({b, kPhyHeaderBytes}).has_value());
+  h.mode = 8;
+  h.cpMode = CpMode(3);
+  packPhyHeader(h, b);
+  CHECK(!parsePhyHeader({b, kPhyHeaderBytes}).has_value());
+  h.cpMode = CpMode::Long;
+  packPhyHeader(h, b);
+  CHECK(parsePhyHeader({b, kPhyHeaderBytes}).has_value());
+}
+
+// A mask leaving (almost) no carriers is ignored, not trusted: all-zero
+// made the geometry/symbol loops run forever. The masked geometry equals
+// the unmasked one, and the spread modes never use a mask at all.
+TEST_CASE(phy_degenerate_mask_is_ignored) {
+  CarrierMask none;
+  none.bits.fill(0);
+  std::vector<uint8_t> pl(200, 0x5A);
+  TxFrameParams p;
+  p.family = Family::Wide;
+  p.mode = 10;
+  p.sig = ChirpSig::Fast;
+  p.payload = pl;
+  const auto plain = computeGeometry(p);
+  p.mask = &none;
+  const auto masked = computeGeometry(p);
+  CHECK_EQ(masked.totalSamples, plain.totalSamples);
+  CHECK(effectiveMask(&none, Family::Wide, 10) == nullptr);
+  CarrierMask one;  // one carrier masked: a real mask, used at M8+ only
+  one.exclude(3);
+  CHECK(effectiveMask(&one, Family::Wide, 10) == &one);
+  CHECK(effectiveMask(&one, Family::Wide, 6) == nullptr);
+}
+
 TEST_CASE(frame_bits_decode_back_header_and_payload) {
   // Fast frame, M8 payload: reconstruct the coded bits from assembled
   // symbols and decode both codeword classes back to the source.

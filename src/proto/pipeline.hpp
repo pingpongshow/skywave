@@ -149,13 +149,17 @@ class ProtoRx {
   std::vector<std::vector<uint8_t>> takeServiceMessages(uint8_t svcTag);
   uint32_t badMessages() const { return bad_; }
   // Drop any half-assembled message (session teardown without resume).
-  void abortMessage() { assembly_.clear(); }
+  void abortMessage() {
+    assembly_.clear();
+    resync_ = false;
+  }
   void reset();
 
  private:
   void deliver(std::span<const uint8_t> message);
 
   std::vector<uint8_t> assembly_;
+  bool resync_ = false;  // discarding the rest of an oversize chain
   std::vector<uint8_t> out_;
   std::vector<std::pair<uint8_t, std::vector<uint8_t>>> svcOut_;
   uint32_t bad_ = 0;

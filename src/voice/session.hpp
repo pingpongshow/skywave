@@ -46,6 +46,11 @@ enum class VoiceAction : uint8_t {
 struct VoiceFsmConfig {
   double openTimeoutSec = 8.0;   // OPEN / PTT_REQ response window
   double grantHoldSec = 180.0;   // safety cap on one talkspurt
+  // Receiving with no VOICE_DATA for this long ends the peer's spurt
+  // locally (a lost PTT_END must not lock us out for grantHoldSec). Must
+  // exceed the longest unit's speech (255 x 40 ms = 10.2 s). Armed only
+  // once rxVoiceActivity() has been seen in the spurt.
+  double rxIdleSec = 20.0;
   int openAttempts = 3;
 };
 
@@ -73,6 +78,16 @@ class VoiceFsm {
   void rxPttReq(double now, bool weWinTie);
   void rxPttGrant(double now);
   void rxPttEnd(double now);
+  // A VOICE_DATA unit from the peer was accepted (refreshes the
+  // Receiving idle timer).
+  void rxVoiceActivity(double now);
+
+  // True while the operator's mic audio belongs to a talkspurt (holding
+  // PTT: awaiting the grant or talking). Mic PCM pushed in any other
+  // state should be discarded, not queued for the next spurt.
+  bool capturing() const {
+    return state_ == VoiceState::Requesting || state_ == VoiceState::Talking;
+  }
 
   void tick(double now);
 
@@ -86,6 +101,7 @@ class VoiceFsm {
   VoiceState state_ = VoiceState::Closed;
   VoiceCodec codec_ = VoiceCodec::C700;
   double deadline_ = 0.0;
+  double holdUntil_ = 0.0;  // Receiving: absolute grantHoldSec cap
   int attempts_ = 0;
   bool pttWanted_ = false;
   std::deque<VoiceAction> queue_;
@@ -98,6 +114,12 @@ class JitterBuffer {
  public:
   static constexpr int kTargetMs = 240;
   static constexpr int kAdaptMs = 120;
+  // Hard ceiling on buffered speech. One VOICE_DATA unit can legitimately
+  // carry 255 x 40 ms = 10.2 s (a whole codeword at C700), so the cap is a
+  // full unit plus the target and adaptive margin; past it the OLDEST
+  // samples are dropped (latency is bounded, memory cannot grow from air
+  // input or a consumer that stopped reading).
+  static constexpr int kMaxMs = 10200 + kTargetMs + kAdaptMs;
 
   void push(std::span<const int16_t> pcm);
   // Take up to `samples`; short reads mean underrun (fill with silence).
@@ -132,6 +154,12 @@ class VoiceRecordParser {
   void feed(std::span<const uint8_t> bytes);
   std::vector<VoiceRecord> take();
   uint32_t badRecords() const { return bad_; }
+  // Forget partial input (client changed: its half record must not be
+  // completed by the next client's bytes).
+  void reset() {
+    acc_.clear();
+    out_.clear();
+  }
 
  private:
   std::vector<uint8_t> acc_;

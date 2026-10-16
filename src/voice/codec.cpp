@@ -5,6 +5,7 @@
 #include <codec2.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "core/bytepack.hpp"
@@ -39,24 +40,29 @@ namespace {
 // Frame geometry comes from the LIBRARY, not a local table: Codec2's
 // frame durations are not uniform (700C and 1300 are 40 ms, 2400/3200 are
 // 20 ms) and a stale constant here would silently corrupt the wire
-// format. Queried once per codec and cached.
+// format. Queried once for all four codecs inside a function-local static
+// initialiser, which C++ guarantees runs exactly once even when the
+// engine and a test thread race on first use (the old lazy per-entry
+// flags were a data race).
 struct FrameGeom {
   int samples = 0;
   int bytes = 0;
 };
-const FrameGeom& geomFor(VoiceCodec c) {
-  static FrameGeom cache[4];
-  static bool init[4] = {false, false, false, false};
-  const size_t idx = size_t(c) & 3;
-  if (!init[idx]) {
-    if (struct CODEC2* t = codec2_create(codec2Mode(c))) {
-      cache[idx].samples = codec2_samples_per_frame(t);
-      cache[idx].bytes = codec2_bytes_per_frame(t);
-      codec2_destroy(t);
+struct GeomTable {
+  FrameGeom g[4];
+  GeomTable() {
+    for (size_t i = 0; i < 4; ++i) {
+      if (struct CODEC2* t = codec2_create(codec2Mode(VoiceCodec(i)))) {
+        g[i].samples = codec2_samples_per_frame(t);
+        g[i].bytes = codec2_bytes_per_frame(t);
+        codec2_destroy(t);
+      }
     }
-    init[idx] = true;
   }
-  return cache[idx];
+};
+const FrameGeom& geomFor(VoiceCodec c) {
+  static const GeomTable table;
+  return table.g[size_t(c) & 3];
 }
 }  // namespace
 
@@ -152,16 +158,35 @@ void VoiceEncoder::setCodec(VoiceCodec c) {
 
 void VoiceEncoder::pushPcm(std::span<const int16_t> pcm) {
   pcm_.insert(pcm_.end(), pcm.begin(), pcm.end());
+  // Bounded backlog: a mic stream the engine is not draining (grant never
+  // came, link stalled) must not grow without limit. Keep the NEWEST
+  // speech - stale audio is worse than lost audio.
+  if (pcm_.size() > kMaxPendingSamples) {
+    pcm_.erase(pcm_.begin(),
+               pcm_.begin() + long(pcm_.size() - kMaxPendingSamples));
+  }
 }
+
+void VoiceEncoder::discardPcm() { pcm_.clear(); }
 
 std::optional<VoiceDataBody> VoiceEncoder::nextUnit(size_t bytesBudget,
                                                     bool flush) {
   if (!impl_->c2 || impl_->samplesPerFrame <= 0) return std::nullopt;
   const size_t bpf = size_t(impl_->bytesPerFrame);
   const size_t spf = size_t(impl_->samplesPerFrame);
-  // Unit header is 6 bytes (codec, count, timestamp).
-  const size_t maxFrames = bytesBudget > 6 ? (bytesBudget - 6) / bpf : 0;
+  // Unit header is 6 bytes (codec, count, timestamp). frameCount is a u8
+  // on the wire: a big VHF codeword at C700 holds ~300 frames, and
+  // writing 306 as uint8_t(50) made every unit fail the receiver's length
+  // check. Cap at what the field can say.
+  const size_t maxFrames =
+      std::min<size_t>(bytesBudget > 6 ? (bytesBudget - 6) / bpf : 0, 255);
   if (maxFrames == 0) return std::nullopt;
+  // A flush pads the sub-frame remainder with silence so the last
+  // fraction of a frame of speech goes out too instead of lingering into
+  // the next talkspurt.
+  if (flush && pcm_.size() % spf != 0) {
+    pcm_.resize(pcm_.size() + (spf - pcm_.size() % spf), 0);
+  }
   const size_t haveFrames = pcm_.size() / spf;
   if (haveFrames == 0) return std::nullopt;
   // Fill the unit unless flushing a short tail at PTT end.
@@ -228,8 +253,14 @@ void VoiceDecoder::onVoiceData(const VoiceDataBody& body) {
     lastFrame_.assign(body.frames.begin() + long(i * bpf),
                       body.frames.begin() + long((i + 1) * bpf));
   }
-  lastCodec_ = body.codec;
-  repeats_ = 0;
+  // Only a unit that actually carried frames defines what concealment
+  // repeats: a zero-frame unit under another codec must not pair the old
+  // (shorter) lastFrame_ with the new codec's frame size - that read past
+  // the buffer from RF input.
+  if (body.frameCount > 0) {
+    lastCodec_ = body.codec;
+    repeats_ = 0;
+  }
 }
 
 void VoiceDecoder::onGap(int frames) {
@@ -239,10 +270,21 @@ void VoiceDecoder::onGap(int frames) {
   impl_->ensure(lastCodec_);
   if (!impl_->c2) return;
   const size_t spf = size_t(impl_->samplesPerFrame);
+  // The gap size is derived from an over-the-air sequence number, so one
+  // corrupt counter could ask for billions of samples. Past two repeats
+  // concealment is plain silence anyway; filling more than a few hundred
+  // ms only adds latency, so the timeline is allowed to compress.
+  const int cap = std::max(1, int(kMaxConcealMs * kVoiceSampleRate / 1000 /
+                                  int(spf)));
+  frames = std::min(frames, cap);
+  // Belt and braces for the codec-switch case: never decode a stored
+  // frame whose size does not match the codec it is decoded with.
+  const bool frameOk =
+      lastFrame_.size() == size_t(impl_->bytesPerFrame);
   std::vector<int16_t> out(spf);
   for (int f = 0; f < frames; ++f) {
     ++concealed_;
-    if (lastFrame_.empty() || repeats_ >= 2) {
+    if (!frameOk || repeats_ >= 2) {
       pcm_.insert(pcm_.end(), spf, 0);
       continue;
     }

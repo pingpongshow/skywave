@@ -77,7 +77,9 @@ class CryptoSession {
   // --- AEAD framing (5.2) -------------------------------------------------
   // stream: 0 = ARQ/data space, 1 = voice space. seq48 is the extended
   // sequence (caller tracks rollover from the 16-bit wire field).
-  // aad = link envelope bytes 0..7. seal returns ciphertext||tag.
+  // aad = link envelope bytes 0..7. seal returns ciphertext||tag, or an
+  // EMPTY vector when no session key is established (never seal under
+  // the zeroed key).
   std::vector<uint8_t> seal(uint8_t stream, uint64_t seq48,
                             std::span<const uint8_t> aad,
                             std::span<const uint8_t> plain) const;
@@ -102,7 +104,9 @@ class CryptoSession {
     std::array<uint8_t, 32> key{};
     std::array<uint8_t, 12> nonceBase{};
   };
-  void deriveMaster(const KexContext& ctx,
+  // False (session left un-established) when the peer's public key is
+  // rejected (low-order point): callers must fail the handshake.
+  bool deriveMaster(const KexContext& ctx,
                     std::span<const uint8_t, 32> peerPub);
   void deriveEpochKeys(uint16_t epoch, Dir& tx, Dir& rx) const;
   // The epoch is a nonce field, so the grace-window attempt must use the

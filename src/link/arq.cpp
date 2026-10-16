@@ -118,6 +118,10 @@ std::optional<uint16_t> ArqTx::send(std::vector<uint8_t> payload,
 }
 
 void ArqTx::onAck(const AckBody& ack, double now) {
+  // Same sanity bound as onPiggybackAck: a base beyond nextSeq_ claims
+  // receipt of frames we never sent, and acting on it would release
+  // queued-but-unsent data as delivered.
+  if (seqDiff(ack.ackBase, nextSeq_) > 0) return;
   // Release everything below the cumulative base.
   bool progress = false;
   while (!pending_.empty() && seqDiff(pending_.front().seq, ack.ackBase) < 0) {
@@ -286,7 +290,11 @@ void ArqTx::tick(double now) {
 }
 
 void ArqTx::resumeFrom(uint16_t peerNextSeq, double now) {
-  while (!pending_.empty() &&
+  // An implausible resume point (beyond anything we sent) releases
+  // nothing: everything pending is simply resent, which the receiver's
+  // duplicate filter absorbs. Trusting it would drop undelivered data.
+  const bool plausible = seqDiff(peerNextSeq, nextSeq_) <= 0;
+  while (plausible && !pending_.empty() &&
          seqDiff(pending_.front().seq, peerNextSeq) < 0) {
     pending_.pop_front();
   }

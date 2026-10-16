@@ -207,6 +207,12 @@ class Amc {
   bool modeEligible(uint8_t k, double effSnr,
                     bool assumeProbeClean = false) const;
   double operatingFloorDb(uint8_t k) const;
+  // Ladder top: cfg_.maxMode bounded to the mode table. A max_mode of
+  // "auto" once arrived here as 255 and every upward walk indexed past
+  // the floor tables at M13.
+  uint8_t topMode() const {
+    return std::min<uint8_t>(cfg_.maxMode, uint8_t(kNumModes - 1));
+  }
   uint8_t demoteTarget(int steps) const;  // skips kFadingNA rungs
   double promoteMarginFor(uint8_t k) const;
   void noteFailure(double now, double effSnr);

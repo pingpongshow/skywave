@@ -103,7 +103,10 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
   }
   if (verb == "TXTEST") {
     if (argc != 1) return "ERROR:BADARG";
-    if (upper(tok[1]) == "OFF") return "TXTEST OFF";
+    if (upper(tok[1]) == "OFF") {
+      be.txTestStop();  // answering OK without stopping it was a lie
+      return "TXTEST OFF";
+    }
     double sec = atof(tok[1].c_str());
     if (sec <= 0.0 || sec > 30.0) return "ERROR:BADARG";
     return be.txTest(sec) ? "TXTEST " + tok[1] : "ERROR:STATE";

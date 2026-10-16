@@ -159,14 +159,14 @@ bool Amc::modeEligible(uint8_t k, double effSnr,
 }
 
 std::optional<uint8_t> Amc::probeWanted(double now) const {
-  if (pinned_ || mode_ >= cfg_.maxMode) return std::nullopt;
+  if (pinned_ || mode_ >= topMode()) return std::nullopt;
   if (now - lastChange_ < cfg_.minDwellSec) return std::nullopt;
   if (retryRatio() > cfg_.promoteRetryMax) return std::nullopt;
   uint8_t next = uint8_t(mode_ + 1);
   const double eff = effectiveSnrDb(now);
   // Skip rungs a probe cannot fix (kFadingNA on a channel where even a
   // clean probe leaves them ineligible) - mirror the promote ladder.
-  while (next < cfg_.maxMode &&
+  while (next < topMode() &&
          !modeEligible(next, eff, /*assumeProbeClean=*/true)) {
     ++next;
   }
@@ -284,7 +284,7 @@ AmcDecision Amc::evaluate(double now) {
   // fading: a mode flap every ~6 s with data starved behind it).
   // 15 s ~ 2.5 dwells: enough to break the flap loop while keeping the
   // M3 ramp-tracking gate (>= 0.75 of genie throughput) intact.
-  if (mode_ >= cfg_.maxMode || now - lastChange_ < dwellSec ||
+  if (mode_ >= topMode() || now - lastChange_ < dwellSec ||
       now - lastDemoteAt_ < promoteHoldSec ||
       retry > cfg_.promoteRetryMax) {
     promoteStreak_ = 0;
@@ -296,7 +296,7 @@ AmcDecision Amc::evaluate(double now) {
   // and a single-step-only ladder could never climb back out of the
   // deep tier after a collapse - even when conditions fully recovered.
   uint8_t next = uint8_t(mode_ + 1);
-  while (next < cfg_.maxMode && operatingFloorDb(next) >= 90.0 &&
+  while (next < topMode() && operatingFloorDb(next) >= 90.0 &&
          !modeEligible(next, eff)) {
     ++next;
   }
@@ -324,8 +324,8 @@ AmcDecision Amc::evaluate(double now) {
     for (int step = 1; step < cfg_.maxPromoteStep; ++step) {
       uint8_t hi = uint8_t(target + 1);
       // Skip over kFadingNA rungs exactly as the single-step ladder does.
-      while (hi < cfg_.maxMode && operatingFloorDb(hi) >= 90.0) ++hi;
-      if (hi > cfg_.maxMode || operatingFloorDb(hi) >= 90.0) break;
+      while (hi < topMode() && operatingFloorDb(hi) >= 90.0) ++hi;
+      if (hi > topMode() || operatingFloorDb(hi) >= 90.0) break;
       if (!modeEligible(hi, eff)) break;
       if (eff < operatingFloorDb(hi) + promoteMarginFor(hi) +
                     cfg_.skipHeadroomDb) {

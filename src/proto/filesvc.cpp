@@ -125,8 +125,11 @@ void FileRx::onMessage(std::span<const uint8_t> msg) {
     }
     meta_ = *m;
     active_ = true;
+    // No reserve(m->size): the size is the PEER's claim, and reserving it
+    // let one frame demand gigabytes. The buffer grows as chunks actually
+    // arrive (the overrun check below bounds it by the declared size).
     data_.clear();
-    data_.reserve(size_t(m->size));
+    data_.shrink_to_fit();
     checkpoint_ = 0;
     events_.push_back({FileRxEvent::Kind::Started, m->fileId, m->name, "",
                        m->size, false});

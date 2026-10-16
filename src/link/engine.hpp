@@ -14,6 +14,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -152,6 +153,7 @@ class LinkEngine {
   bool setCpPolicy(const std::string& p, double now);  // AUTO/SHORT/...
   std::string cpPolicy() const;
   const std::string& remoteCall() const { return remoteCall_; }
+  uint16_t sessionId() const { return sessionId_; }
   uint16_t sessionCaps() const { return sessionCaps_; }
   double lastRxSnrDb() const { return lastRxQuality_.snrDb; }
   // Turn-taking (PROTOCOL.md "Turn-Taking"): true when scheduled
@@ -491,6 +493,10 @@ class LinkEngine {
   // Responder-side pin: mode requested of the initiator, -1 = none,
   // kRxModeAuto = asking it to return to AUTO.
   int peerModeRequest_ = -1;
+  // An "unpin" (Auto) request has no completion to observe: it rides a
+  // few ACKs (loss margin) and then clears, or it unpinned every later
+  // operator pin at the initiator for the rest of the session.
+  int peerModeAutoSends_ = 0;
 
   std::vector<cfloat> lastConstellation_;
   uint32_t constellationSeq_ = 0;
@@ -531,6 +537,7 @@ class LinkEngine {
   // round trip, applied to arqTx_ the moment the session's ARQ state
   // is built (and re-applied on resume, which rebuilds it).
   double hsTxAt_ = -1.0;
+  bool hsTxAmbiguous_ = false;  // the timed frame was sent more than once
   double hsRttSec_ = 0.0;
   void noteHandshakeRtt(double now);
   // In-flight count when the post-burst listen turn began; the turn
@@ -594,8 +601,12 @@ class LinkEngine {
     int mode = 4;
     CpMode cp = kCpDefault;
     double freshAt = 0.0;  // window runs from mint, refreshed at drop
+    uint16_t sessionId = 0;  // a resumed session keeps its id
   };
   bool resumeUsable(double now) const;
+  // Envelope session id for a fresh session (never 0: 0 marks
+  // pre-session frames). Chosen by the initiator, adopted from START.
+  uint16_t newSessionId(double now);
   std::array<uint8_t, 8> mintToken(double now);
   void discardPausedPipeline();  // clean start: paused state is dead
   ResumeCtx resumeCtx_;
@@ -618,6 +629,8 @@ class LinkEngine {
   // back-to-back so the preamble cost is paid once.
   void drainVoiceActions(double now);
   void pumpVoice(double now);
+  // Queue every encoded unit available (`flush`: also the partial tail).
+  void emitVoiceUnits(bool flush);
   VoiceFsm voiceFsm_;
   VoiceEncoder voiceEnc_{VoiceCodec::C700};
   VoiceDecoder voiceDec_;
@@ -633,11 +646,29 @@ class LinkEngine {
   // frames are never encrypted - SECURITY.md).
   CryptoSession crypto_;
   bool cryptoOn_ = false;
-  uint64_t txSeqHi_ = 0, rxSeqHi_ = 0;  // 48-bit extension high-water
+  // 48-bit extension high-water PER STREAM (0 = ARQ data, 1 = voice): the
+  // two counters are independent, and one shared mark made the receiver
+  // extend to a different seq48 than the sender once they drifted apart.
+  std::array<uint64_t, 2> txSeqHi_{}, rxSeqHi_{};
+  // Key rotation is a handshake: KEY_UPDATE is echoed by the responder
+  // and the initiator switches only on the echo (retried until then).
   uint16_t pendingEpoch_ = 0;
+  double keyUpdateSentAt_ = -1.0;
   double epochRotateAt_ = 0.0;
+  uint64_t sealedAtRotate_ = 0;  // framesSealed() at the last rotation
+  // A retransmission must reuse the ORIGINAL ciphertext: re-sealing the
+  // same seq48 (same nonce) over a changed plaintext/AAD (rv, ackBase)
+  // reuses the GCM nonce. Keyed by ARQ seq; pruned as the window moves.
+  struct SealedData {
+    uint16_t epoch = 0;
+    uint16_t ackBase = 0;
+    uint8_t flags = 0;
+    std::vector<uint8_t> body;
+  };
+  std::map<uint16_t, SealedData> sealedData_;
   KexContext kexCtx() const;
   std::vector<uint8_t> pendingKexResponse_;  // responder: for START_ACK
+  void sendKeyUpdate(double now);
   bool sealPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
   bool openPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
 #endif

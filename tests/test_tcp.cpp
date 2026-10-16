@@ -82,6 +82,8 @@ struct StubBackend : ControlBackend {
   }
   bool monitoring() override { return mon; }
   bool txTest(double sec) override { return state == "IDLE" && sec <= 30; }
+  void txTestStop() override { ++txTestStops; }
+  int txTestStops = 0;
   std::string version() override { return "skywave-test"; }
   // 4.6 surface: simple stateful stubs so the dispatcher is testable.
   bool cq() override { return state == "IDLE"; }
@@ -483,6 +485,77 @@ TEST_CASE(slow_client_is_buffered_not_dropped) {
   CHECK_EQ(int(drained), int(expect));
   CHECK_EQ(int(srv.txBacklog()), 0);
   ::close(fd);
+}
+
+// --- review fixes (C5, C6, C17) ----------------------------------------------
+
+TEST_CASE(txtest_off_reaches_the_backend) {
+  // C5: TXTEST OFF answered OK without stopping anything.
+  StubBackend be;
+  CHECK(handleControlLine("TXTEST 10", be) == "TXTEST 10");
+  CHECK(handleControlLine("TXTEST off", be) == "TXTEST OFF");
+  CHECK_EQ(be.txTestStops, 1);
+}
+
+TEST_CASE(line_buffer_reset_drops_partial_line) {
+  // C17: a dropped client's unterminated "CONNECT W1A" must not prefix
+  // the next client's "STATUS".
+  LineBuffer lb;
+  const std::string a = "CONNECT W1A";
+  lb.feed(std::vector<uint8_t>(a.begin(), a.end()));
+  lb.reset();
+  const std::string b = "STATUS\n";
+  lb.feed(std::vector<uint8_t>(b.begin(), b.end()));
+  auto lines = lb.takeLines();
+  CHECK_EQ(int(lines.size()), 1);
+  if (!lines.empty()) CHECK_EQ(lines[0], std::string("STATUS"));
+}
+
+TEST_CASE(client_generation_and_read_budget) {
+  TcpServer srv;
+  CHECK(srv.open(0));
+  const uint32_t g0 = srv.clientGeneration();
+  int fd = connectLoopback(srv.boundPort());
+  for (int i = 0; i < 50 && !srv.clientConnected(); ++i) {
+    srv.poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(srv.clientConnected());
+  const uint32_t g1 = srv.clientGeneration();
+  CHECK(g1 != g0);
+
+  // C6: a zero budget reads nothing (bytes stay queued in the kernel,
+  // which is what applies TCP flow control); a small budget caps the
+  // read; the rest arrives on later polls intact.
+  std::vector<uint8_t> payload(10000);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 7);
+  ::send(fd, payload.data(), payload.size(), 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  CHECK(srv.poll(0).empty());
+  CHECK(srv.clientConnected());
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 200 && got.size() < payload.size(); ++i) {
+    auto rx = srv.poll(1000);
+    CHECK(rx.size() <= 1000);
+    got.insert(got.end(), rx.begin(), rx.end());
+    if (rx.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  CHECK(got == payload);
+
+  // A paused (zero-budget) poll still notices the client going away.
+  ::close(fd);
+  for (int i = 0; i < 100 && srv.clientConnected(); ++i) {
+    srv.poll(0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(!srv.clientConnected());
+  int fd2 = connectLoopback(srv.boundPort());
+  for (int i = 0; i < 50 && !srv.clientConnected(); ++i) {
+    srv.poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(srv.clientGeneration() != g1);  // new client: parsers reset
+  ::close(fd2);
 }
 
 SKYTEST_MAIN

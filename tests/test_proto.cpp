@@ -153,6 +153,10 @@ TEST_CASE(proto_bad_messages) {
   std::vector<uint8_t> mb(1u << 20, 0x55);
   for (int i = 0; i < 9; ++i) rx.onSegment(kFlagMoreFragments, mb);
   CHECK_EQ(int(rx.badMessages()), 3);
+  // ...and the chain's own final fragment goes with it (resync), rather
+  // than being parsed as a message of its own.
+  rx.onSegment(0, std::vector<uint8_t>{0x55});
+  CHECK_EQ(int(rx.badMessages()), 3);
   // Unknown service tag is dropped and counted.
   rx.onSegment(0, std::vector<uint8_t>{kProtoMarkerStored, 0x7E, 1});
   CHECK_EQ(int(rx.badMessages()), 4);
@@ -161,6 +165,22 @@ TEST_CASE(proto_bad_messages) {
                std::vector<uint8_t>{kProtoMarkerStored, kSvcStream, 42});
   CHECK(rx.takeBytes() == std::vector<uint8_t>{42});
   CHECK_EQ(int(rx.badMessages()), 4);
+}
+
+TEST_CASE(proto_resync_after_oversize_chain) {
+  // Review D: after the 8 MiB drop the rest of the chain (more fragments
+  // AND its tail) must be discarded, so the next real message - and only
+  // it - is delivered intact.
+  ProtoRx rx;
+  std::vector<uint8_t> mb(1u << 20, 0x55);
+  for (int i = 0; i < 12; ++i) rx.onSegment(kFlagMoreFragments, mb);
+  // Tail fragment whose first byte happens to look like a stored marker.
+  rx.onSegment(0, std::vector<uint8_t>{kProtoMarkerStored, kSvcStream, 66});
+  CHECK(rx.takeBytes().empty());
+  CHECK_EQ(int(rx.badMessages()), 1);
+  rx.onSegment(0, std::vector<uint8_t>{kProtoMarkerStored, kSvcStream, 7});
+  CHECK(rx.takeBytes() == std::vector<uint8_t>{7});
+  CHECK_EQ(int(rx.badMessages()), 1);
 }
 
 TEST_CASE(proto_exact_codeword_budget) {

@@ -113,6 +113,18 @@ FrameGeometry computeGeometry(const TxFrameParams& p);
 // measured as the churn soak's "usable channel, no progress" stall.
 inline bool modeUsesCarrierMask(int mode) { return mode >= 8; }
 
+// The mask the payload of a `mode` frame actually uses - ONE rule for the
+// transmitter's geometry/symbols and the receiver's walk, so they can never
+// disagree. Spread modes skip masking; and a mask leaving fewer than half
+// the family's carriers is not an interference mask (the detector proposes
+// at most 30%): it is ignored rather than trusted - an all-zero mask from a
+// peer used to make the symbol-count loops run forever.
+inline const CarrierMask* effectiveMask(const CarrierMask* m, Family f,
+                                        int mode) {
+  if (!m || !modeUsesCarrierMask(mode)) return nullptr;
+  return 2 * m->maskedCount(f) > plan(f).carriers() ? nullptr : m;
+}
+
 // On-air duration of a frame (PROTOCOL.md timers are airtime-derived).
 inline double frameAirtimeSec(const TxFrameParams& p) {
   return double(computeGeometry(p).totalSamples) / kFsBaseband;

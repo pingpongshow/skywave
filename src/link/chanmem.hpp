@@ -46,21 +46,33 @@ class ChannelMemory {
   size_t entries() const { return entries_.size(); }
 
   // Small binary cache (versioned magic; unknown versions ignored).
+  // Timestamps are persisted as WALL-CLOCK time: the `now` the engine
+  // passes is a monotonic, boot-relative clock, meaningless after a
+  // restart (ages went negative, entries never expired and a negative
+  // age RAISED the recommended mode).
   bool save(const std::string& path) const;
   bool load(const std::string& path);
+
+  // Wall clock in seconds (system_clock); replaceable for tests.
+  static double wallNowSec();
+  void setWallClockForTest(double (*fn)()) { wallNow_ = fn; }
 
  private:
   struct Entry {
     ChanMemKey key;
     ChanMemStats stats;
-    double lastUpdate = 0.0;
+    double lastUpdate = 0.0;  // caller's clock (this process only)
+    double wallUpdate = 0.0;  // wall clock at the same moment
+    bool fromDisk = false;    // loaded: only wallUpdate is meaningful
     uint64_t lruStamp = 0;
   };
+  double wallNow() const { return wallNow_ ? wallNow_() : wallNowSec(); }
   Entry* find(const ChanMemKey& key);
   const Entry* find(const ChanMemKey& key) const;
 
   std::vector<Entry> entries_;
   uint64_t lruCtr_ = 0;
+  double (*wallNow_)() = nullptr;
 };
 
 }  // namespace skw

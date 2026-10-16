@@ -101,6 +101,10 @@ class ModemWorker : public ControlBackend {
   // Thread-safe synchronous control dispatch (the TCP owner calls this).
   std::string control(const std::string& line);
 
+  // Thread-safe: the configuration as it stands NOW, including every
+  // runtime change made over the control port (what exit should save).
+  Config config() const;
+
   // Thread-safe: copy the latest consistent telemetry snapshot.
   Telemetry telemetry() const;
 
@@ -142,6 +146,7 @@ class ModemWorker : public ControlBackend {
   bool setMonitor(bool on) override;
   bool monitoring() override;
   bool txTest(double seconds) override;
+  void txTestStop() override;
   std::string version() override;
   bool cq() override;
   bool beacon() override;
@@ -321,7 +326,17 @@ class ModemWorker : public ControlBackend {
   void saveChanMem();
   void pttKeyLocked(double now);
   void pttUnkeyLocked();
+  void pttRetryUnkeyLocked(double now);
   void pttWatchdogLocked(double now);
+  // (Re)create the PTT driver from cfg_, or defer while keyed/staged.
+  void rebuildPttLocked();
+  void applyDeferredLocked(double now);
+  bool pttUnkeyPending_ = false;   // a release the driver refused
+  double pttUnkeyRetryAt_ = -1e9;
+  bool pttRebuildPending_ = false;
+  bool engineRebuildPending_ = false;  // MAXMODE/CWID set mid-session
+  double idleSince_ = -1.0;
+  bool txTestBurst_ = false;       // txPending_ holds a TXTEST frame
   double ladderDbgAt_ = -1e9;  // SKW_RXLADDER_DEBUG rate limit
   std::deque<float> floorBlocks_;  // 15 s of block levels (floor = min)
   uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed

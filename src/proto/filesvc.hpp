@@ -24,7 +24,10 @@ inline constexpr uint8_t kFileRecMeta = 0x01;
 inline constexpr uint8_t kFileRecChunk = 0x02;
 inline constexpr size_t kFileCheckpointBytes = 32 * 1024;
 inline constexpr size_t kFileMaxNameBytes = 255;
-inline constexpr uint64_t kFileMaxSize = 1ull << 32;  // sanity cap
+// Sanity cap on a transfer, checked on both ends. The declared size in a
+// peer's META is untrusted; 64 MiB is already ~15 h of air time at the
+// fastest VHF mode, so nothing legitimate is refused.
+inline constexpr uint64_t kFileMaxSize = 64ull << 20;
 
 struct FileMeta {
   uint32_t fileId = 0;

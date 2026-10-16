@@ -25,6 +25,11 @@ constexpr size_t kChunkSamples = size_t(kFftAudio) + 192;
 // Extra hold after the reported output latency before PTT release
 // (driver-reported latency excludes some USB/DAC pipeline stages).
 constexpr double kPttPlayoutMarginSec = 0.010;
+// Interval between retries of a PTT release the driver refused.
+constexpr double kPttUnkeyRetrySec = 0.25;
+// Idle time before settings deferred during a session are applied by an
+// engine rebuild (lets post-session traffic such as the CW ID go first).
+constexpr double kDeferredRebuildIdleSec = 10.0;
 
 // RX capture-window retry ladder (baseband seconds after the detected
 // preamble start): the frame length is unknown until the self-describing
@@ -275,8 +280,13 @@ void ModemWorker::saveChanMem() {
 void ModemWorker::pttKeyLocked(double now) {
   if (pttKeyed_) return;
   pttKeyed_ = true;
-  pttKeyedAt_ = now;
-  txWatchdogTripped_ = false;
+  // With a release still failing the rig never actually unkeyed: the
+  // watchdog keeps timing from the original key-up.
+  if (!pttUnkeyPending_) {
+    pttKeyedAt_ = now;
+    txWatchdogTripped_ = false;
+  }
+  pttUnkeyPending_ = false;
   if (ptt_ && !ptt_->key()) {
     SKW_WARN("ptt: %s key failed: %s", ptt_->name(),
              ptt_->lastError().c_str());
@@ -286,13 +296,56 @@ void ModemWorker::pttKeyLocked(double now) {
 
 void ModemWorker::pttUnkeyLocked() {
   txDrainedAt_ = -1.0;
-  if (!pttKeyed_) return;
+  if (!pttKeyed_ && !pttUnkeyPending_) return;
   pttKeyed_ = false;
+  // A failed release is the dangerous direction: the rig may still be
+  // transmitting. It used to be logged once and forgotten; now it stays
+  // pending, is retried (pttRetryUnkeyLocked) and the watchdog keeps
+  // counting, and telemetry reports PTT on until it really releases.
   if (ptt_ && !ptt_->unkey()) {
-    SKW_WARN("ptt: %s unkey failed: %s", ptt_->name(),
-             ptt_->lastError().c_str());
+    if (!pttUnkeyPending_) {
+      SKW_WARN("ptt: %s unkey failed: %s (retrying)", ptt_->name(),
+               ptt_->lastError().c_str());
+    }
+    pttUnkeyPending_ = true;
+  } else {
+    if (pttUnkeyPending_) SKW_INFO("ptt: release succeeded on retry");
+    pttUnkeyPending_ = false;
   }
-  working_.ptt = false;
+  working_.ptt = pttUnkeyPending_;
+}
+
+void ModemWorker::pttRetryUnkeyLocked(double now) {
+  if (!pttUnkeyPending_ || pttKeyed_) return;
+  if (now - pttUnkeyRetryAt_ < kPttUnkeyRetrySec) return;
+  pttUnkeyRetryAt_ = now;
+  pttUnkeyLocked();
+}
+
+void ModemWorker::rebuildPttLocked() {
+  // Swapping drivers mid-burst would strand the rig keyed (or cut the
+  // burst): only when nothing is on air or staged. Otherwise deferred to
+  // processChunk, which retries once the transmitter is quiet.
+  if (pttKeyed_ || txPendingOff_ < txPending_.size()) {
+    pttRebuildPending_ = true;
+    return;
+  }
+  pttRebuildPending_ = false;
+  // A release still failing does NOT block the swap - a broken driver is
+  // exactly what the operator is replacing. The old driver's destructor
+  // makes a last release attempt; the new one starts from unkeyed.
+  if (pttUnkeyPending_) {
+    SKW_WARN("ptt: replacing %s driver with its release still failing",
+             ptt_ ? ptt_->name() : "?");
+    pttUnkeyPending_ = false;
+    working_.ptt = false;
+  }
+  ptt_.reset();
+  ptt_ = makePttDriver(cfg_.pttMethod, cfg_.pttTarget, cfg_.pttBaud);
+  if (cfg_.pttMethod != PttMethod::None && !ptt_->healthy()) {
+    SKW_WARN("ptt: %s unavailable (%s) - transmitting without keying",
+             ptt_->name(), ptt_->lastError().c_str());
+  }
 }
 
 // TX watchdog (DSP.md / INTERFACES.md): a transmission that outlives
@@ -301,13 +354,26 @@ void ModemWorker::pttUnkeyLocked() {
 // transmitter down, not a tuning knob - tripping it is always a bug, so it
 // is loud and it surfaces on the control port.
 void ModemWorker::pttWatchdogLocked(double now) {
-  if (!pttKeyed_ || cfg_.txWatchdogSec <= 0.0) return;
+  if ((!pttKeyed_ && !pttUnkeyPending_) || cfg_.txWatchdogSec <= 0.0) return;
   if (now - pttKeyedAt_ < cfg_.txWatchdogSec) return;
+  if (!pttKeyed_) {
+    // Already released by the modem, but the driver keeps refusing: the
+    // rig may be transmitting dead air. Say so once, loudly; the retry
+    // loop keeps trying to release.
+    if (!txWatchdogTripped_) {
+      txWatchdogTripped_ = true;
+      SKW_ERROR("TX WATCHDOG: PTT release failing for %.1f s (%s)",
+                now - pttKeyedAt_, ptt_ ? ptt_->lastError().c_str() : "");
+      std::lock_guard lock(bridgeMutex_);
+      notes_.push_back(evtTxWatchdog(now - pttKeyedAt_));
+    }
+    return;
+  }
 
   SKW_ERROR("TX WATCHDOG: keyed %.1f s (limit %.1f s) - forcing unkey",
             now - pttKeyedAt_, cfg_.txWatchdogSec);
-  pttUnkeyLocked();
   txWatchdogTripped_ = true;
+  pttUnkeyLocked();
   txPending_.clear();
   txPendingOff_ = 0;
   txTestUntil_ = 0.0;
@@ -379,11 +445,8 @@ void ModemWorker::rebuildEngine() {
   // Physical keying follows the config; releasing the old driver first
   // guarantees a method change cannot strand a keyed transmitter.
   if (ptt_) pttUnkeyLocked();
-  ptt_ = makePttDriver(cfg_.pttMethod, cfg_.pttTarget, cfg_.pttBaud);
-  if (cfg_.pttMethod != PttMethod::None && !ptt_->healthy()) {
-    SKW_WARN("ptt: %s unavailable (%s) - transmitting without keying",
-             ptt_->name(), ptt_->lastError().c_str());
-  }
+  rebuildPttLocked();
+  engineRebuildPending_ = false;  // whatever was deferred is applied now
   det_ = ChirpDetector(cfg_.family);
   detAlt_.reset();
   if (cfg_.familyFallback) {
@@ -414,25 +477,40 @@ void ModemWorker::postCommand(WorkerCommand cmd) {
   pendingCmds_.push_back(std::move(cmd));
 }
 
+Config ModemWorker::config() const {
+  std::lock_guard lock(modemMutex_);
+  return cfg_;
+}
+
 std::string ModemWorker::control(const std::string& line) {
   return handleControlLine(line, *this);
 }
 
+// Seqlock. The fences are what make it correct: an acquire LOAD of the
+// second version read does not stop the payload copy from being
+// reordered after it, nor does a release RMW stop the writer's payload
+// stores from moving above the "-> odd" bump - either way a reader could
+// accept a torn snapshot. The reader's acquire fence orders the copy
+// before the re-check; the writer's release fence orders the odd bump
+// before the payload stores.
 Telemetry ModemWorker::telemetry() const {
   Telemetry snap;
   uint32_t v0, v1;
   do {
     v0 = telemetryVersion_.load(std::memory_order_acquire);
     snap = telemetry_;
-    v1 = telemetryVersion_.load(std::memory_order_acquire);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    v1 = telemetryVersion_.load(std::memory_order_relaxed);
   } while (v0 != v1 || (v0 & 1u));
   return snap;
 }
 
 void ModemWorker::publishTelemetry() {
-  telemetryVersion_.fetch_add(1, std::memory_order_release);  // -> odd
+  const uint32_t v = telemetryVersion_.load(std::memory_order_relaxed);
+  telemetryVersion_.store(v + 1, std::memory_order_relaxed);  // -> odd
+  std::atomic_thread_fence(std::memory_order_release);
   telemetry_ = working_;
-  telemetryVersion_.fetch_add(1, std::memory_order_release);  // -> even
+  telemetryVersion_.store(v + 2, std::memory_order_release);  // -> even
 }
 
 void ModemWorker::applyPendingCommands() {
@@ -900,6 +978,9 @@ void ModemWorker::pumpTxLocked(double now) {
       tp.frameType = 61;  // unassigned type; receivers ignore it
       tp.payload = dummy;
       burst = buildFrameBaseband(tp);
+      txTestBurst_ = true;
+    } else if (burst) {
+      txTestBurst_ = false;
     }
     if (burst) {
       static const bool txDbg = getenv("SKW_TX_DEBUG") != nullptr;
@@ -1139,8 +1220,10 @@ size_t ModemWorker::processChunk() {
       (double(txPending_.size() - txPendingOff_) + double(tx_.readAvailable())) /
       double(kFsAudio));
   pumpTxLocked(now);
+  pttRetryUnkeyLocked(now);
   drainEngineOutputsLocked();
   updateStateEventsLocked();
+  applyDeferredLocked(now);
 
   working_.clockUs = clock_.nowUs();
   working_.rxSamplesTotal = rxTotal_;
@@ -1154,7 +1237,7 @@ size_t ModemWorker::processChunk() {
   working_.txLevelDbfs = txLevel_;
   working_.noiseFloorDbfs = floorDbfs_;
   working_.busy = chanBusy_;
-  working_.ptt = pttKeyed_;
+  working_.ptt = pttKeyed_ || pttUnkeyPending_;
   // GUI instrument taps.
   if (engine_->constellationSeq() != working_.constellationSeq) {
     working_.constellationSeq = engine_->constellationSeq();
@@ -1181,6 +1264,27 @@ size_t ModemWorker::processChunk() {
   publishTelemetry();
   return std::min(availBefore, kChunkSamples) +
          (txPendingOff_ < txPending_.size() ? 1 : 0);
+}
+
+// Settings accepted while they could not be applied (a session up, a
+// burst on air) take effect here once it is safe, instead of waiting for
+// some unrelated command to rebuild the engine.
+void ModemWorker::applyDeferredLocked(double now) {
+  const bool txQuiet = !pttKeyed_ && txPendingOff_ >= txPending_.size() &&
+                       tx_.readAvailable() == 0;
+  if (pttRebuildPending_ && txQuiet) rebuildPttLocked();
+  if (engine_->state() != FsmState::Idle) {
+    idleSince_ = -1.0;
+    return;
+  }
+  if (idleSince_ < 0.0) idleSince_ = now;
+  // Rebuild only once the engine has settled: a just-ended session may
+  // still owe its post-session CW ID, and a rebuild would drop it.
+  if (engineRebuildPending_ && txQuiet && engine_->idleClean() &&
+      now - idleSince_ >= kDeferredRebuildIdleSec) {
+    SKW_INFO("worker: applying deferred settings (MAXMODE/CWID)");
+    rebuildEngine();
+  }
 }
 
 size_t ModemWorker::runOnce() {
@@ -1314,7 +1418,13 @@ int ModemWorker::maxMode() {
 bool ModemWorker::setMaxMode(int mode) {
   std::lock_guard lock(modemMutex_);
   cfg_.maxMode = mode;
-  if (engine_->state() == FsmState::Idle) rebuildEngine();
+  // A live session keeps its negotiated ceiling; the new one applies as
+  // soon as the engine is idle again (applyDeferredLocked).
+  if (engine_->state() == FsmState::Idle) {
+    rebuildEngine();
+  } else {
+    engineRebuildPending_ = true;
+  }
   return true;
 }
 
@@ -1334,6 +1444,18 @@ bool ModemWorker::txTest(double seconds) {
   if (engine_->state() != FsmState::Idle) return false;
   txTestUntil_ = nowSec() + seconds;
   return true;
+}
+
+void ModemWorker::txTestStop() {
+  std::lock_guard lock(modemMutex_);
+  txTestUntil_ = 0.0;
+  // Cut the calibration frame already staged too; the ring drains and the
+  // normal release path unkeys. Engine traffic is never touched.
+  if (txTestBurst_) {
+    txPending_.clear();
+    txPendingOff_ = 0;
+    txTestBurst_ = false;
+  }
 }
 
 std::string ModemWorker::version() { return SKW_VERSION; }
@@ -1368,7 +1490,11 @@ bool ModemWorker::cwId() {
 void ModemWorker::setCwId(bool on) {
   std::lock_guard lock(modemMutex_);
   cfg_.cwId = on;
-  if (engine_->state() == FsmState::Idle) rebuildEngine();
+  if (engine_->state() == FsmState::Idle) {
+    rebuildEngine();
+  } else {
+    engineRebuildPending_ = true;  // applied once idle (applyDeferredLocked)
+  }
 }
 
 std::string ModemWorker::modeStr() {
@@ -1434,7 +1560,10 @@ std::optional<bool> ModemWorker::feature(const std::string& name) {
   std::lock_guard lock(modemMutex_);
   if (name == "CHANMEM") return cfg_.channelMemory;
   if (name == "ULTRA") return cfg_.ultraEnable;
-  if (name == "PROBE") return cfg_.probePromote;
+  // Probe-before-promote is a fixed part of the AMC (there is no engine
+  // switch for it): reported as ON, and OFF is refused below rather than
+  // stored and silently ignored.
+  if (name == "PROBE") return true;
   if (name == "MASKING") return cfg_.carrierMasking;
   if (name == "RESUME") return cfg_.resume;
   if (name == "ULTRA") return cfg_.ultraEnable;
@@ -1452,7 +1581,7 @@ bool ModemWorker::setFeature(const std::string& name, bool on) {
     // simply refused with no way to enable it at runtime.
     cfg_.ultraEnable = on;
   } else if (name == "PROBE") {
-    cfg_.probePromote = on;
+    return on;  // always on; nothing to rebuild
   } else if (name == "MASKING") {
     cfg_.carrierMasking = on;
   } else if (name == "RESUME") {
@@ -1835,24 +1964,30 @@ std::vector<int16_t> ModemWorker::takeVoicePcm(size_t samples) {
 
 bool ModemWorker::pttSet(const std::string& key, const std::string& val) {
   std::lock_guard lock(modemMutex_);
+  // Driver settings take effect now (or, mid-burst, the moment the
+  // transmitter is quiet): they used to be stored and only picked up by
+  // some unrelated engine rebuild.
   if (key == "METHOD") {
     auto m = pttMethodFromString(val);
     if (!m) return false;
     cfg_.pttMethod = *m;
+    rebuildPttLocked();
     return true;
   }
   if (key == "PORT") {
     cfg_.pttTarget = val;
+    rebuildPttLocked();
     return true;
   }
   const int n = atoi(val.c_str());
   if (key == "BAUD") {
     if (n <= 0) return false;
     cfg_.pttBaud = n;
+    rebuildPttLocked();
     return true;
   }
   if (key == "LEAD" || key == "TAIL") {
-    if (n < 0 || n > 5000) return false;
+    if (n < 0 || n > kPttPadMaxMs) return false;
     (key == "LEAD" ? cfg_.pttLeadMs : cfg_.pttTailMs) = n;
     return true;
   }

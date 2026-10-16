@@ -120,6 +120,39 @@ TEST_CASE(file_rx_gap_and_zero_length) {
   CHECK(got->crcOk);
 }
 
+TEST_CASE(file_meta_size_is_capped) {
+  // C4: the declared size is the peer's claim. Above the cap the META is
+  // refused outright; at the cap it is accepted without pre-allocating.
+  FileMeta big;
+  big.fileId = 7;
+  big.name = "huge.bin";
+  big.size = 4ull << 30;  // 4 GiB
+  big.chunkSize = 1024;
+  CHECK(!FileMeta::parse(big.pack()).has_value());
+  FileRx rx;
+  rx.onMessage(big.pack());
+  bool sawError = false;
+  for (auto& e : rx.takeEvents()) {
+    if (e.kind == FileRxEvent::Kind::Error) sawError = true;
+  }
+  CHECK(sawError);
+  CHECK(!rx.inProgress());
+
+  big.size = kFileMaxSize;
+  CHECK(FileMeta::parse(big.pack()).has_value());
+  rx.onMessage(big.pack());
+  CHECK(rx.inProgress());
+  // A real transfer still works after the change.
+  FileTx tx;
+  FileRx ok;
+  auto blob = randomBytes(5000, 4);
+  CHECK(tx.start(3, "ok.bin", blob, 0));
+  while (auto m = tx.nextMessage()) ok.onMessage(*m);
+  auto got = ok.takeCompleted();
+  CHECK(got.has_value());
+  if (got) CHECK(got->data == blob);
+}
+
 // --- two-modem scenario ------------------------------------------------------
 
 namespace {

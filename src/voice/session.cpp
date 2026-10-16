@@ -41,6 +41,7 @@ void VoiceFsm::cmdPttOn(double now) {
   if (state_ != VoiceState::Open) return;  // busy or closed: ignored
   state_ = VoiceState::Requesting;
   deadline_ = now + cfg_.openTimeoutSec;
+  attempts_ = cfg_.openAttempts - 1;  // REQ is retried like OPEN
   emit(VoiceAction::SendPttReq);
 }
 
@@ -95,7 +96,18 @@ void VoiceFsm::rxPttReq(double now, bool weWinTie) {
   switch (state_) {
     case VoiceState::Open:
       state_ = VoiceState::Receiving;
-      deadline_ = now + cfg_.grantHoldSec;
+      holdUntil_ = now + cfg_.grantHoldSec;
+      deadline_ = holdUntil_;
+      emit(VoiceAction::SendPttGrant);
+      break;
+    case VoiceState::Receiving:
+      // The peer is asking again, so it never got our grant (lost on the
+      // air) or our view is stale (its PTT_END was lost and this is a new
+      // spurt). Either way the peer cannot be talking: grant again and
+      // restart the spurt rather than leave both sides waiting out the
+      // hold cap.
+      holdUntil_ = now + cfg_.grantHoldSec;
+      deadline_ = holdUntil_;
       emit(VoiceAction::SendPttGrant);
       break;
     case VoiceState::Requesting:
@@ -105,7 +117,8 @@ void VoiceFsm::rxPttReq(double now, bool weWinTie) {
         // Ignore the peer's request; ours stands.
       } else {
         state_ = VoiceState::Receiving;
-        deadline_ = now + cfg_.grantHoldSec;
+        holdUntil_ = now + cfg_.grantHoldSec;
+        deadline_ = holdUntil_;
         emit(VoiceAction::SendPttGrant);
       }
       break;
@@ -131,6 +144,13 @@ void VoiceFsm::rxPttEnd(double now) {
   if (pttWanted_) cmdPttOn(now);  // our queued request goes out now
 }
 
+void VoiceFsm::rxVoiceActivity(double now) {
+  if (state_ != VoiceState::Receiving) return;
+  // Speech is flowing: the spurt ends at PTT_END, or - if that is lost -
+  // rxIdleSec after the last unit, never later than the hold cap.
+  deadline_ = std::min(now + cfg_.rxIdleSec, holdUntil_);
+}
+
 void VoiceFsm::tick(double now) {
   if (deadline_ == 0.0 || now < deadline_) return;
   switch (state_) {
@@ -145,9 +165,16 @@ void VoiceFsm::tick(double now) {
       }
       break;
     case VoiceState::Requesting:
-      // No grant: give up this request but keep the voice session open.
-      state_ = VoiceState::Open;
-      deadline_ = 0.0;
+      // No grant yet: the REQ or the GRANT may have been lost, so ask
+      // again (the peer re-grants a repeated REQ). After the last attempt
+      // give up this request but keep the voice session open.
+      if (attempts_-- > 0) {
+        deadline_ = now + cfg_.openTimeoutSec;
+        emit(VoiceAction::SendPttReq);
+      } else {
+        state_ = VoiceState::Open;
+        deadline_ = 0.0;
+      }
       break;
     case VoiceState::Talking:
     case VoiceState::Receiving: {
@@ -170,6 +197,10 @@ void VoiceFsm::tick(double now) {
 
 void JitterBuffer::push(std::span<const int16_t> pcm) {
   buf_.insert(buf_.end(), pcm.begin(), pcm.end());
+  constexpr size_t kMaxSamples = size_t(kMaxMs) * 8000 / 1000;
+  if (buf_.size() > kMaxSamples) {
+    buf_.erase(buf_.begin(), buf_.begin() + long(buf_.size() - kMaxSamples));
+  }
   if (!primed_ && depthMs() >= kTargetMs) primed_ = true;
 }
 

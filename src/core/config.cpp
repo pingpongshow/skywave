@@ -1,7 +1,12 @@
 #include "core/config.hpp"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -95,6 +100,14 @@ std::string cpSelToString(int cp) {
     case 2: return "long";
     default: return "auto";
   }
+}
+
+// Highest mode the table marks active: what `max_mode = auto` means.
+int highestActiveMode() {
+  for (int i = kNumModes - 1; i >= 0; --i) {
+    if (kModes[size_t(i)].active) return i;
+  }
+  return kFirstMode;
 }
 
 std::string modeSelToString(int m) {
@@ -217,25 +230,36 @@ bool Config::load(const std::string& path) {
     else if (full == "ptt.method") { auto m = pttMethodFromString(val); okv = m.has_value(); if (m) pttMethod = *m; }
     else if (full == "ptt.target") pttTarget = val;
     else if (full == "ptt.baud") okv = parseInt(val, pttBaud);
-    else if (full == "ptt.lead_ms") okv = parseInt(val, pttLeadMs);
-    else if (full == "ptt.tail_ms") okv = parseInt(val, pttTailMs);
+    // Lead/tail size silence buffers: a negative value became a huge
+    // size_t (bad_alloc), so both are clamped to 0..5000 ms.
+    else if (full == "ptt.lead_ms") { okv = parseInt(val, pttLeadMs); pttLeadMs = std::clamp(pttLeadMs, 0, kPttPadMaxMs); }
+    else if (full == "ptt.tail_ms") { okv = parseInt(val, pttTailMs); pttTailMs = std::clamp(pttTailMs, 0, kPttPadMaxMs); }
     else if (full == "modem.band") { auto b = bandFromString(val); okv = b.has_value(); if (b) band = *b; }
     else if (full == "modem.family") { auto f = familyFromString(val); okv = f.has_value(); if (f) family = *f; }
     else if (full == "modem.ultra_enable") okv = parseBool(val, ultraEnable);
     else if (full == "modem.family_fallback") okv = parseBool(val, familyFallback);
     else if (full == "modem.css_tier") okv = parseBool(val, cssTier);
     else if (full == "modem.mode") okv = parseModeSel(val, mode);
-    else if (full == "modem.max_mode") okv = parseModeSel(val, maxMode);
+    else if (full == "modem.max_mode") {
+      // A ceiling, not a selector: "auto" (-1) once flowed on as uint8_t
+      // 255 - past the AMC floor tables and into START, where the peer
+      // rejected it. Auto = the highest active mode; numbers clamp into
+      // the active OFDM range.
+      int m = 0;
+      okv = parseModeSel(val, m);
+      if (okv) {
+        maxMode = m < 0 ? highestActiveMode()
+                        : std::clamp(m, kFirstMode, highestActiveMode());
+      }
+    }
     else if (full == "modem.cp_mode") okv = parseCpSel(val, cpMode);
     else if (full == "modem.listen") okv = parseBool(val, listen);
     else if (full == "modem.max_retries") okv = parseInt(val, maxRetries);
     else if (full == "modem.harq") { auto h = harqModeFromString(val); okv = h.has_value(); if (h) harq = *h; }
     else if (full == "modem.channel_memory") okv = parseBool(val, channelMemory);
-    else if (full == "modem.probe_promote") okv = parseBool(val, probePromote);
     else if (full == "modem.carrier_masking") okv = parseBool(val, carrierMasking);
     else if (full == "modem.turn_taking") okv = parseBool(val, turnTaking);
     else if (full == "modem.resume") okv = parseBool(val, resume);
-    else if (full == "modem.pre_tx_cca") okv = parseBool(val, preTxCca);
     else if (full == "modem.impulse_blanker") okv = parseBool(val, impulseBlanker);
     else if (full == "modem.multi_notch") okv = parseBool(val, multiNotch);
     else if (full == "modem.freq_align") okv = parseBool(val, freqAlign);
@@ -316,11 +340,9 @@ bool Config::save(const std::string& path) const {
     << "max_retries = " << maxRetries << "\n"
     << "harq = " << toString(harq) << "\n"
     << "channel_memory = " << (channelMemory ? "true" : "false") << "\n"
-    << "probe_promote = " << (probePromote ? "true" : "false") << "\n"
     << "carrier_masking = " << (carrierMasking ? "true" : "false") << "\n"
     << "turn_taking = " << (turnTaking ? "true" : "false") << "\n"
     << "resume = " << (resume ? "true" : "false") << "\n"
-    << "pre_tx_cca = " << (preTxCca ? "true" : "false") << "\n"
     << "impulse_blanker = " << (impulseBlanker ? "true" : "false") << "\n"
     << "multi_notch = " << (multiNotch ? "true" : "false") << "\n"
     << "freq_align = " << (freqAlign ? "true" : "false") << "\n"
@@ -369,10 +391,29 @@ bool Config::save(const std::string& path) const {
     o << k.substr(dot + 1) << " = " << v << "\n";
   }
 
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return false;
-  out << o.str();
-  return bool(out);
+  // Atomic and private: write a sibling temp file created 0600 (the file
+  // holds the PSK), flush it to disk, then rename over the target. A
+  // crash mid-write can no longer leave a truncated config, and the PSK
+  // is never world-readable, not even for an instant.
+  const std::string tmp = path + ".tmp." + std::to_string(::getpid());
+  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return false;
+  ::fchmod(fd, 0600);  // O_CREAT mode is masked by umask; be explicit
+  const std::string data = o.str();
+  size_t off = 0;
+  while (off < data.size()) {
+    const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;
+    off += size_t(n);
+  }
+  const bool wrote = off == data.size() && ::fsync(fd) == 0;
+  ::close(fd);
+  if (!wrote || ::rename(tmp.c_str(), path.c_str()) != 0) {
+    ::unlink(tmp.c_str());
+    return false;
+  }
+  return true;
 }
 
 }  // namespace skw

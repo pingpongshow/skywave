@@ -5,6 +5,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <termios.h>
@@ -122,7 +123,9 @@ class SerialPtt final : public PttDriver {
   }
 
   bool lower() {
-    if (fd_ < 0) return false;
+    // A failed port is reopened here too: the release is what the worker
+    // retries, and it must be able to recover a vanished USB serial port.
+    if (fd_ < 0 && !open()) return false;
     int bits = useRts_ ? TIOCM_RTS : TIOCM_DTR;
     if (ioctl(fd_, TIOCMBIC, &bits) < 0) {
       fail("TIOCMBIC");
@@ -157,6 +160,7 @@ class TcpPtt final : public PttDriver {
   }
   ~TcpPtt() override {
     if (fd_ >= 0) {
+      if (connecting_) connected(kConnectWaitMs);
       send("UNKEY\n");
       ::close(fd_);
     }
@@ -188,9 +192,12 @@ class TcpPtt final : public PttDriver {
       err_ += std::strerror(errno);
       return false;
     }
-    // Blocking connect to localhost is sub-millisecond; a remote or dead
-    // endpoint must not stall the worker, so the socket goes non-blocking
-    // first and an in-progress connect is simply left to finish.
+    // A remote or dead endpoint must not stall the worker, so the socket
+    // goes non-blocking first. The connect is then given a short bounded
+    // wait (localhost completes at once); if still in progress it is
+    // finished by later calls (connected()). Sending on a socket whose
+    // connect has not completed fails with ENOTCONN - which used to tear
+    // the fresh socket down again, so a reconnect could never succeed.
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     const int rc = ::connect(fd, res->ai_addr, socklen_t(res->ai_addrlen));
@@ -201,6 +208,7 @@ class TcpPtt final : public PttDriver {
       ::close(fd);
       return false;
     }
+    connecting_ = rc < 0 && errno != EISCONN;
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 #ifdef SO_NOSIGPIPE
@@ -208,12 +216,41 @@ class TcpPtt final : public PttDriver {
 #endif
     fd_ = fd;
     err_.clear();
+    if (connecting_) return connected(kConnectWaitMs) || fd_ >= 0;
+    SKW_INFO("ptt: TCP keying to %s:%u", host_.c_str(), unsigned(port_));
+    return true;
+  }
+
+  // Completes an in-progress connect: true once established. Waits at
+  // most `waitMs`; a refused/failed connect closes the socket.
+  bool connected(int waitMs) {
+    if (fd_ < 0) return false;
+    if (!connecting_) return true;
+    pollfd p{fd_, POLLOUT, 0};
+    const int r = ::poll(&p, 1, waitMs);
+    if (r == 0) {
+      err_ = "ptt server connect in progress";
+      return false;
+    }
+    int soErr = 0;
+    socklen_t len = sizeof(soErr);
+    if (r < 0 || getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soErr, &len) < 0 ||
+        soErr != 0) {
+      err_ = host_ + ":" + std::to_string(port_) + ": " +
+             std::strerror(soErr ? soErr : errno);
+      ::close(fd_);
+      fd_ = -1;
+      connecting_ = false;
+      return false;
+    }
+    connecting_ = false;
     SKW_INFO("ptt: TCP keying to %s:%u", host_.c_str(), unsigned(port_));
     return true;
   }
 
   bool send(const char* line) {
     if (fd_ < 0 && !connectSocket()) return false;
+    if (!connected(0)) return false;  // caller retries (worker unkey retry)
 #ifdef MSG_NOSIGNAL
     const int flags = MSG_NOSIGNAL;
 #else
@@ -234,9 +271,11 @@ class TcpPtt final : public PttDriver {
     return false;
   }
 
+  static constexpr int kConnectWaitMs = 100;
   std::string host_;
   uint16_t port_ = 0;
   int fd_ = -1;
+  bool connecting_ = false;
   std::string err_;
 };
 

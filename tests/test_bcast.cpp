@@ -9,6 +9,7 @@
 #include "dsp/morse.hpp"
 #include "link/engine.hpp"
 #include "link/monitor.hpp"
+#include "phy/framer.hpp"
 #include "sim/chansim.hpp"
 #include "skytest.hpp"
 
@@ -139,6 +140,61 @@ TEST_CASE(broadcast_two_senders_do_not_corrupt_each_other) {
   }
   CHECK(sawA);   // W1AW's payload arrived intact
   CHECK(sawB);   // and so did K6XYZ's
+}
+
+namespace {
+
+// One crafted BCAST_DATA frame on air (clean channel), for reassembly
+// edge cases the engine itself never produces.
+std::vector<cfloat> bcastFrame(uint16_t tag, uint8_t idx, uint8_t count,
+                               std::vector<uint8_t> payload) {
+  BcastDataBody b;
+  b.fragIndex = idx;
+  b.fragCount = count;
+  b.payload = std::move(payload);
+  LinkEnvelope env;
+  env.type = LinkType::BcastData;
+  env.sessionId = tag;
+  TxFrameParams tp;
+  tp.family = Family::Wide;
+  tp.sig = ChirpSig::Calling;
+  tp.mode = 4;
+  tp.frameType = uint8_t(LinkType::BcastData);
+  const auto raw = packFrame(env, b.pack());  // tp.payload is a span
+  tp.payload = raw;
+  auto x = buildFrameBaseband(tp);
+  std::vector<cfloat> y(1500, cfloat(0, 0));
+  y.insert(y.end(), x.begin(), x.end());
+  y.insert(y.end(), 2000, cfloat(0, 0));
+  return y;
+}
+
+}  // namespace
+
+// Review D: a zero-length final fragment completes its chain, and a
+// repeated fragment index from the same sender starts a NEW message
+// instead of splicing two messages together.
+TEST_CASE(broadcast_reassembly_edge_cases) {
+  Monitor mon(Family::Wide);
+  mon.rxBurst(bcastFrame(0x0101, 0, 2, {1, 2, 3}));
+  mon.rxBurst(bcastFrame(0x0101, 1, 2, {}));
+  auto got = mon.takeBroadcasts();
+  CHECK_EQ(int(got.size()), 1);
+  if (!got.empty()) CHECK(got[0].second == (std::vector<uint8_t>{1, 2, 3}));
+
+  // Message X loses fragment 1; message Y (same sender, same count)
+  // follows. Y must come out intact, never X0/X2 mixed into it.
+  mon.rxBurst(bcastFrame(0x0202, 0, 3, {0xA0}));
+  mon.rxBurst(bcastFrame(0x0202, 2, 3, {0xA2}));
+  mon.rxBurst(bcastFrame(0x0202, 0, 3, {0xB0}));
+  mon.rxBurst(bcastFrame(0x0202, 1, 3, {0xB1}));
+  CHECK(mon.takeBroadcasts().empty());  // no spliced X0+B1+X2
+  mon.rxBurst(bcastFrame(0x0202, 2, 3, {0xB2}));
+  got = mon.takeBroadcasts();
+  CHECK_EQ(int(got.size()), 1);
+  if (!got.empty()) {
+    CHECK(got[0].second == (std::vector<uint8_t>{0xB0, 0xB1, 0xB2}));
+  }
 }
 
 namespace {

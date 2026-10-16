@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -61,7 +62,7 @@ void TcpServer::dropClient() {
   txBuf_.clear();  // a fresh client must not inherit a dead one's tail
 }
 
-std::vector<uint8_t> TcpServer::poll() {
+std::vector<uint8_t> TcpServer::poll(size_t maxRead) {
   std::vector<uint8_t> rx;
   if (listen_ < 0) return rx;
 
@@ -92,6 +93,7 @@ std::vector<uint8_t> TcpServer::poll() {
       setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
       client_ = fd;
+      ++clientGen_;
     } else {
       ::close(fd);  // one client per port
     }
@@ -100,9 +102,20 @@ std::vector<uint8_t> TcpServer::poll() {
   if (client_ < 0) return rx;
   flush();  // retry anything the socket could not take last time
   if (client_ < 0) return rx;
+  if (maxRead == 0) {
+    // Backpressure: read nothing, but still notice an orderly close so a
+    // vanished client is not held until the backlog drains.
+    uint8_t probe;
+    const ssize_t n = ::recv(client_, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+      dropClient();
+    }
+    return rx;
+  }
   uint8_t buf[4096];
-  for (;;) {
-    ssize_t n = ::recv(client_, buf, sizeof(buf), 0);
+  while (rx.size() < maxRead) {
+    const size_t want = std::min(sizeof(buf), maxRead - rx.size());
+    ssize_t n = ::recv(client_, buf, want, 0);
     if (n > 0) {
       rx.insert(rx.end(), buf, buf + n);
       continue;
@@ -184,6 +197,12 @@ void LineBuffer::feed(const std::vector<uint8_t>& bytes) {
       }
     }
   }
+}
+
+void LineBuffer::reset() {
+  acc_.clear();
+  lines_.clear();
+  dropping_ = false;
 }
 
 std::vector<std::string> LineBuffer::takeLines() {
