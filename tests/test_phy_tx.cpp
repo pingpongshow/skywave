@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "core/constants.hpp"
+#include "dsp/updown.hpp"
 #include "dsp/fft.hpp"
 #include "fec/interleave.hpp"
 #include "fec/ldpc.hpp"
@@ -322,10 +323,8 @@ TEST_CASE(frame_geometry_matches_build) {
   CHECK(g.headerSymbols > 0);
   CHECK_EQ(g.payloadCodewords, 1);  // 120 bytes = 960 bits <= 1944/2
   auto frame = buildFrameBaseband(p);
-  // Band-filter flush adds the filter transient; frame content length is
-  // geometry total, output is slightly longer.
-  CHECK(int(frame.size()) >= g.totalSamples);
-  CHECK(int(frame.size()) <= g.totalSamples + 400);
+  // Geometry counts the band-filter flush (it used to omit 9.8 ms).
+  CHECK_EQ(int(frame.size()), g.totalSamples);
   // Unit RMS.
   double pow = 0;
   for (auto& v : frame) pow += std::norm(v);
@@ -389,6 +388,44 @@ TEST_CASE(frame_spectral_mask) {
     double ratioDb = 10.0 * std::log10(inBand / std::max(outBand, 1e-30));
     CHECK(ratioDb > 26.0);
   }
+}
+
+// Waveform analysis 2026-10-17: at the HF level, VHF's 11 dB PAPR ceiling
+// (for 256QAM) put ~1 frame in 5 over full scale after upconversion (worst
+// peak 1.21), which the worker hard-clips. Each band's txTargetRms must keep
+// real 48 kHz peaks inside full scale across random payloads.
+TEST_CASE(tx_peaks_stay_inside_full_scale_per_band) {
+  for (Band band : {Band::Hf, Band::VhfFm}) {
+    setActiveBand(band);
+    const float g = float(activeProfile().txTargetRms * std::sqrt(2.0));
+    const Family fam = band == Band::Hf ? Family::Wide : Family(0);
+    const int modes[] = {4, 10, 13, 14};
+    for (int mode : modes) {
+      if (mode == 14 && band == Band::Hf) continue;  // VHF-only rung
+      double worst = 0.0;
+      for (int seed = 0; seed < 40; ++seed) {
+        std::vector<uint8_t> payload(600);
+        uint32_t x = uint32_t(seed * 2654435761u + mode);
+        for (auto& b : payload) { x = x * 1664525u + 1013904223u; b = uint8_t(x >> 24); }
+        TxFrameParams tp;
+        tp.family = fam;
+        tp.mode = mode;
+        tp.sig = mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+        tp.cpMode = activeProfile().cpDefault;
+        tp.payload = payload;
+        auto bb = buildFrameBaseband(tp);
+        bb.insert(bb.end(), 1200, cfloat(0, 0));
+        Upconverter up;
+        std::vector<float> audio;
+        up.process(bb, audio);
+        for (float v : audio) worst = std::max(worst, double(std::fabs(v * g)));
+      }
+      std::printf("band %s M%d worst peak %.3f\n", activeProfile().name, mode, worst);
+      CHECK(worst < 0.98);
+    }
+  }
+  setActiveBand(Band::Hf);
+  CHECK_EQ(kHfProfile.txTargetRms, kTxTargetRms);  // the documented HF level
 }
 
 SKYTEST_MAIN

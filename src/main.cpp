@@ -119,6 +119,9 @@ int selectedDevice(const std::string& name, int index, bool input) {
 
 int main(int argc, char** argv) {
   skw::Config cfg;
+  // The configuration exactly as LOADED from the INI (before CLI
+  // overrides): the base of the exit-time three-way merge.
+  skw::Config loadedCfg;
   // Two-pass CLI so --config loads first, then CLI overrides win
   // (CONFIGURATION.md precedence).
   CliArgs pre = parseCli(argc, argv, cfg);
@@ -131,6 +134,7 @@ int main(int argc, char** argv) {
       SKW_WARN("config: cannot read %s (starting from defaults)",
                pre.configPath.c_str());
     }
+    loadedCfg = cfg;
     parseCli(argc, argv, cfg);  // overrides
   }
 
@@ -383,13 +387,17 @@ int main(int argc, char** argv) {
   // control-port change (MYCALL, FAMILY, PTT*, ENCRYPTKEY...), while
   // main's `cfg` is the startup snapshot plus the audio devices that only
   // main manages. Saving the startup copy threw away all runtime changes.
+  // Merged, not overwritten: a key the operator edited in the file while
+  // we ran survives unless it was also changed at runtime (runtime wins,
+  // WARN logged). CLI overrides differ from the loaded base, so they
+  // persist exactly as before.
   if (!pre.configPath.empty()) {
     skw::Config out = worker.config();
     out.inputDevice = cfg.inputDevice;
     out.outputDevice = cfg.outputDevice;
     out.inputDeviceName = cfg.inputDeviceName;
     out.outputDeviceName = cfg.outputDeviceName;
-    if (!out.save(pre.configPath)) {
+    if (!out.saveMerged(pre.configPath, loadedCfg)) {
       SKW_WARN("config: cannot write %s", pre.configPath.c_str());
     }
   }

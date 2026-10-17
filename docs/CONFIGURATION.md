@@ -10,6 +10,41 @@
 Runtime changes persist back to the INI on clean exit when `--config` was
 given.
 
+### Saving on exit: three-way merge
+
+The exit-time save does not blindly overwrite the file, so the INI can be
+hand-edited while the modem runs. Three versions take part, compared key
+by key (`section.key`):
+
+- **base**: the file as it was loaded at start-up (before CLI overrides);
+- **live**: the configuration the modem is running at exit (control
+  port / GUI changes, plus CLI overrides);
+- **disk**: the file as it is on disk at exit.
+
+For each key:
+
+| live vs base | result |
+|---|---|
+| changed (set at runtime, or by a CLI override) | the live value is written |
+| unchanged | the disk value is written, verbatim (a manual edit survives) |
+
+- **Conflict:** if a key was changed at runtime *and* edited on disk to a
+  different value, **the runtime value wins** and a `WARN` naming the key
+  is logged (the value itself is not logged: it may be the PSK). Re-apply
+  the manual edit after exit if it was the one you wanted.
+- Keys the operator **added** to the file while running (known or
+  unknown) are kept. An unknown key the operator **deleted** while running
+  stays deleted; a deleted schema key is written back with the running
+  value (the saved file always carries the full schema).
+- Unknown keys are preserved as on any save.
+- If the file **no longer exists or cannot be parsed** (no `key = value`
+  lines at all), the live configuration is written in full, as before.
+- The write is atomic (temp file + `rename`) and the file is mode `0600`
+  because it holds `crypto.psk`, exactly as for a plain save.
+
+A CLI override differs from the loaded base, so it is persisted on exit
+(and wins over an edit of the same key made on disk meanwhile).
+
 ## CLI
 
 | Option | Meaning |
@@ -284,4 +319,5 @@ environment at ctest time. See RELEASE.md gate 4.
 - callsign: 3–12 chars `[A-Z0-9/]`; `N0CALL`/empty blocks TX paths
 - `family` changes only in `IDLE`/`LISTENING`
 - crypto keys rejected while `CALLING`/`CONNECTING`/`CONNECTED`
-- unknown INI keys warn and are preserved on save (forward compatibility)
+- unknown INI keys warn and are preserved on save (forward compatibility),
+  including through the exit-time merge

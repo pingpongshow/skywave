@@ -71,6 +71,11 @@ std::vector<float> familyTxBandTaps(Family family) {
   return designKaiserLowpass(kFsBaseband, half, half + 300.0, 50.0);
 }
 
+// Samples the occupied-band filter flush appends after the last symbol.
+int txBandTailSamples(Family family) {
+  return int(familyTxBandTaps(family).size() / 2) * 2;
+}
+
 }  // namespace
 
 void packPhyHeader(const PhyHeader& h, uint8_t out[kPhyHeaderBytes]) {
@@ -276,7 +281,7 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
     g.totalSamples =
         g.preambleSamples +
         int(symH) * int(kCssSyncSymbols + hAll + pilots(pSyms)) +
-        int(symP) * int(pSyms);
+        int(symP) * int(pSyms) + txBandTailSamples(p.family);
     return g;
   }
   FrameGeometry g;
@@ -328,7 +333,8 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
       kFftBaseband + cpSamplesAudio(p.cpMode) / kDecimation;
   g.totalSamples = g.preambleSamples + g.zcSymbols * zcSymbolSamples() +
                    g.headerSymbols * hdrSymSamples +
-                   g.payloadSymbols * paySymSamples;
+                   g.payloadSymbols * paySymSamples +
+                   txBandTailSamples(p.family);
   return g;
 }
 
@@ -417,7 +423,7 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
   std::vector<cfloat> filtered;
   filtered.reserve(frame.size());
   bandFilt.process(frame, filtered);
-  std::vector<cfloat> zeros(bandFilt.groupDelayInput() * 2, cfloat(0, 0));
+  std::vector<cfloat> zeros(size_t(txBandTailSamples(p.family)), cfloat(0, 0));
   bandFilt.process(zeros, filtered);
 
   double pow = 0;
@@ -486,7 +492,7 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
   filtered.reserve(frame.size());
   bandFilt.process(frame, filtered);
   // Flush the filter tail so the frame end is not truncated.
-  std::vector<cfloat> zeros(bandFilt.groupDelayInput() * 2, cfloat(0, 0));
+  std::vector<cfloat> zeros(size_t(txBandTailSamples(p.family)), cfloat(0, 0));
   bandFilt.process(zeros, filtered);
 
   pow = 0;

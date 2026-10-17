@@ -452,7 +452,12 @@ inverted.
 - a soft clipper at 8 dB PAPR ceiling followed by the occupied-band filter
   bounds out-of-band regrowth
 - TX level normalization targets consistent RMS across frame types
-  ([DSP.md](DSP.md))
+  ([DSP.md](DSP.md)); the passband level is per band (`txTargetRms`: HF
+  0.22 RMS, -13.2 dBFS; VHF 0.17, -15.4 dBFS) so that each band's PAPR
+  ceiling stays inside full scale after upconversion (worst measured peak
+  0.93 HF, 0.94 VHF)
+- `computeGeometry().totalSamples` includes the band filter's flush, so
+  frame airtime equals the built frame length exactly
 
 ## CSS Deep Tier (`M0–M3`)
 
@@ -620,7 +625,8 @@ Profile contents:
   +6.5 dB)
 - **TX**: PAPR ceiling 11 dB (256QAM EVM budget; 8 dB clip noise tipped
   whole frames content-dependently — including every identical
-  retransmission)
+  retransmission), sent 2.3 dB lower than HF (0.17 RMS) so those peaks
+  stay inside full scale
 - **CCA**: the worker's level-based floor+6 dB busy logic (RSSI-style,
   as specified)
 - **throughput (M7 gate)**: ≥ 25 kbps net sustained measured end-to-end

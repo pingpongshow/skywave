@@ -412,19 +412,24 @@ struct BandProfile {
   // (its 0.67 ms Short CP is 8 samples).
   int zcWindowBackoff;
   int trackerPreTaps;
+  // Passband RMS of a burst at output_gain_db = 0. HF's 8 dB ceiling
+  // upconverts to peaks near -1 dBFS at kTxTargetRms; VHF's 11 dB ceiling
+  // (for 256QAM) put up to 1 frame in 5 over full scale there (worst peak
+  // 1.21), hard-clipped by the worker, so VHF runs ~2.3 dB lower.
+  double txTargetRms;
 };
 inline constexpr BandProfile kHfProfile = {
     "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
     &kModerateFloors, &kPoorFloors,
     true,     true,          0.160,           CpMode::Medium,
     &kHfCpSamplesAudio,      3,               6,             8.0,  2,
-    16,       5};
+    16,       5,             0.22};
 inline constexpr BandProfile kVhfFmProfile = {
     "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
     &kVhfFloors, &kVhfFloors,
     false,    false,         0.040,           CpMode::Short,
     &kVhfCpSamplesAudio,     2,               4,             11.0, 1,
-    2,        2};
+    2,        2,             0.17};
 
 inline const BandProfile*& activeProfileSlot() {
   static const BandProfile* p = &kHfProfile;
@@ -522,7 +527,8 @@ inline constexpr uint32_t kSeedSpreadPhase  = 0x5EA5CAFEu;
 inline constexpr uint32_t kSeedPilotPhase   = 0x0FD1E5EDu;
 
 // ------------------------------------------------------------------ TX levels
-// Passband RMS of a data burst at output_gain_db = 0 (-13.2 dBFS). The PHY
+// HF passband RMS of a data burst at output_gain_db = 0 (-13.2 dBFS); the
+// active band's level is activeProfile().txTargetRms. The PHY
 // emits unit-RMS baseband with an 8 dB PAPR allowance; its real upconverted
 // form has ~12 dB crest, so 0.22 RMS peaks near -1 dBFS. (Until 2026-10
 // this was defined but unused: bursts went out at ~0.7 RMS, +9 dBFS peaks,

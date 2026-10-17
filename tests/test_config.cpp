@@ -3,6 +3,8 @@
 
 #include <cstdio>
 #include <fstream>
+#include <string>
+#include <vector>
 
 #include "core/config.hpp"
 #include "skytest.hpp"
@@ -240,6 +242,133 @@ TEST_CASE(callsign_rules) {
   CHECK(!callsignValid("AB"));                 // too short
   CHECK(!callsignValid("ABCDEFGHIJKLM"));      // too long
   CHECK(!callsignValid("W1 AW"));              // space
+}
+
+// --- Exit-time three-way merge (Config::saveMerged) ----------------------
+// base = config as loaded at startup, live = running config, disk = the
+// file as the operator left it while the modem ran.
+
+namespace {
+void writeFile(const std::string& path, const std::string& text) {
+  std::ofstream f(path);
+  f << text;
+}
+}  // namespace
+
+TEST_CASE(config_merge_runtime_change_saved) {
+  auto path = tmpPath("merge_runtime");
+  writeFile(path, "[station]\ncallsign = W1AW\n[modem]\nmax_retries = 7\n");
+  Config base;
+  CHECK(base.load(path));
+  Config live = base;
+  live.callsign = "K1ABC";  // e.g. MYCALL over the control port
+  CHECK(live.saveMerged(path, base));
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.callsign, "K1ABC");
+  CHECK_EQ(d.maxRetries, 7);
+  struct stat st {};
+  CHECK(::stat(path.c_str(), &st) == 0);
+  CHECK_EQ(int(st.st_mode & 0777), 0600);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_merge_disk_edit_survives) {
+  auto path = tmpPath("merge_disk");
+  writeFile(path, "[station]\ncallsign = W1AW\n[ptt]\nlead_ms = 50\n"
+                  "[crypto]\npsk = 0011\n");
+  Config base;
+  CHECK(base.load(path));
+  Config live = base;
+  live.callsign = "K1ABC";  // runtime change to one key...
+  // ...while the operator edits OTHER keys in the file.
+  writeFile(path, "[station]\ncallsign = W1AW\n[ptt]\nlead_ms = 120\n"
+                  "[crypto]\npsk = aabbccdd\n[modem]\nlisten = no\n");
+  CHECK(live.saveMerged(path, base));
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.callsign, "K1ABC");
+  CHECK_EQ(d.pttLeadMs, 120);
+  CHECK_EQ(d.cryptoPsk, "aabbccdd");
+  CHECK(!d.listen);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_merge_both_changed_runtime_wins) {
+  auto path = tmpPath("merge_both");
+  writeFile(path, "[station]\ncallsign = W1AW\n[ptt]\nbaud = 9600\n");
+  Config base;
+  CHECK(base.load(path));
+  Config live = base;
+  live.callsign = "K1ABC";
+  live.pttBaud = 19200;
+  writeFile(path, "[station]\ncallsign = N2XYZ\n[ptt]\nbaud = 19200\n");
+  std::vector<std::string> conflicts;
+  IniEntries disk;
+  CHECK(parseIniFile(path, disk));
+  mergeIniEntries(base, live, disk, &conflicts);
+  // baud moved to the same value on both sides: not a conflict.
+  CHECK_EQ(conflicts.size(), 1u);
+  CHECK_EQ(conflicts.at(0), "station.callsign");
+  CHECK(live.saveMerged(path, base));
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.callsign, "K1ABC");
+  CHECK_EQ(d.pttBaud, 19200);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_merge_missing_or_garbage_file_writes_live) {
+  auto path = tmpPath("merge_missing");
+  std::remove(path.c_str());
+  Config base;
+  base.callsign = "W1AW";
+  base.maxRetries = 3;
+  Config live = base;
+  live.callsign = "K1ABC";
+  CHECK(live.saveMerged(path, base));  // file gone: live written in full
+  Config d;
+  CHECK(d.load(path));
+  CHECK_EQ(d.callsign, "K1ABC");
+  CHECK_EQ(d.maxRetries, 3);
+  struct stat st {};
+  CHECK(::stat(path.c_str(), &st) == 0);
+  CHECK_EQ(int(st.st_mode & 0777), 0600);
+  writeFile(path, "this is not an ini file\n");  // unparseable: same
+  CHECK(live.saveMerged(path, base));
+  Config e;
+  CHECK(e.load(path));
+  CHECK_EQ(e.callsign, "K1ABC");
+  CHECK_EQ(e.maxRetries, 3);
+  std::remove(path.c_str());
+}
+
+TEST_CASE(config_merge_unknown_keys_preserved) {
+  auto path = tmpPath("merge_unknown");
+  writeFile(path, "[modem]\nfuture_knob = 42\nold_knob = 1\n\n[newsection]\nx = y\n");
+  Config base;
+  CHECK(base.load(path));
+  Config live = base;
+  live.family = Family::Narrow;
+  // Operator, while running: edits one unknown key, removes another, and
+  // adds a new section.
+  writeFile(path, "[modem]\nfuture_knob = 43\n\n[newsection]\nx = y\n"
+                  "[other]\nz = 1\n");
+  CHECK(live.saveMerged(path, base));
+  Config d;
+  CHECK(d.load(path));
+  CHECK(d.family == Family::Narrow);
+  CHECK_EQ(d.unknownKeys.at("modem.future_knob"), "43");
+  CHECK_EQ(d.unknownKeys.at("newsection.x"), "y");
+  CHECK_EQ(d.unknownKeys.at("other.z"), "1");
+  CHECK(d.unknownKeys.count("modem.old_knob") == 0);
+  // Unchanged on disk too: unknown keys simply carry through.
+  Config base2 = d;
+  CHECK(d.saveMerged(path, base2));
+  Config e;
+  CHECK(e.load(path));
+  CHECK_EQ(e.unknownKeys.size(), 3u);
+  std::remove(path.c_str());
 }
 
 SKYTEST_MAIN

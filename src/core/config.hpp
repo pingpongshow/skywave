@@ -5,6 +5,8 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "core/constants.hpp"
 
@@ -15,6 +17,9 @@ enum class HarqMode : uint8_t { Auto, Chase, Ir };
 // Upper bound for ptt.lead_ms / ptt.tail_ms (and PTTLEAD / PTTTAIL).
 inline constexpr int kPttPadMaxMs = 5000;
 // Band lives in core/constants.hpp (it selects the numerology profile).
+
+// Ordered "section.key" -> raw value pairs: the INI form of a config.
+using IniEntries = std::vector<std::pair<std::string, std::string>>;
 
 struct Config {
   // [station]
@@ -92,7 +97,20 @@ struct Config {
   // Load from INI file; returns false on I/O failure. Parse problems are
   // logged and the affected key keeps its default.
   bool load(const std::string& path);
+  // Overwrite `path` with this config (atomic, mode 0600: holds the PSK).
   bool save(const std::string& path) const;
+  // Exit-time save that keeps the operator's hand edits: a three-way merge
+  // of `base` (the config as loaded at startup), *this (live) and the file
+  // as it is on disk now. Per key: changed at runtime (live != base) ->
+  // live value; otherwise -> the disk value. Changed on both sides ->
+  // runtime wins and a WARN names the key. A missing or unparseable file
+  // gets the live config, as save(). Same atomic 0600 write as save().
+  bool saveMerged(const std::string& path, const Config& base) const;
+
+  // Apply one "section.key" = value (unknown keys go to unknownKeys).
+  void applyEntry(const std::string& fullKey, const std::string& value);
+  // The full schema plus unknown keys, in save() order, canonical text.
+  IniEntries toEntries() const;
 
   // True when the callsign is usable over the air (CONFIGURATION.md rules).
   bool callsignValid() const;
@@ -112,5 +130,16 @@ void parseAudioDevice(const std::string& v, int& index, std::string& name);
 std::string toString(Band b);
 std::optional<Band> bandFromString(std::string s);
 bool callsignValid(const std::string& call);
+
+// Read an INI file into ordered entries (comments/blank lines skipped,
+// section and key lowercased, values trimmed). False = cannot be opened.
+// `malformed` (optional) reports lines without '='.
+bool parseIniFile(const std::string& path, IniEntries& out,
+                  bool* malformed = nullptr);
+// The three-way merge behind Config::saveMerged; `conflicts` collects keys
+// changed both at runtime and on disk (runtime value kept).
+IniEntries mergeIniEntries(const Config& base, const Config& live,
+                           const IniEntries& disk,
+                           std::vector<std::string>* conflicts = nullptr);
 
 }  // namespace skw

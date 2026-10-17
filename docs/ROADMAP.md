@@ -1349,6 +1349,37 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### Waveform analysis and config save (2026-10-17)
+
+Every frame type the PHY can send (HF: four families x M0-M13 at two
+payload sizes; VHF: M4-M14) was rendered through the real TX chain
+(framer -> 48 kHz upconverter -> worker gain), measured, and looped back
+through the receiver.
+
+- **Correct:** all 118 frames decode bit-exact; occupied bandwidth matches
+  each family plan; centre 1500 Hz (VHF 3600 Hz); chirp sweeps at spec;
+  TX RMS identical across frame types (-13.15 dBFS HF).
+- **Fixed: VHF frames clipped at full scale.** VHF's 11 dB PAPR ceiling
+  (for 256QAM) upconverts to peaks up to 1.21 at the HF level; up to 192
+  of 200 random M4 frames went over full scale and were hard-clipped in
+  the worker. Each band profile now carries its own `txTargetRms` (HF
+  0.22, VHF 0.17, -2.3 dB): worst VHF peak 0.94 over 1,000 frames, HF
+  unchanged (0.93). Test: `tx_peaks_stay_inside_full_scale_per_band`.
+- **Fixed: frame airtime 9.8 ms short.** `computeGeometry` left out the
+  occupied-band filter's flush (118 baseband samples) on every frame, so
+  every timer and capture window derived from it ended early. It now
+  equals the built length exactly (the geometry tests check equality).
+- **Measured, not changed:** spectral skirt -5 to -13 dB at 25 Hz beyond
+  the outermost carrier, ~-27 dB at 200 Hz, below -75 dB past 400 Hz.
+  That is plain OFDM sidelobe roll-off inside the transition band of the
+  band filter; tightening it would need WOLA symbol windowing and a full
+  floor re-measurement.
+- **Config save:** exit no longer overwrites settings edited in the file
+  while the modem ran. It does a three-way merge (file at load / file now
+  / live config): runtime changes win, untouched keys keep the file's
+  current value, and unknown keys and sections survive
+  (`docs/CONFIGURATION.md`).
+
 ### Full bug review (2026-10-16, after v1.2.5)
 
 Eight parallel read-only reviews of both codebases (~56k lines), findings

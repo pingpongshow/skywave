@@ -1023,12 +1023,12 @@ void ModemWorker::pumpTxLocked(double now) {
       }
       std::vector<float> audio;
       up_.process(padded, audio);
-      // TX level: fixed scale to kTxTargetRms, then the operator trim.
+      // TX level: fixed scale to the band's txTargetRms, then the operator trim.
       // Applied HERE only (the device backend used to apply
       // output_gain_db a second time), so --record WAVs carry the level
       // the radio gets. The upconverter's real output of a unit-RMS
       // baseband burst has RMS 1/sqrt(2).
-      const float g = float(kTxTargetRms * std::sqrt(2.0) *
+      const float g = float(activeProfile().txTargetRms * std::sqrt(2.0) *
                             std::pow(10.0, cfg_.outputGainDb / 20.0));
       size_t clipped = 0;
       for (auto& v : audio) {

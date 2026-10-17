@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #include "core/log.hpp"
 
@@ -192,7 +193,12 @@ std::optional<Band> bandFromString(std::string s) {
   return std::nullopt;
 }
 
-bool Config::load(const std::string& path) {
+// The one INI tokeniser: load() and the save-time merge both read files
+// through it, so "section.key" names and value trimming always agree.
+bool parseIniFile(const std::string& path, IniEntries& out,
+                  bool* malformed) {
+  out.clear();
+  if (malformed) *malformed = false;
   std::ifstream in(path);
   if (!in) return false;
 
@@ -208,12 +214,25 @@ bool Config::load(const std::string& path) {
     size_t eq = line.find('=');
     if (eq == std::string::npos) {
       SKW_WARN("config: ignoring malformed line: %s", line.c_str());
+      if (malformed) *malformed = true;
       continue;
     }
     std::string key = lower(trim(line.substr(0, eq)));
     std::string val = trim(line.substr(eq + 1));
-    std::string full = section + "." + key;
+    out.emplace_back(section + "." + key, std::move(val));
+  }
+  return true;
+}
 
+bool Config::load(const std::string& path) {
+  IniEntries entries;
+  if (!parseIniFile(path, entries)) return false;
+  for (const auto& [full, val] : entries) applyEntry(full, val);
+  return true;
+}
+
+void Config::applyEntry(const std::string& full, const std::string& val) {
+  {
     bool known = true;
     bool okv = true;
     if (full == "station.callsign") callsign = val;
@@ -286,95 +305,92 @@ bool Config::load(const std::string& path) {
                full.c_str(), val.c_str());
     }
   }
-  return true;
 }
 
-bool Config::save(const std::string& path) const {
-  std::ostringstream o;
+IniEntries Config::toEntries() const {
+  IniEntries e;
+  auto put = [&](const char* full, std::string v) {
+    e.emplace_back(full, std::move(v));
+  };
+  auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+  auto num = [](auto v) {
+    std::ostringstream o;
+    o << v;
+    return o.str();
+  };
   auto unknown = [&](const std::string& section) {
     std::string prefix = section + ".";
     for (const auto& [k, v] : unknownKeys) {
-      if (k.rfind(prefix, 0) == 0) o << k.substr(prefix.size()) << " = " << v << "\n";
+      if (k.rfind(prefix, 0) == 0) e.emplace_back(k, v);
     }
   };
 
-  o << "[station]\n"
-    << "callsign = " << callsign << "\n"
-    << "cw_id = " << (cwId ? "true" : "false") << "\n"
-    << "cw_wpm = " << cwWpm << "\n";
+  put("station.callsign", callsign);
+  put("station.cw_id", b(cwId));
+  put("station.cw_wpm", num(cwWpm));
   unknown("station");
-  o << "\n[audio]\n"
-    << "input_device = "
-    << (inputDeviceName.empty() ? std::to_string(inputDevice) : inputDeviceName)
-    << "\n"
-    << "output_device = "
-    << (outputDeviceName.empty() ? std::to_string(outputDevice)
-                                 : outputDeviceName)
-    << "\n"
-    << "input_gain_db = " << inputGainDb << "\n"
-    << "output_gain_db = " << outputGainDb << "\n";
+  put("audio.input_device",
+      inputDeviceName.empty() ? std::to_string(inputDevice) : inputDeviceName);
+  put("audio.output_device", outputDeviceName.empty()
+                                 ? std::to_string(outputDevice)
+                                 : outputDeviceName);
+  put("audio.input_gain_db", num(inputGainDb));
+  put("audio.output_gain_db", num(outputGainDb));
   unknown("audio");
-  o << "\n[tcp]\n"
-    << "data_port = " << dataPort << "\n"
-    << "ctrl_port = " << ctrlPort << "\n"
-    << "voice_port = " << voicePort << "\n"
-    << "bind_addr = " << bindAddr << "\n";
+  put("tcp.data_port", num(dataPort));
+  put("tcp.ctrl_port", num(ctrlPort));
+  put("tcp.voice_port", num(voicePort));
+  put("tcp.bind_addr", bindAddr);
   unknown("tcp");
-  o << "\n[ptt]\n"
-    << "method = " << toString(pttMethod) << "\n"
-    << "target = " << pttTarget << "\n"
-    << "baud = " << pttBaud << "\n"
-    << "lead_ms = " << pttLeadMs << "\n"
-    << "tail_ms = " << pttTailMs << "\n";
+  put("ptt.method", toString(pttMethod));
+  put("ptt.target", pttTarget);
+  put("ptt.baud", num(pttBaud));
+  put("ptt.lead_ms", num(pttLeadMs));
+  put("ptt.tail_ms", num(pttTailMs));
   unknown("ptt");
-  o << "\n[modem]\n"
-    << "band = " << toString(band) << "\n"
-    << "family = " << toString(family) << "\n"
-    << "ultra_enable = " << (ultraEnable ? "true" : "false") << "\n"
-    << "family_fallback = " << (familyFallback ? "true" : "false") << "\n"
-    << "css_tier = " << (cssTier ? "true" : "false") << "\n"
-    << "mode = " << modeSelToString(mode) << "\n"
-    << "max_mode = " << modeSelToString(maxMode) << "\n"
-    << "cp_mode = " << cpSelToString(cpMode) << "\n"
-    << "listen = " << (listen ? "true" : "false") << "\n"
-    << "max_retries = " << maxRetries << "\n"
-    << "harq = " << toString(harq) << "\n"
-    << "channel_memory = " << (channelMemory ? "true" : "false") << "\n"
-    << "carrier_masking = " << (carrierMasking ? "true" : "false") << "\n"
-    << "turn_taking = " << (turnTaking ? "true" : "false") << "\n"
-    << "resume = " << (resume ? "true" : "false") << "\n"
-    << "impulse_blanker = " << (impulseBlanker ? "true" : "false") << "\n"
-    << "multi_notch = " << (multiNotch ? "true" : "false") << "\n"
-    << "freq_align = " << (freqAlign ? "true" : "false") << "\n"
-    << "invert_correct = " << (invertCorrect ? "true" : "false") << "\n"
-    << "tx_watchdog_s = " << txWatchdogSec << "\n";
+  put("modem.band", toString(band));
+  put("modem.family", toString(family));
+  put("modem.ultra_enable", b(ultraEnable));
+  put("modem.family_fallback", b(familyFallback));
+  put("modem.css_tier", b(cssTier));
+  put("modem.mode", modeSelToString(mode));
+  put("modem.max_mode", modeSelToString(maxMode));
+  put("modem.cp_mode", cpSelToString(cpMode));
+  put("modem.listen", b(listen));
+  put("modem.max_retries", num(maxRetries));
+  put("modem.harq", toString(harq));
+  put("modem.channel_memory", b(channelMemory));
+  put("modem.carrier_masking", b(carrierMasking));
+  put("modem.turn_taking", b(turnTaking));
+  put("modem.resume", b(resume));
+  put("modem.impulse_blanker", b(impulseBlanker));
+  put("modem.multi_notch", b(multiNotch));
+  put("modem.freq_align", b(freqAlign));
+  put("modem.invert_correct", b(invertCorrect));
+  put("modem.tx_watchdog_s", num(txWatchdogSec));
   unknown("modem");
-  o << "\n[crypto]\n"
-    << "enabled = " << (cryptoEnabled ? "true" : "false") << "\n"
-    << "psk = " << cryptoPsk << "\n";
+  put("crypto.enabled", b(cryptoEnabled));
+  put("crypto.psk", cryptoPsk);
   unknown("crypto");
-  o << "\n[voice]\n"
-    << "codec = " << voiceCodec << "\n"
-    << "broadcast_mode = " << modeSelToString(voiceBroadcastMode) << "\n";
+  put("voice.codec", voiceCodec);
+  put("voice.broadcast_mode", modeSelToString(voiceBroadcastMode));
   unknown("voice");
-  o << "\n[gui]\n"
-    << "enabled = " << (guiEnabled ? "true" : "false") << "\n"
-    << "width = " << guiWidth << "\n"
-    << "height = " << guiHeight << "\n"
-    << "waterfall = " << (guiWaterfall ? "true" : "false") << "\n"
-    << "constellation = " << (guiConstellation ? "true" : "false") << "\n";
+  put("gui.enabled", b(guiEnabled));
+  put("gui.width", num(guiWidth));
+  put("gui.height", num(guiHeight));
+  put("gui.waterfall", b(guiWaterfall));
+  put("gui.constellation", b(guiConstellation));
   unknown("gui");
-  o << "\n[log]\n"
-    << "level = " << logLevel << "\n"
-    << "file = " << logFile << "\n";
+  put("log.level", num(logLevel));
+  put("log.file", logFile);
   unknown("log");
 
-  // Unknown keys living in sections we do not own: group and append them so
-  // nothing a future version (or another tool) wrote is ever dropped.
+  // Unknown keys living in sections we do not own: appended (renderIni
+  // groups them per section) so nothing a future version or another tool
+  // wrote is ever dropped.
   static const char* kKnownSections[] = {"station", "audio", "tcp", "ptt",
                                          "modem", "crypto", "voice", "gui",
                                          "log"};
-  std::string lastForeignSection;
   for (const auto& [k, v] : unknownKeys) {
     size_t dot = k.find('.');
     if (dot == std::string::npos) continue;
@@ -383,23 +399,49 @@ bool Config::save(const std::string& path) const {
     for (const char* s : kKnownSections) {
       if (section == s) { foreign = false; break; }
     }
-    if (!foreign) continue;
-    if (section != lastForeignSection) {
-      o << "\n[" << section << "]\n";
-      lastForeignSection = section;
-    }
-    o << k.substr(dot + 1) << " = " << v << "\n";
+    if (foreign) e.emplace_back(k, v);
   }
+  return e;
+}
 
-  // Atomic and private: write a sibling temp file created 0600 (the file
-  // holds the PSK), flush it to disk, then rename over the target. A
-  // crash mid-write can no longer leave a truncated config, and the PSK
-  // is never world-readable, not even for an instant.
+namespace {
+
+// Entries -> INI text, one [section] block per section in order of first
+// appearance (keys of a section stay together even if appended late).
+std::string renderIni(const IniEntries& entries) {
+  std::vector<std::string> order;
+  std::map<std::string, std::vector<std::pair<std::string, std::string>>> by;
+  for (const auto& [k, v] : entries) {
+    size_t dot = k.find('.');
+    if (dot == std::string::npos) continue;
+    std::string section = k.substr(0, dot);
+    auto it = by.find(section);
+    if (it == by.end()) {
+      order.push_back(section);
+      it = by.emplace(section, decltype(by)::mapped_type{}).first;
+    }
+    it->second.emplace_back(k.substr(dot + 1), v);
+  }
+  std::ostringstream o;
+  bool first = true;
+  for (const auto& section : order) {
+    if (!first) o << "\n";
+    first = false;
+    o << "[" << section << "]\n";
+    for (const auto& [k, v] : by[section]) o << k << " = " << v << "\n";
+  }
+  return o.str();
+}
+
+// Atomic and private: write a sibling temp file created 0600 (the file
+// holds the PSK), flush it to disk, then rename over the target. A crash
+// mid-write can no longer leave a truncated config, and the PSK is never
+// world-readable, not even for an instant.
+bool writePrivateAtomic(const std::string& path, const std::string& data) {
   const std::string tmp = path + ".tmp." + std::to_string(::getpid());
   const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
   if (fd < 0) return false;
   ::fchmod(fd, 0600);  // O_CREAT mode is masked by umask; be explicit
-  const std::string data = o.str();
   size_t off = 0;
   while (off < data.size()) {
     const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
@@ -414,6 +456,94 @@ bool Config::save(const std::string& path) const {
     return false;
   }
   return true;
+}
+
+std::map<std::string, std::string> toMap(const IniEntries& e) {
+  std::map<std::string, std::string> m;
+  for (const auto& [k, v] : e) m[k] = v;  // last occurrence wins, as load()
+  return m;
+}
+
+}  // namespace
+
+bool Config::save(const std::string& path) const {
+  return writePrivateAtomic(path, renderIni(toEntries()));
+}
+
+IniEntries mergeIniEntries(const Config& base, const Config& live,
+                           const IniEntries& disk,
+                           std::vector<std::string>* conflicts) {
+  const auto B = toMap(base.toEntries());
+  const auto D = toMap(disk);
+  // Disk values normalised through the same parser (so "yes" == "true"),
+  // used only to decide whether the operator really changed a known key.
+  Config diskCfg;
+  for (const auto& [k, v] : disk) diskCfg.applyEntry(k, v);
+  const auto Dn = toMap(diskCfg.toEntries());
+  const auto schema = toMap(Config{}.toEntries());  // known keys only
+
+  IniEntries out;
+  const IniEntries L = live.toEntries();
+  std::map<std::string, bool> inLive;
+  for (const auto& [k, lv] : L) {
+    inLive[k] = true;
+    const bool known = schema.count(k) != 0;
+    auto bi = B.find(k);
+    const bool runtimeChanged = bi == B.end() || bi->second != lv;
+    auto di = D.find(k);
+    if (runtimeChanged) {
+      // Runtime wins. Flag a conflict when the disk also moved away from
+      // the base, to a different value than the runtime one.
+      bool diskChanged = false;
+      std::string dv;
+      if (di != D.end()) {
+        dv = known ? Dn.at(k) : di->second;
+        diskChanged = bi == B.end() || dv != bi->second;
+      } else {
+        diskChanged = !known && bi != B.end();  // unknown key deleted
+      }
+      if (diskChanged && dv != lv && conflicts) conflicts->push_back(k);
+      out.emplace_back(k, lv);
+    } else if (di != D.end()) {
+      out.emplace_back(k, di->second);  // operator's text, verbatim
+    } else if (known) {
+      out.emplace_back(k, lv);  // keep the file a complete schema
+    }
+    // else: an unknown key the operator deleted while running stays gone.
+  }
+  // Keys only on disk: the operator added them while the modem ran (keep),
+  // unless the base had them and the runtime dropped them.
+  for (const auto& [k, dv] : disk) {
+    if (inLive.count(k) || B.count(k)) continue;
+    bool dup = false;
+    for (const auto& [ok, ov] : out) {
+      if (ok == k) { dup = true; break; }
+    }
+    if (dup) continue;
+    out.emplace_back(k, D.at(k));
+  }
+  return out;
+}
+
+bool Config::saveMerged(const std::string& path, const Config& base) const {
+  IniEntries disk;
+  bool malformed = false;
+  const bool readable = parseIniFile(path, disk, &malformed);
+  if (!readable || (disk.empty() && malformed)) {
+    // Gone or unparseable: nothing to merge with, write the live config.
+    if (readable) {
+      SKW_WARN("config: %s is not a parseable INI; overwriting with the "
+               "running configuration", path.c_str());
+    }
+    return save(path);
+  }
+  std::vector<std::string> conflicts;
+  IniEntries merged = mergeIniEntries(base, *this, disk, &conflicts);
+  for (const auto& k : conflicts) {
+    SKW_WARN("config: '%s' was changed both at runtime and in %s; the "
+             "runtime value wins", k.c_str(), path.c_str());
+  }
+  return writePrivateAtomic(path, renderIni(merged));
 }
 
 }  // namespace skw

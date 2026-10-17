@@ -92,8 +92,8 @@ TEST_CASE(css_frame_clean_roundtrip_all_families) {
 }
 
 TEST_CASE(css_frame_geometry_matches_build) {
-  // computeGeometry's totalSamples must match the modulated length
-  // (pre-filter): timers and capture windows derive from it.
+  // computeGeometry's totalSamples must match the built length, band-filter
+  // tail included: timers and capture windows derive from it.
   for (Family f : {Family::Wide, Family::Narrow}) {
     for (int mode : {0, 2}) {
       auto payload = noiseBytes(52, 5);
@@ -104,10 +104,7 @@ TEST_CASE(css_frame_geometry_matches_build) {
       tp.payload = payload;
       auto g = computeGeometry(tp);
       auto bb = buildFrameBaseband(tp);
-      // The band filter adds its (bounded) tail; geometry counts the
-      // modulated content.
-      CHECK(bb.size() >= size_t(g.totalSamples));
-      CHECK(bb.size() <= size_t(g.totalSamples) + 400);
+      CHECK_EQ(bb.size(), size_t(g.totalSamples));
     }
   }
 }
