@@ -417,19 +417,26 @@ struct BandProfile {
   // (for 256QAM) put up to 1 frame in 5 over full scale there (worst peak
   // 1.21), hard-clipped by the worker, so VHF runs ~2.3 dB lower.
   double txTargetRms;
+  // Chirp detector correlation grid (baseband samples). The correlation
+  // peak is ~1/B wide: HF's ~2.4 kHz sweeps tolerate a 4-sample grid
+  // (worst-case -2.4 dB), but VHF's ~6.6 kHz sweep put the peak between
+  // grid points at some sample phases and frames were missed outright
+  // (FM radio sweep 2026-10-17). VHF's reps are 4x shorter, so a 1-sample
+  // grid costs the same as HF's.
+  int chirpGridStep;
 };
 inline constexpr BandProfile kHfProfile = {
     "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
     &kModerateFloors, &kPoorFloors,
     true,     true,          0.160,           CpMode::Medium,
     &kHfCpSamplesAudio,      3,               6,             8.0,  2,
-    16,       5,             0.22};
+    16,       5,             0.22,        4};
 inline constexpr BandProfile kVhfFmProfile = {
     "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
     &kVhfFloors, &kVhfFloors,
     false,    false,         0.040,           CpMode::Short,
     &kVhfCpSamplesAudio,     2,               4,             11.0, 1,
-    2,        2,             0.17};
+    2,        2,             0.17,        1};
 
 inline const BandProfile*& activeProfileSlot() {
   static const BandProfile* p = &kHfProfile;

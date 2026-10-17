@@ -163,6 +163,9 @@ int main(int argc, char** argv) {
   // Rings sized for ~1 s of audio: deep enough for scheduling hiccups.
   // RX ring: 8 s (as the ST2 world uses). At 1 s, one long-window decode
   // under load overran it and the audio callback dropped samples silently.
+  // Band profile before anything band-dependent is built (the worker
+  // re-selects it too, and rebuilds its own converters).
+  skw::setActiveBand(cfg.band);
   skw::SampleRing rxRing(skw::kFsAudio * 8);
   skw::SampleRing txRing(skw::kFsAudio);
 

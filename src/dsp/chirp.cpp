@@ -12,7 +12,7 @@ namespace skw {
 namespace {
 
 // Rep period on the detector grid (profile-dependent rep duration).
-int repGrid() { return chirpRepSamples() / ChirpDetector::kGridStep; }
+int repGrid() { return chirpRepSamples() / ChirpDetector::gridStep(); }
 
 constexpr int kEdgeMs = 2;
 constexpr int kSlot0TolGrid = 3;      // start-position window
@@ -170,7 +170,7 @@ ChirpDetector::ChirpDetector(Family family)
   const double bw = p.chirpEndHz - p.chirpStartHz;
   crossTolGrid_ = int(2.0 * kCfoCaptureMaxHz *
                         activeProfile().chirpRepSec / bw *
-                      kFsBaseband / kGridStep) + 6;
+                      kFsBaseband / gridStep()) + 6;
   // 4-rep suppression spans +-2 reps: +-1/2-rep partial alignments (which
   // can pass slot-validity at the floor with one lucky noise slot) are
   // vetoed by direct comparison against the true start's higher score;
@@ -230,7 +230,7 @@ void ChirpDetector::process(std::span<const cfloat> in,
   const int n = chirpRepSamples();
   while (true) {
     int64_t nextGrid = gridStartIdx_ + int64_t(grid_.size());
-    if (nextGrid * kGridStep + n > bufStart_ + int64_t(buf_.size())) break;
+    if (nextGrid * gridStep() + n > bufStart_ + int64_t(buf_.size())) break;
     evaluateGridPoint(nextGrid);
   }
   finalizeFast(out);
@@ -267,7 +267,7 @@ void ChirpDetector::process(std::span<const cfloat> in,
 
 void ChirpDetector::evaluateGridPoint(int64_t g) {
   const int n = chirpRepSamples();
-  const cfloat* x = buf_.data() + (g * kGridStep - bufStart_);
+  const cfloat* x = buf_.data() + (g * gridStep() - bufStart_);
 
   cfloat cu(0, 0), cd(0, 0);
   float energy = 0;
@@ -673,7 +673,7 @@ ChirpDetection ChirpDetector::makeDetection(ChirpSig sig, bool inverted,
   // peak arrives EARLY by d = cfo*T/B*fs samples, a down-rep's LATE.
   double cfoCoarse = 0.0;
   if (nUp > 0 && nDown > 0) {
-    double d = (meanUp / nUp - meanDown / nDown) / 2.0 * kGridStep;
+    double d = (meanUp / nUp - meanDown / nDown) / 2.0 * gridStep();
     cfoCoarse = -d / kFsBaseband * bw / activeProfile().chirpRepSec;
   }
 
@@ -710,7 +710,7 @@ ChirpDetection ChirpDetector::makeDetection(ChirpSig sig, bool inverted,
   det.family = family_;
   det.sig = sig;
   det.inverted = inverted;
-  det.startSample = meanAll * kGridStep - filterDelay_;
+  det.startSample = meanAll * gridStep() - filterDelay_;
   det.cfoHz = cfoFine;
   det.quality = ps.score / float(ps.slots.size());
   return det;

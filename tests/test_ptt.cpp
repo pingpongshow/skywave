@@ -18,6 +18,9 @@
 
 #include "core/clock.hpp"
 #include "core/config.hpp"
+#include "core/constants.hpp"
+#include "dsp/updown.hpp"
+#include "phy/receiver.hpp"
 #include "io/ptt.hpp"
 #include "io/ring.hpp"
 #include "skytest.hpp"
@@ -389,6 +392,43 @@ TEST_CASE(failed_unkey_is_retried_and_watched) {
   CHECK_EQ(worker.control("PTTMETHOD VOX"), std::string("PTTMETHOD VOX"));
   worker.runOnce();
   CHECK(!worker.telemetry().ptt);  // new driver in place at once
+}
+
+// A vhf-fm modem built while another band is active (every process starts
+// on HF; the ST2 world builds two workers) must still transmit a VHF
+// signal its peers can decode. The converters used to keep the centre and
+// passband of the band active at construction - HF's 1500 Hz, +-1.4 kHz -
+// so a vhf-fm modem's bursts were garbage (ST2 VHF world, 2026-10-17).
+TEST_CASE(vhf_worker_transmits_decodable_vhf) {
+  setActiveBand(Band::Hf);
+  Config cfg;
+  cfg.callsign = "W1AW";
+  cfg.listen = false;
+  cfg.pttMethod = PttMethod::Vox;
+  cfg.cwId = false;
+  cfg.band = Band::VhfFm;
+  FakeClock clock{1'000'000};
+  SampleRing rxRing(kFsAudio), txRing(kFsAudio);
+  ModemWorker worker(cfg, clock, rxRing, txRing);
+  CHECK_EQ(worker.control("TXTEST 2"), std::string("TXTEST 2"));
+  std::vector<float> sink(size_t(kFsAudio / 100)), all;
+  for (int i = 0; i < 300; ++i) {
+    worker.runOnce();
+    const size_t n = txRing.read(sink);
+    all.insert(all.end(), sink.begin(), sink.begin() + long(n));
+    clock.advanceSec(0.01);
+  }
+  all.insert(all.end(), size_t(kFsAudio / 2), 0.0f);
+  // The ring starts with the burst; receiveFrame needs lead-in to acquire.
+  all.insert(all.begin(), size_t(kFsAudio / 5), 0.0f);
+  CHECK_NEAR(centerHz(), 3600.0, 1e-9);  // the worker selected VHF
+  Downconverter dn;
+  std::vector<cfloat> bb;
+  dn.process(all, bb);
+  auto res = receiveFrame(Family::Wide, bb);
+  CHECK(res.has_value());
+  CHECK(res && res->payloadOk);
+  setActiveBand(Band::Hf);
 }
 
 SKYTEST_MAIN

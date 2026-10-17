@@ -105,7 +105,7 @@ depends on it.)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `band` | `hf` | band profile: `hf` or `vhf-fm`. VHF-FM ships (176-carrier family through a 9 kHz FM channel, modes to M14 256QAM r5/6, measured 25.5 kbps net) and has its own conformance gate; it is a different radio, not a mode of the HF one. See [WAVEFORM.md](WAVEFORM.md). |
+| `band` | `hf` | band profile: `hf` or `vhf-fm`. VHF-FM ships (176-carrier family through a 9 kHz FM channel, modes to M14 256QAM r5/6, measured 25.5 kbps net) and has its own conformance gate; it is a different radio, not a mode of the HF one. Set the rig's data-port level so bursts peak at its maximum deviation; M14 needs a port flat below 300 Hz. See [WAVEFORM.md](WAVEFORM.md). |
 | `family` | `wide` | `wide` / `mid` / `narrow` / `ultra` (`ultra` needs `ultra_enable`) |
 | `ultra_enable` | `false` | permit the opt-in 2.7 kHz ULTRA family (radio must pass ~100–2900 Hz) |
 | `family_fallback` | `true` | unanswered ULTRA calls retry at WIDE |

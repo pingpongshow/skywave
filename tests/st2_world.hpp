@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "core/clock.hpp"
+#include "sim/fmradio.hpp"
 #include "sim/radiochain.hpp"
 #include "tcp/server.hpp"
 #include "worker.hpp"
@@ -92,6 +93,11 @@ inline int connectLoopback(uint16_t port) {
 // being sized to that artifact.
 struct Shuttle {
   RadioChainParams chain;
+  // VHF world (SKW_ST2_BAND=vhf): bursts go through the FM radio
+  // emulator instead; the SSB chain's 300-2700 Hz rig passband cannot
+  // carry the VHF profile.
+  bool fm = false;
+  FmRadioParams fmp;
   uint64_t seedCtr = 1;
   bool drop = false;         // fault injection: audio dropout
   uint64_t consumed = 0;     // ring samples drained (aired) so far
@@ -130,7 +136,12 @@ struct Shuttle {
     }
     if (signal) {
       chain.channel.seed = chain.seed + (seedCtr++) * 7919;
-      auto y = radioChain(chain, x);
+      fmp.seed = chain.channel.seed;
+      // SKW_ST2_FM_BYPASS=1: VHF audio passes untouched (isolates the
+      // modem from the radio model when debugging).
+      static const bool fmBypass = std::getenv("SKW_ST2_FM_BYPASS") != nullptr;
+      auto y = !fm ? radioChain(chain, x)
+                   : fmBypass ? std::vector<float>(x.begin(), x.end()) : fmRadio(fmp, x);
       staged.insert(staged.end(), y.begin(), y.end());
       caps.push_back({n, y.size()});
     } else {
@@ -163,6 +174,11 @@ struct Shuttle {
     }
   }
 };
+
+inline bool st2Vhf() {
+  const char* b = std::getenv("SKW_ST2_BAND");
+  return b && std::string(b) == "vhf";
+}
 
 struct Node {
   SampleRing rxRing{size_t(kFsAudio) * 8};
@@ -204,6 +220,9 @@ struct Node {
         cfg.ultraEnable = true;  // required for ULTRA, as in main.cpp
       }
     }
+    // SKW_ST2_BAND=vhf runs both modems on the VHF-FM profile through
+    // the FM radio emulator (World sets the shuttles).
+    if (st2Vhf()) cfg.band = Band::VhfFm;
     cfg.pttLeadMs = 20;
     cfg.pttTailMs = 10;
     w.emplace(cfg, clk, rxRing, txRing);
@@ -404,6 +423,13 @@ struct World {
     }
     ab.chain.seed = seed;
     ba.chain.seed = seed + 5000;
+    if (st2Vhf()) {
+      for (Shuttle* s : {&ab, &ba}) {
+        s->fm = true;
+        s->fmp = fmDataPort();
+        s->fmp.cnrDb = snrDb;  // the VHF world's SNR axis is CNR
+      }
+    }
   }
 
   void moveAudio(Node& from, Node& to, Shuttle& sh, bool toDeaf = false) {

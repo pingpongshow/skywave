@@ -1,11 +1,17 @@
 // VHF-FM band profile (ROADMAP Phase 7): profile activation, connect /
-// AMC ramp / transfer / file scenarios under band=vhf-fm, and the M7
-// gate - >= 25 kbps net sustained over the flat-channel sim.
+// AMC ramp / transfer / file scenarios under band=vhf-fm, the M7
+// gate - >= 25 kbps net sustained over the flat-channel sim - and the
+// same link through the FM radio emulator (sim/fmradio.hpp).
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
+#include "dsp/updown.hpp"
 #include "link/engine.hpp"
+#include "phy/framer.hpp"
+#include "phy/receiver.hpp"
 #include "sim/chansim.hpp"
+#include "sim/fmradio.hpp"
 #include "skytest.hpp"
 
 using namespace skw;
@@ -34,6 +40,11 @@ struct VhfBand {
 struct Pair {
   LinkEngine a, b;
   ChansimParams chan;
+  // FM mode: each burst is upconverted at the worker's TX level, run
+  // through the FM radio emulator, and downconverted, instead of the
+  // baseband chansim.
+  bool fm = false;
+  FmRadioParams fmp;
   double now = 0.0;
   uint64_t seedCtr = 1;
 
@@ -64,6 +75,20 @@ struct Pair {
       x.insert(x.end(), 1200, cfloat(0, 0));
       ChansimParams cp = chan;
       cp.seed = chan.seed + (seedCtr++) * 7919;
+      if (fm) {
+        Upconverter up;
+        std::vector<float> audio;
+        up.process(x, audio);
+        const float g = float(activeProfile().txTargetRms * std::sqrt(2.0));
+        for (auto& v : audio) v *= g;
+        FmRadioParams rp = fmp;
+        rp.seed = cp.seed;
+        Downconverter dn;
+        std::vector<cfloat> y;
+        dn.process(fmRadio(rp, audio), y);
+        rx.rxBurst(y, now);
+        return;
+      }
       auto y = Chansim::run(cp, x);
       rx.rxBurst(y, now);
     };
@@ -195,6 +220,69 @@ TEST_CASE(vhf_file_transfer) {
     CHECK(rf->data == data);
     CHECK(rf->crcOk);
   }
+}
+
+// FM radio sweep 2026-10-17: the chirp detector's 4-sample correlation
+// grid was coarser than VHF's ~1.8-sample correlation peak, so a frame
+// whose start fell between grid points was never detected (3-5 of 8
+// audio-sample phases failed in every mode). Every sample phase must
+// decode, at baseband and through the 48 kHz converters.
+TEST_CASE(vhf_detects_at_every_sample_phase) {
+  VhfBand band;
+  for (int mode : {4, 8, 13, 14}) {
+    std::vector<uint8_t> payload(mode <= 7 ? 60 : 300);
+    for (size_t i = 0; i < payload.size(); ++i) payload[i] = uint8_t(i * 7 + mode);
+    TxFrameParams tp;
+    tp.family = Family::Wide;
+    tp.mode = mode;
+    tp.sig = mode <= 7 ? ChirpSig::Robust : ChirpSig::Fast;
+    tp.cpMode = activeProfile().cpDefault;
+    tp.payload = payload;
+    auto bb = buildFrameBaseband(tp);
+    std::vector<cfloat> padded(2000, cfloat(0, 0));
+    padded.insert(padded.end(), bb.begin(), bb.end());
+    padded.insert(padded.end(), 2500, cfloat(0, 0));
+    Upconverter up;
+    std::vector<float> audio;
+    up.process(padded, audio);
+    int ok = 0;
+    for (int k = 0; k < 8; ++k) {  // audio samples = quarter baseband samples
+      std::vector<float> d(size_t(k), 0.0f);
+      d.insert(d.end(), audio.begin(), audio.end());
+      Downconverter dn;
+      std::vector<cfloat> r;
+      dn.process(d, r);
+      auto res = receiveFrame(Family::Wide, r);
+      if (res && res->payloadOk && res->payload == payload) ++ok;
+    }
+    std::printf("  vhf M%d: %d/8 sample phases decode\n", mode, ok);
+    CHECK_EQ(ok, 8);
+  }
+}
+
+// The whole link through the FM radio: modulator, 15 Hz mobile flutter,
+// AWGN in the IF, limiter-discriminator (threshold clicks), data-port
+// filters. Connect, AMC, and a byte-exact bulk transfer.
+TEST_CASE(vhf_link_through_fm_radio_with_flutter) {
+  VhfBand band;
+  Pair p(99.0, 61);
+  p.fm = true;
+  p.fmp = fmDataPort();
+  p.fmp.cnrDb = 30.0;
+  p.fmp.flutterHz = 15.0;
+  CHECK(p.connect());
+  if (p.a.state() != FsmState::Connected) return;
+  auto blob = noiseBlob(20000, 62);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 3000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  std::printf("  fm link: %zu/%zu bytes, mode M%d, t=%.0f s\n", got.size(),
+              blob.size(), p.a.sessionMode(), p.now);
+  CHECK(got == blob);
 }
 
 SKYTEST_MAIN

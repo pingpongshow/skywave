@@ -18,6 +18,10 @@
 //              directions mid-transfer: ARQ retry budgets, keepalives,
 //              reconnect, and stream continuity.
 // Env: SKW_SOAK_SIMSEC (default 900), SKW_SOAK_SEED, SKW_SOAK_SNR.
+// SKW_ST2_BAND=vhf runs the VHF-FM profile through the FM radio emulator:
+// the SNR axis becomes CNR (churn 45 -> 0 -> 45 dB, usable from
+// kVhfUsableCnr) and the presets become flutter rates.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,7 +69,21 @@ int fail(const char* what, double simSec) {
   return 1;
 }
 
+// VHF world (SKW_ST2_BAND=vhf): the SNR axis is the FM receiver's CNR and
+// the presets are flat-fade flutter rates: static, walking (0.7 Hz),
+// mobile at 2 m (15 Hz), mobile at 70 cm (50 Hz).
+constexpr double kVhfFlutterHz[4] = {0.0, 0.7, 15.0, 50.0};
+constexpr double kVhfUsableCnr = 22.0;  // M4 under 15 Hz flutter: 20 dB (fmsweep)
+constexpr double kVhfFloorCnr = 22.0;   // just above that, on mobile flutter
+
 void applyPreset(World& w, int preset, double snrDb) {
+  if (st2Vhf()) {
+    for (Shuttle* sh : {&w.ab, &w.ba}) {
+      sh->fmp.cnrDb = snrDb;
+      sh->fmp.flutterHz = kVhfFlutterHz[std::clamp(preset, 0, 3)];
+    }
+    return;
+  }
   for (Shuttle* sh : {&w.ab, &w.ba}) {
     ChansimParams& c = sh->chain.channel;
     const uint64_t seed = sh->chain.seed;
@@ -90,6 +108,7 @@ void applyPreset(World& w, int preset, double snrDb) {
 }
 
 const char* presetName(int p) {
+  if (st2Vhf()) return p == 0 ? "static" : p == 1 ? "walk" : p == 3 ? "uhf" : "mobile";
   return p == 0 ? "static" : p == 1 ? "good" : p == 3 ? "poor" : "moderate";
 }
 
@@ -107,8 +126,11 @@ int main() {
   // point, so this lands just above the WIDE robust-tier floor. The
   // scenario's purpose is sustained marginal-SNR retransmission grind;
   // bertool owns exact floor calibration at clean baseband.
+  const bool vhf = st2Vhf();
   const double floorSnr =
-      (e = std::getenv("SKW_SOAK_SNR")) ? std::atof(e) : 9.0;
+      (e = std::getenv("SKW_SOAK_SNR")) ? std::atof(e) : (vhf ? kVhfFloorCnr : 9.0);
+  const double snrTop = vhf ? 45.0 : 30.0, snrBottom = vhf ? 0.0 : -14.0;
+  const double usableSnr = vhf ? kVhfUsableCnr : 5.0;
 
   Rng rng(seed * 40503 + 7);
   // The channel SCHEDULE gets its own generator. It used to share `rng`
@@ -123,7 +145,7 @@ int main() {
   // shares the chunk-size RNG) so a run can reproduce the historical
   // ROADMAP baseline schedule exactly for comparison. Default off.
   const bool coupledSched = std::getenv("SKW_SOAK_COUPLED") != nullptr;
-  double snr = scen == "churn" ? 30.0 : scen == "floor" ? floorSnr : 20.0;
+  double snr = scen == "churn" ? snrTop : scen == "floor" ? floorSnr : (vhf ? 35.0 : 20.0);
   int preset = scen == "floor" ? 2 : scen == "blackout" ? 1 : 0;
   // SKW_SOAK_PRESET overrides the floor scenario's channel: 0 static,
   // 1 CCIR Good, 2 Moderate (default), 3 Poor - the SEVERE-class soak.
@@ -142,7 +164,7 @@ int main() {
   // bulk is a documented open limitation and pumping both directions
   // made this scenario measure that instead of what it names.
   const bool oneWay = floorScen || scen == "blackout";
-  applyPreset(w, floorScen ? 0 : preset, floorScen ? 15.0 : snr);
+  applyPreset(w, floorScen ? 0 : preset, floorScen ? (vhf ? 35.0 : 15.0) : snr);
   Gen gA(seed * 7 + 1), gB(seed * 7 + 2);
 
   // Floor-SNR handshakes legitimately need several CALL/START retry
@@ -155,7 +177,13 @@ int main() {
     }
     connected = w.waitState(w.a, "CONNECTED", 12000);
   }
-  if (!connected) return fail("initial connect", 0);
+  if (!connected) {
+    if (std::getenv("SKW_SOAK_EVENTS")) {
+      std::printf("--- A control:\n%s\n--- B control:\n%s\n", w.a.ctrlAcc.c_str(),
+                  w.b.ctrlAcc.c_str());
+    }
+    return fail("initial connect", 0);
+  }
   if (floorScen) applyPreset(w, preset, snr);
 
   const double t0 = double(w.clk.nowUs()) * 1e-6;
@@ -275,12 +303,12 @@ int main() {
         } else {
           snr += snrDir * (2.0 + double(sr.u32(3)));
         }
-        if (snr <= -14.0) {
-          snr = -14.0;
+        if (snr <= snrBottom) {
+          snr = snrBottom;
           snrDir = 1;
         }
-        if (snr >= 30.0) {
-          snr = 30.0;
+        if (snr >= snrTop) {
+          snr = snrTop;
           snrDir = -1;
         }
         if (sr.u32(3) == 0) preset = int(sr.u32(3));
@@ -320,7 +348,7 @@ int main() {
         lastDeliveredSum = sum;
         lastProgressAt = now;
       }
-      const bool usable = snr >= 5.0 && !boActive;
+      const bool usable = snr >= usableSnr && !boActive;
       if (usable && usableSince < 0.0) usableSince = now;
       if (!usable) usableSince = -1.0;
       // Stall: a usable channel and zero delivered bytes. Deep-tier

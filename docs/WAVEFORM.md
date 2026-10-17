@@ -622,7 +622,11 @@ Profile contents:
 - **sync**: same chirp + ZC machinery with **40 ms chirp reps** (4× less
   preamble overhead; the SNR-rich path needs no deep integration),
   ZC block 2/4 symbols, fast-header spread ×1 (fast tier floors ≥
-  +6.5 dB)
+  +6.5 dB). The chirp detector correlates on a **1-sample grid** (HF:
+  4): the ~6.6 kHz sweep's correlation peak is ~1.8 samples wide, and on
+  a 4-sample grid frames starting between grid points were missed
+  outright (3-5 of 8 sample phases, every mode; FM radio sweep
+  2026-10-17). VHF reps are 4× shorter, so the cost equals HF's.
 - **TX**: PAPR ceiling 11 dB (256QAM EVM budget; 8 dB clip noise tipped
   whole frames content-dependently — including every identical
   retransmission), sent 2.3 dB lower than HF (0.17 RMS) so those peaks
@@ -633,6 +637,22 @@ Profile contents:
   over the flat-channel sim at pinned `M14` — 25.5 kbps including
   preamble/sync/header, MAC container packing, batched ACKs,
   turnarounds, ARQ (`test_vhf`)
+- **through an FM radio** (`sim/fmradio`, `tools/fmsweep`, results in
+  `docs/conformance/vhf_fm_2026-10-17/`): floors in carrier-to-noise
+  ratio on a 25 kHz channel run from 8 dB (M4) to 36 dB (M13); the FM
+  threshold (~10 dB CNR) sits under the robust tier. Mobile flutter
+  costs 10-12 dB, a 12.5 kHz channel 2-4 dB. **M14 needs a data port
+  flat below 300 Hz**: the plan's lowest carrier sits at 300 Hz, and on a
+  port that rolls off there the receiver's SNR saturates at ~32 dB with
+  no noise at all, under M14's 33 dB floor (the AMC then stays at M13;
+  the M7 gate above assumes the flat channel). A DC-coupled 9600 port
+  carries M14 from 40 dB CNR.
+- **operator level**: deviation is worth more than anything else the
+  operator controls — -10 dB of drive costs 8-10 dB of CNR, +6 dB into
+  the rig's limiter gains 4-6 dB. Set the data-port level so bursts peak
+  at the rig's maximum deviation (~3 kHz on 25 kHz channels); with an
+  11 dB crest factor the RMS deviation is then only ~0.5 kHz. A rig left
+  on its voice/1200 path (emphasis, 300-3000 Hz) carries M4-M7 only.
 
 ## Conformance Targets
 

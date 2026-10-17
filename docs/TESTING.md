@@ -208,6 +208,31 @@ randomized impairments and per-cycle throughput reporting. CI runs the
 short soak; `SKW_SOAK=N` runs the long-haul stress (run under
 sanitizers for leak/corruption checks).
 
+#### ST1-VHF - FM radio emulator
+
+The SSB chain cannot carry the VHF-FM profile (its 300-2700 Hz rig
+passband removes most of the 300-6900 Hz signal). `sim/fmradio` models
+the PC -> soundcard -> FM rig data port -> RF -> receiver -> data port
+path at 48 kHz:
+
+| Stage | Effects |
+|---|---|
+| TX rig | carrier keyed before the audio (PTT lead) and held after it, key-up loss, drive level, optional pre-emphasis, deviation limiter, data-port audio filter, frequency modulator |
+| Path | flat Rayleigh/Rician flutter (sum of sinusoids), RF frequency offset, complex AWGN at a CNR referenced to the IF bandwidth |
+| RX rig | IF channel filter, limiter-discriminator (the FM threshold and its clicks emerge from it), squelch closing on carrier drop, optional de-emphasis, data-port audio filter, soundcard clock |
+
+Presets: `fmDataPort()` (25 kHz channel, 300-7000 Hz port - the profile's
+assumption), `fmDataPortNarrow()` (12.5 kHz), `fmVoicePort()` (rig on its
+voice/1200 path). `test_fmradio` pins the model to FM theory: clean path
+transparent, output SNR = CNR - 11.9 dB for its test tone above
+threshold, impulsive (clicks) below it.
+
+`tools/fmsweep --preset NAME` sweeps every VHF mode's FER against CNR
+(flat, lowedge, narrow, offset, hot, quiet, walk, mobile, uhf, voice);
+results and findings in `docs/conformance/vhf_fm_2026-10-17/`.
+`test_vhf` runs a full link through the radio (15 Hz flutter, 30 dB
+CNR) and decodes frames at every audio sample phase.
+
 #### Phase 8 measurement suites
 
 `tools/gap_sweeps.sh BERTOOL OUTDIR [awgn ladder cfo drift]` runs the
@@ -238,6 +263,14 @@ overrun) only show at ST3.
 Cycle rate: `cycle_st2` replays the ST3 soak loop (512 B A->B, wait,
 repeat) in simulated time - deterministic, so builds can be compared
 without the ±10-20% run-to-run swing of real-device soaks.
+
+VHF world: `SKW_ST2_BAND=vhf` runs both modems on the VHF-FM profile
+through the FM radio emulator; `soak_st2`'s SNR axis becomes CNR (churn
+45 -> 0 -> 45 dB) and its presets become flutter rates (static, 0.7, 15,
+50 Hz). It is the only test of the VHF profile through the whole worker
+(streaming detector, captures, CCA, TX level, timers): its first run
+found that a vhf-fm worker kept HF's converters. `SKW_ST2_FM_BYPASS=1`
+passes the audio untouched, to separate the modem from the radio model.
 
 Frequency scenarios: `cfo_st2` runs one-way bulk while B's LO is offset
 (`CFO0`), stepped (`STEP` at `STEP_AT`) or drifting (`DRIFT` Hz/s), and

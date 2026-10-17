@@ -831,7 +831,7 @@ int cmdScore(const ScoreArgs& a) {
     }
     slope = sxx > 1.0 ? sxy / sxx : 1.0;
     // Standard error of the slope: detection timing is quantized to
-    // ChirpDetector::kGridStep and jitters with noise, and segments are
+    // ChirpDetector::gridStep() and jitters with noise, and segments are
     // short, so a single run pins the clock only to tens of ppm.
     double rss = 0.0;
     for (size_t k = 0; k < txT.size(); ++k) {

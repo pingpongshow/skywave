@@ -94,6 +94,7 @@ add_library(skywave_core STATIC
   src/phy/receiver.cpp
   src/sim/chansim.cpp
   src/sim/radiochain.cpp
+  src/sim/fmradio.cpp
   src/link/frame.cpp
   src/link/fsm.cpp
   src/link/handshake.cpp
@@ -171,6 +172,8 @@ if(BUILD_TOOLS)
   target_link_libraries(bertool PRIVATE skywave_core)
   add_executable(fuzztool tools/fuzztool.cpp)
   target_link_libraries(fuzztool PRIVATE skywave_core)
+  add_executable(fmsweep tools/fmsweep.cpp)
+  target_link_libraries(fmsweep PRIVATE skywave_core)
   # On-air test tooling (docs/ONAIR_TEST_PLAN.md): kept out of the modem.
   add_executable(onair_sounder tools/onair/sounder.cpp)
   target_link_libraries(onair_sounder PRIVATE skywave_core)
@@ -196,6 +199,7 @@ if(BUILD_TESTS)
   skw_test(test_css_phy)
   skw_test(test_css_link)
   skw_test(test_vhf)
+  skw_test(test_fmradio)
   skw_test(test_crc_whiten)
   skw_test(test_ldpc)
   skw_test(test_chirp)

@@ -1349,6 +1349,43 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### VHF-FM through an FM radio (2026-10-17)
+
+Until now every VHF test ran on a flat audio-noise channel, and none ran
+the VHF profile through the worker. Added: an FM radio emulator
+(`sim/fmradio`: modulator, flutter, RF offset, IF noise and filter,
+limiter-discriminator, squelch, emphasis, data-port filters), `fmsweep`
+(FER vs CNR per mode for ten radio setups), `test_fmradio`, FM cases in
+`test_vhf`, and a VHF mode for the ST2 world and `soak_st2`
+(`SKW_ST2_BAND=vhf`). Results: `docs/conformance/vhf_fm_2026-10-17/`.
+
+- **Fixed: the real modem could not send or receive VHF.** The worker's
+  converters are members built before `rebuildEngine()` selects the band,
+  so a vhf-fm worker kept HF's 1500 Hz centre and +-1.4 kHz receive
+  filter. They are now rebuilt with the band (and `main` selects the band
+  first). Found by the first ST2 VHF run; test
+  `vhf_worker_transmits_decodable_vhf`.
+- **Fixed: VHF frames missed at 3-5 of 8 sample phases.** The chirp
+  detector's 4-sample grid was coarser than VHF's ~1.8-sample correlation
+  peak. Grid step is per band (`chirpGridStep`: HF 4, VHF 1, same cost).
+  False detections on noise 13 per 30 min (HF 7). VHF bertool floors
+  unchanged (0% FER at every floor). Test
+  `vhf_detects_at_every_sample_phase`.
+- **Measured:** floors 8 dB CNR (M4) to 36 dB (M13) on a 25 kHz channel;
+  flutter costs 10-12 dB, 12.5 kHz channels 2-4 dB; deviation is the
+  operator's biggest lever (-10 dB drive costs 8-10 dB). M14 needs a data
+  port flat below 300 Hz: the lowest carrier sits at 300 Hz, and a port
+  rolling off there caps the received SNR at ~32 dB. The M7 25 kbps gate
+  holds on the flat channel; through a 300 Hz port the AMC tops out at
+  M13.
+- **Endurance (new coverage, not re-runs):** ST2 VHF churn seeds 11-13
+  pass (99-198 KB each way, 0 reconnects); floor at 22 dB CNR with 15 Hz
+  flutter, seeds 1-3, pass (8-18 KB, 2 reconnects each).
+- **Open:** moving the VHF plan's first carrier off the 300 Hz edge
+  (e.g. bin 12, 450 Hz, -4 carriers) would give 300 Hz ports M14 at the
+  cost of a floor re-measurement; not done. On-air FM confirmation is
+  pending.
+
 ### Waveform analysis and config save (2026-10-17)
 
 Every frame type the PHY can send (HF: four families x M0-M13 at two

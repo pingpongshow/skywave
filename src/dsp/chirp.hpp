@@ -91,7 +91,9 @@ struct ChirpDetection {
 // Streaming matched-filter detector for one family (both slopes).
 class ChirpDetector {
  public:
-  static constexpr int kGridStep = 4;  // 0.33 ms timing quantization
+  // Timing quantization of the correlation grid (HF 4 samples = 0.33 ms,
+  // VHF 1): the band profile's chirpGridStep.
+  static int gridStep() { return activeProfile().chirpGridStep; }
 
   explicit ChirpDetector(Family family);
 

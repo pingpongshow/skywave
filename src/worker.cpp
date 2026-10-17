@@ -454,7 +454,13 @@ void ModemWorker::rebuildEngine() {
     if (alt != cfg_.family) detAlt_.emplace(alt);
   }
   detsAlt_.clear();
-  down_.reset();
+  // The converters' NCO centre and filter passbands come from the band
+  // profile active when they are BUILT. As members they were built before
+  // the setActiveBand() above, so a vhf-fm modem kept HF's 1500 Hz centre
+  // and +-1.4 kHz passband: VHF never left or entered the modem intact
+  // (found by the ST2 VHF world, 2026-10-17). Rebuild them for the band.
+  down_ = Downconverter();
+  up_ = Upconverter();
   hist_.clear();
   histBase_ = 0;
   pendingRx_.clear();
