@@ -6,7 +6,7 @@ interface to a transceiver: HF SSB rigs (300-3000 Hz audio) and, with the
 VHF-FM profile, FM rigs with a 9600-capable data port. Applications talk
 to it over three localhost TCP ports.
 
-**Status:** v1.2.6 (2026-10-17). Not publicly released: every result below
+**Status:** v1.2.7 (2026-10-18). Not publicly released: every result below
 comes from simulation (Watterson HF channels, an FM radio emulator, and a
 two-modem world running the real modem process), plus real-audio-device
 tests. On-air confirmation is pending. There is no LICENSE yet (see
@@ -107,7 +107,7 @@ and set its level so bursts peak at the rig's maximum deviation
 cd build && ctest -j8
 ```
 
-The suite (47 tests) covers unit, PHY loopback, two-engine link,
+The suite (48 tests) covers unit, PHY loopback, two-engine link,
 conformance, docs-consistency, two-modem process-level (ST2) and real
 audio-device tests (ST3: two duplex loopback devices, enabled with
 `-DSKW_HARDWARE_TESTS=ON`; skipped otherwise).
@@ -141,6 +141,9 @@ per-release notes in [docs/releases/](docs/releases/).
   which blocks any public release. This is a deliberate hold.
 - **VHF `M14` needs a data port flat below 300 Hz.** On a port that rolls
   off at 300 Hz the modem tops out at `M13`.
+- **Voice latency is seconds on HF** (4-7 s to first audio): every voice
+  unit is its own frame with its own preamble. NARROW has no real-time
+  voice, MID only from M12 ([VOICE.md](docs/VOICE.md)).
 - **NARROW on a Moderate floor at 6 dB** connects on 4 of 6 seeds: its
   robust frames are ~20 s long.
 - Both ends of a link must run the same release: there is no backward

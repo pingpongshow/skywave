@@ -1506,6 +1506,14 @@ verified, then fixed in severity order (details:
 
 Verification: default suite 46/46, crypto 45/45 (each fix has a test).
 
+### v1.2.7 (2026-10-18)
+
+Broadcast voice, real-time voice plans, CAP_VOICE enforcement, session
+keepalives (never enabled before), voice system tests through the whole
+modem and the TCP voice ports, and the CSS fading floor re-measure.
+Suites and all three sanitizers run; HF conformance sweeps and the 2-hour
+soak not re-run. Release notes: docs/releases/v1.2.7.md.
+
 ### v1.2.6 (2026-10-17)
 
 Fix release: the full bug review's fixes, the waveform analysis (VHF TX

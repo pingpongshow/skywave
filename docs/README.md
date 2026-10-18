@@ -13,7 +13,7 @@ an earlier reference design (adaptive mode ladder, chirp acquisition,
 weak-signal handshake, ARQ sessions, three-port TCP interface) while
 committing to a simpler, unified physical layer and a modernized stack.
 
-Current release: **v1.2.6** ([releases/v1.2.6.md](releases/v1.2.6.md)).
+Current release: **v1.2.7** ([releases/v1.2.7.md](releases/v1.2.7.md)).
 
 ## Design Decisions Record
 
