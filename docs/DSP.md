@@ -54,7 +54,9 @@ audio in (48k real)
 States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
 
 - `SEARCH`: continuous chirp matched filter at 12 kHz on a decimated
-  correlation grid; two correlators per family (up-chirp, down-chirp) give
+  correlation grid (HF every 4 samples; VHF every sample, because its
+  ~6.6 kHz sweep's correlation peak is under 2 samples wide - see
+  [WAVEFORM.md](WAVEFORM.md) VHF-FM); two correlators per family (up-chirp, down-chirp) give
   the signature bit; families are searched in parallel (3 families × 2
   polarities = 6 cheap correlators). An all-inverted signature pattern
   (e.g., down–down where only up–up is valid) indicates **sideband

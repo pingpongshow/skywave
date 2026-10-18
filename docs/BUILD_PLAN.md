@@ -35,8 +35,9 @@ authority.
 | `BUILD_TOOLS` | `ON` |
 | `ENABLE_ASAN` / `ENABLE_UBSAN` / `ENABLE_TSAN` | `OFF` |
 
-Output binary: `build/skywave`. Tools: `build/chansim`, `build/bertool`,
-`build/siggen`.
+Output binary: `build/skywave`. Tools: `build/bertool`, `build/fmsweep`,
+`build/fuzztool`, `build/onair_sounder` (the planned standalone `chansim`
+and `siggen` became the `src/sim/` libraries).
 
 ## Phase 0 — Scaffold
 

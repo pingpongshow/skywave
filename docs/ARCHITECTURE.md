@@ -80,36 +80,44 @@ connection establishment works wherever data can flow — by design there is no
 
 ## Major Subsystems
 
-Planned repository layout (paths are the scaffold contract for the build):
+Repository layout (as built; the scaffold plan's standalone `chansim` and
+`siggen` tools were not built as such - the channel simulators are
+`src/sim/` libraries that the tests and tools link):
 
 ```text
 skywave/
   CMakeLists.txt
+  README.md      build, run, test
+  THIRD_PARTY.md linked and vendored components, licenses
   src/
-    core/        config, logging, timing, byte/bit utils
-    dsp/         fft, fir/iir filters, resampler, agc, windows,
-                 chirp gen/detect, zc sequences, interleavers, spreader
-    phy/         ofdm_mod, ofdm_demod, sync engine, pilot/equalizer,
-                 phy framer (preamble+sync+header+payload assembly)
-    fec/         ldpc encoder/decoder (802.11n tables), crc16/32,
-                 whitener, harq combiner
-    link/        session fsm, arq, amc_controller, channel_memory,
-                 promote_probe, carrier_mask, mac_policy, keepalive
-    proto/       segmentation/reassembly, compress (zstd),
-                 file_transfer, session_resume
-    crypto/      kex (X25519), aead (AES-256-GCM), kdf, epochs   [flag-gated]
-    voice/       codec2 wrapper, voice session control, jitter buffer
-    io/          audio (PortAudio), tx_level, ptt backends, wav, cw_id
-    gui/         SDL2 + Dear ImGui application (waterfall,
-                 constellation, ladder view, settings)
-    tcp/         data/control/voice servers, command parser
-    main.cpp     process wiring, headless event loop
+    core/        config (INI load/save/merge), logging, clocks, constants
+                 and band profiles, byte packing
+    dsp/         fft, fir, up/down converters (12 kHz <-> 48 kHz), agc,
+                 windows, chirp gen/detect, zc sequences, css, morse
+    phy/         framer (preamble+sync+header+payload), receiver,
+                 equalizer/channel tracker, mapper, carrier layout
+    fec/         ldpc (802.11n tables), crc, interleaver, whitener
+    link/        engine, session fsm, handshake, arq, amc, channel
+                 classifier, channel memory, probe, carrier mask, monitor,
+                 advisor
+    proto/       payload pipeline (segmentation, zstd), file service
+    crypto/      session keys and AEAD framing             [ENABLE_CRYPTO]
+    voice/       codec2 wrapper, voice session              [ENABLE_VOICE]
+    io/          audio (PortAudio), ptt, sample rings, wav
+    gui/         SDL2 + Dear ImGui application              [ENABLE_GUI]
+    tcp/         data/control/voice servers, control parser
+    sim/         chansim (Watterson HF), radiochain (SSB rig chain),
+                 fmradio (FM rig and RF path) - test/tool support
+    worker.*     the modem process: audio <-> engine, TX/RX scheduling
+    main.cpp     CLI, process wiring, headless event loop
   tools/
-    chansim      Watterson HF channel simulator (AWGN, 2-path fading,
-                 Doppler, CCIR Good/Moderate/Poor presets)
-    siggen       test signal generator
-    bertool      BER/FER sweep driver (modem + chansim in-process)
-  tests/         unit + integration + conformance suites
+    bertool      FER sweeps over chansim (conformance)
+    fmsweep      VHF FER vs CNR through fmradio
+    fuzztool     receiver fuzzing
+    onair/       on-air test tooling (sounder, PTT, receiver captures)
+    *.sh, *.py   sweep campaigns and summaries
+  tests/         unit, loopback, link, conformance, ST2 (two modem
+                 processes in one world) and ST3 (real audio devices)
   docs/          this documentation set
 ```
 
@@ -127,6 +135,7 @@ skywave/
 | `voice` | Codec2 encode/decode, talkspurt control | [VOICE.md](VOICE.md) |
 | `io` | real-time audio, PTT, TX levels, CW ID | [DSP.md](DSP.md), [INTERFACES.md](INTERFACES.md) |
 | `tcp` | the three localhost ports and command surface | [INTERFACES.md](INTERFACES.md) |
+| `sim` | channel and radio emulators for tests and tools (never linked into the modem's signal path) | [TESTING.md](TESTING.md) |
 | `gui` | visualization and settings; consumes the same telemetry the control port exposes | [INTERFACES.md](INTERFACES.md) |
 
 ## Execution Model

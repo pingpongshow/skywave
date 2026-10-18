@@ -1,12 +1,19 @@
-# Skywave — HF Software Audio Modem: Design Documentation
+# Skywave — Design Documentation
 
-Skywave is a half-duplex, connection-oriented HF data/voice modem implemented
-entirely in software against a soundcard audio interface. This documentation
-set is the **design source of truth** for building Skywave from scratch. It is
-a new, original design that retains the proven operational theme of an earlier
-reference design (adaptive mode ladder, chirp acquisition, weak-signal
-handshake, ARQ sessions, three-port TCP interface) while committing to a
-simpler, unified physical layer and a modernized stack.
+Skywave is a half-duplex, connection-oriented HF (and VHF-FM) data/voice
+modem implemented entirely in software against a soundcard audio
+interface. This documentation set is the **design source of truth**: it
+was written up front, the modem was built against it in phases (all of
+them are done; see [ROADMAP.md](ROADMAP.md)), and it is kept in step with
+the code. The repository's [README](../README.md) covers building,
+running and testing; this file indexes the design.
+
+Skywave is an original design that keeps the proven operational theme of
+an earlier reference design (adaptive mode ladder, chirp acquisition,
+weak-signal handshake, ARQ sessions, three-port TCP interface) while
+committing to a simpler, unified physical layer and a modernized stack.
+
+Current release: **v1.2.6** ([releases/v1.2.6.md](releases/v1.2.6.md)).
 
 ## Design Decisions Record
 
@@ -19,10 +26,11 @@ These decisions were made deliberately and are binding unless revisited:
 | Weak-signal floor | ~−8.5 dB SNR (3 kHz ref) on the OFDM ladder. The CSS deep tier at `M0–M3` was planned as future work and **shipped in v1.0.0**: it connects and moves data at −13 dB (MID, CCIR Moderate). |
 | Handshake robustness | Matches the data floor (handshake rides the most robust data mode) |
 | Bandwidth families | Three standard: `WIDE` 2.4 kHz (default), `MID` 1 kHz, `NARROW` 500 Hz — plus opt-in `ULTRA` 2.7 kHz for radios with ~100–2900 Hz passbands; all centered near **1500 Hz** |
+| VHF-FM | A second band profile (`band = vhf-fm`): one 176-carrier 6.6 kHz family centred on 3600 Hz for an FM rig's 9600 data port, ladder to `M14` (256QAM), 25.5 kbps measured |
 | Voice | Codec2 vocoder, OFDM-mode-mapped, PCM over local TCP voice port |
 | Crypto | Optional, build-flag gated (`ENABLE_CRYPTO`); X25519 + AES-256-GCM with implicit nonces |
 | UI | Built-in lightweight GUI (SDL2 + Dear ImGui) plus headless mode; radio control delegated to a companion app |
-| Delivery | Full-parity design documented up front, **built in phases** — data core first |
+| Delivery | Full-parity design documented up front, **built in phases** — data core first (Phases 0-8 complete) |
 
 ## Document Index
 
@@ -45,6 +53,8 @@ These decisions were made deliberately and are binding unless revisited:
 | [RELEASE.md](RELEASE.md) | Release gate sequence, how to cut a release, and the open blockers |
 | [../THIRD_PARTY.md](../THIRD_PARTY.md) | Every linked or vendored component, with licenses (repository root) |
 | [releases/](releases/) | Per-release notes and recorded gate results |
+| [conformance/](conformance/) | Measured sweep and soak results (CSVs and findings), e.g. `vhf_fm_2026-10-17/` |
+| [investigations/](investigations/) | Write-ups of specific measured problems |
 
 ## What Carried Over From the Reference Design, and What Changed
 
@@ -53,8 +63,8 @@ These decisions were made deliberately and are binding unless revisited:
 | Two waveform engines (CSS + OFDM) | **Evolved** — one spread-OFDM engine carries `M4–M14`, and the CSS deep tier shipped at `M0–M3` (v1.0.0), gated by `CAP_CSS_TIER` |
 | Chirp acquisition preamble | **Retained** — chirp remains the detection/coarse-sync front end; the preamble signature additionally selects the header class |
 | Dual ladder families at 1675 Hz center | **Evolved** — three standard families (`WIDE`/`MID`/`NARROW`) plus opt-in `ULTRA` 2.7 kHz, at the industry-standard 1500 Hz center |
-| `M0–M13` runtime mode ladder + DRC | **Retained in shape** — 14-slot ladder, SNR-driven adaptive mode control with hysteresis; new mode contents |
-| Legacy `LEVEL 1..12` dual control surface | **Dropped** — Skywave has exactly one mode surface (`MODE M0–M13`); no legacy aliases |
+| `M0–M13` runtime mode ladder + DRC | **Retained in shape** — 14-slot HF ladder (plus `M14` on VHF-FM), SNR-driven adaptive mode control with hysteresis; new mode contents |
+| Legacy `LEVEL 1..12` dual control surface | **Dropped** — Skywave has exactly one mode surface (`MODE M0–M14`); no legacy aliases |
 | Selective-repeat ARQ + HARQ (chase/IR) | **Retained** — compact base+bitmap feedback, chase and IR combining |
 | Channel memory, probe-before-promote, tone masking, aggregated MAC | **Retained** — same concepts, renamed carrier masking, cleaner thresholds |
 | zlib compression | **Replaced** with zstd (better ratio, negotiated capability) |
@@ -77,7 +87,12 @@ Details and acceptance criteria live in [BUILD_PLAN.md](BUILD_PLAN.md).
 - **Phase 4 — Services**: compression, file transfer, resume, beacons/CQ, CW ID
 - **Phase 5 — Voice, crypto, GUI**: Codec2 voice, gated encryption, ImGui interface
 - **Phase 6 — Extensions**: CSS deep tier (`M0–M3`), Advisor layer, companion-app integration polish
-- **Phase 7 — VHF-FM band profile**: wideband FM-rig data-port operation (~6.75 kHz, ~25–35 kbps) as a second numerology table on the same engine
+- **Phase 7 — VHF-FM band profile**: wideband FM-rig data-port operation (6.6 kHz, 25.5 kbps measured) as a second numerology table on the same engine
+- **Phase 8 — Gap closure**: fading, CFO tolerance, kill/resume ([GAP_CLOSURE_PLAN.md](GAP_CLOSURE_PLAN.md))
+
+All phases are complete. Releases since then are fix releases; what each
+changed and how it was verified is in [releases/](releases/) and the
+dated sections of [ROADMAP.md](ROADMAP.md).
 
 ## Deliberately Deferred (Documented Non-Goals for v1)
 
@@ -97,5 +112,6 @@ the HF profile.)
 - SNR figures are referenced to a **3 kHz noise bandwidth** unless stated otherwise.
 - `NET` rates are post-FEC payload bit rates; `GROSS` rates are uncoded waveform rates.
 - All multi-byte wire fields are **little-endian** unless a format says otherwise.
-- Mode identifiers `M0–M13` are ladder positions; `M0–M3` are the CSS deep tier (Phase 6), used only when both peers negotiate `CAP_CSS_TIER`.
+- Mode identifiers `M0–M14` are ladder positions; `M0–M3` are the CSS deep tier (Phase 6, HF only), used only when both peers negotiate `CAP_CSS_TIER`; `M14` (256QAM) exists only on the VHF-FM profile.
+- VHF-FM figures through the FM radio emulator are quoted as **CNR** in the receiver's IF bandwidth, not audio SNR.
 - Rates and floors are quoted for the default `MEDIUM` cyclic prefix.
