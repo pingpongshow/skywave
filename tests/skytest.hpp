@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -62,7 +63,10 @@ inline bool registerCase(const char* name, std::function<void()> fn) {
 
 inline int run() {
   int failedCases = 0;
+  // SKYTEST_ONLY=<substring> runs only the matching cases (debugging).
+  const char* only = std::getenv("SKYTEST_ONLY");
   for (auto& c : cases()) {
+    if (only && std::string(c.name).find(only) == std::string::npos) continue;
     int before = failures();
     c.fn();
     bool ok = failures() == before;

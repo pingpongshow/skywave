@@ -153,6 +153,98 @@ def transfer(a_data, b_data, payload, timeout):
     return got
 
 
+def speech_pcm(seconds, rate=8000):
+    """Voiced test signal (as tests/test_voice.cpp): pulse train through
+    two formants with a syllabic envelope - a vocoder needs speech-like
+    input, white noise tells nothing."""
+    import math
+    out = []
+    for i in range(int(seconds * rate)):
+        t = i / rate
+        src = max(0.0, math.sin(2 * math.pi * 120.0 * t)) ** 3
+        f = math.sin(2 * math.pi * 700 * t) + 0.5 * math.sin(2 * math.pi * 1220 * t)
+        env = 0.55 + 0.45 * math.sin(2 * math.pi * 2.5 * t)
+        out.append(int(max(-32000.0, min(32000.0, 12000.0 * env * src * f))))
+    return out
+
+
+def voice_record(seq, counter, pcm):
+    """INTERFACES.md voice port record: version, type (1 = uplink), byte
+    length (BE), sequence (BE), sample counter (BE), PCM16LE samples."""
+    import struct
+    body = struct.pack("<%dh" % len(pcm), *pcm)
+    return struct.pack(">BBHIQ", 1, 1, len(body), seq, counter) + body
+
+
+def read_voice_records(sock, buf):
+    """Parse downlink records out of buf (+ whatever the socket has);
+    returns (samples, remaining buf)."""
+    import struct
+    try:
+        chunk = sock.recv(65536)
+        if chunk:
+            buf += chunk
+    except (BlockingIOError, socket.timeout):
+        pass
+    samples = []
+    while len(buf) >= 16:
+        ver, typ, n, _seq, _ctr = struct.unpack(">BBHIQ", buf[:16])
+        if len(buf) < 16 + n:
+            break
+        if ver == 1 and typ == 2:
+            samples.extend(struct.unpack("<%dh" % (n // 2), buf[16:16 + n]))
+        buf = buf[16 + n:]
+    return samples, buf
+
+
+def voice_phase(a_ctrl, b_ctrl, a_port, b_port, seconds=8.0):
+    """Live voice A -> B through BOTH modems' TCP voice ports and the real
+    audio devices: the only test of the voice port bridge (main.cpp) and
+    of voice between two modem processes. Returns None if the build has no
+    voice, else (heard_samples, sent_samples, rms_heard)."""
+    import math
+    if a_ctrl.cmd("VOICE CONNECTED") != "VOICE CONNECTED":
+        return None  # built without ENABLE_VOICE
+    assert b_ctrl.cmd("VOICE CONNECTED") == "VOICE CONNECTED"
+    a_voice = connect_local(a_port)
+    b_voice = connect_local(b_port)
+    b_voice.setblocking(False)
+    try:
+        r = a_ctrl.cmd("VOICESTART")
+        assert r == "VOICESTART", f"VOICESTART -> {r}"
+        deadline = time.time() + 60
+        while time.time() < deadline and "STATE=OPEN" not in b_ctrl.cmd("VOICESTATUS"):
+            time.sleep(0.5)
+        assert a_ctrl.cmd("VOICEPTT ON") == "VOICEPTT ON"
+        deadline = time.time() + 60
+        while time.time() < deadline and "STATE=TALKING" not in a_ctrl.cmd("VOICESTATUS"):
+            time.sleep(0.2)
+        print("ST3: voice", a_ctrl.cmd("VOICESTATUS"))
+        pcm = speech_pcm(seconds)
+        heard, buf = [], b""
+        step = 160  # 20 ms records, real-time pace
+        t_start = time.time()
+        for k in range(0, len(pcm), step):
+            a_voice.sendall(voice_record(k // step, k, pcm[k:k + step]))
+            got, buf = read_voice_records(b_voice, buf)
+            heard.extend(got)
+            sleep = t_start + (k + step) / 8000.0 - time.time()
+            if sleep > 0:
+                time.sleep(sleep)
+        assert a_ctrl.cmd("VOICEPTT OFF") == "VOICEPTT OFF"
+        deadline = time.time() + 20
+        while time.time() < deadline and len(heard) < len(pcm):
+            got, buf = read_voice_records(b_voice, buf)
+            heard.extend(got)
+            time.sleep(0.05)
+        a_ctrl.cmd("VOICESTOP")
+        rms = math.sqrt(sum(x * x for x in heard) / len(heard)) if heard else 0.0
+        return len(heard), len(pcm), rms
+    finally:
+        a_voice.close()
+        b_voice.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", default="./skywave")
@@ -258,6 +350,18 @@ def main():
 
         print(f"ST3: soak done - {cycles} cycles, {drops} drops, "
               f"{time.time() - t0:.0f} s")
+
+        # --- live voice through the TCP voice ports --------------------
+        v = voice_phase(a_ctrl, b_ctrl, 9202, 9212)
+        if v is None:
+            print("ST3: voice skipped (build without ENABLE_VOICE)")
+        else:
+            heard, sent, rms = v
+            print(f"ST3: voice A->B heard {heard / 8000:.1f} of "
+                  f"{sent / 8000:.1f} s through the voice ports, rms {rms:.0f}")
+            if heard < 0.8 * sent or rms < 300:
+                print("ST3 FAIL: live voice did not come through")
+                return 1
         assert a_ctrl.cmd("DISCONNECT") == "DISCONNECT"
         a_ctrl.wait_state("LISTENING", 30)
         if drops:

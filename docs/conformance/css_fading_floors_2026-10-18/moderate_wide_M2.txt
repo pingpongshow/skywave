@@ -1,0 +1,27 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+# WIDE M2: 60 B frame, 13.3 s on air, header copies 2
+WIDE    M2     -10.0   -10.0 |     7    16     9    68  100.0% |      36 | est  -11.1 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    0.0
+WIDE    M2     -10.0    -8.5 |     3     9    10    66   88.0% |      36 | est  -10.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    0.5
+WIDE    M2     -10.0    -7.0 |     3     4     3    52   62.0% |      36 | est   -9.2 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    1.7
+WIDE    M2     -10.0    -5.5 |     1     4     2    26   33.0% |      36 | est   -7.4 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.0
+WIDE    M2     -10.0    -4.0 |     0     1     1    13   15.0% |      36 | est   -6.7 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.8
+WIDE    M2     -10.0    -2.5 |     0     0     2     4    6.0% |      36 | est   -4.5 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.2
+WIDE    M2     -10.0    -1.0 |     0     0     1     1    2.0% |      36 | est   -3.7 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.4
+WIDE    M2     -10.0     0.5 |     1     0     0     1    2.0% |      36 | est   -1.9 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.4
+WIDE    M2     -10.0     2.0 |     0     0     1     0    1.0% |      36 | est   -0.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0     3.5 |     0     0     0     0    0.0% |      36 | est    0.7 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0     5.0 |     0     0     0     0    0.0% |      36 | est    1.4 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0     6.5 |     0     0     0     0    0.0% |      36 | est    2.6 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0     8.0 |     0     0     1     1    2.0% |      36 | est    4.5 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.4
+WIDE    M2     -10.0     9.5 |     0     0     0     0    0.0% |      36 | est    5.0 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    11.0 |     0     0     0     0    0.0% |      36 | est    6.7 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    12.5 |     0     0     0     0    0.0% |      36 | est    7.1 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    14.0 |     0     0     0     0    0.0% |      36 | est    8.0 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    15.5 |     0     0     0     1    1.0% |      36 | est    8.8 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    17.0 |     0     0     0     0    0.0% |      36 | est    9.6 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+WIDE    M2     -10.0    18.5 |     0     0     0     0    0.0% |      36 | est    9.6 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.5
+FAIL: WIDE M2 @ -10.0 dB FER=100.0%
+FAIL: WIDE M2 @ -8.5 dB FER=88.0%
+FAIL: WIDE M2 @ -7.0 dB FER=62.0%
+FAIL: WIDE M2 @ -5.5 dB FER=33.0%
+== 4 conformance failures ==

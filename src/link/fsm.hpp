@@ -5,6 +5,8 @@
 // link layer computes from the PHY airtime query (frameAirtimeSec).
 #pragma once
 
+#include <algorithm>
+
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -62,7 +64,10 @@ struct FsmConfig {
   int discAttempts = 3;
   double idleDisconnectSec = 120.0;
   double keepaliveSec = 20.0;
-  bool keepaliveEnabled = false;  // initiator-only, M8+ sessions only
+  // Both ends, every session (the engine sets the interval per mode).
+  // It was false and nothing set it, so an idle session with nothing
+  // else on the air died at the idle timeout.
+  bool keepaliveEnabled = false;
   // Per-station seed for CALL-retry backoff jitter (the callsign hash).
   // Two stations that call each other in the same instant are both deaf
   // to each other's CALL (half-duplex), and with a FIXED retry interval
@@ -107,6 +112,13 @@ class SessionFsm {
   void rxDisc(double now);
   void rxDiscAck(double now);
   void rxTraffic(double now);  // any other valid in-session frame
+  // Any session frame we transmit: a keepalive is due only after
+  // keepaliveSec WITHOUT transmitting.
+  void txTraffic(double now) { lastTxTime_ = std::max(lastTxTime_, now); }
+  void setKeepaliveSec(double s) { cfg_.keepaliveSec = s; }
+  double keepaliveSec() const { return cfg_.keepaliveSec; }
+  double lastTxTime() const { return lastTxTime_; }
+  double lastRxTime() const { return lastRxTime_; }
 
   // --- clock ----------------------------------------------------------
   // Call periodically; fires retries/timeouts/keepalive/idle-disconnect.

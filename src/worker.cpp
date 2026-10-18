@@ -104,6 +104,20 @@ std::string upperStr(std::string s) {
   return s;
 }
 
+#ifdef SKW_HAVE_VOICE
+// INI voice.codec / VOICECODEC: nullopt = AUTO; false = not a codec.
+bool parseVoiceCodecSel(const std::string& in, std::optional<VoiceCodec>& out) {
+  std::string c;
+  for (char ch : in) c += char(std::toupper(static_cast<unsigned char>(ch)));
+  if (c == "AUTO") { out.reset(); return true; }
+  if (c == "700C" || c == "700") { out = VoiceCodec::C700; return true; }
+  if (c == "1300") { out = VoiceCodec::C1300; return true; }
+  if (c == "2400") { out = VoiceCodec::C2400; return true; }
+  if (c == "3200") { out = VoiceCodec::C3200; return true; }
+  return false;
+}
+#endif
+
 }  // namespace
 
 ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
@@ -111,6 +125,10 @@ ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
     : cfg_(cfg), clock_(clock), rx_(rxRing), tx_(txRing) {
   chunk_.resize(kChunkSamples);
   listen_ = cfg_.listen;
+#ifdef SKW_HAVE_VOICE
+  // voice.codec was parsed from the INI and then ignored.
+  if (!parseVoiceCodecSel(cfg_.voiceCodec, voiceCodecWant_)) voiceCodecWant_.reset();
+#endif
   // Channel memory persists to the config directory (LINK_ADAPTATION.md).
   chanMemPath_ = defaultChanMemPath();
   if (!chanMemPath_.empty() && chanMem_.load(chanMemPath_)) {
@@ -400,6 +418,9 @@ void ModemWorker::rebuildEngine() {
   if (cfg_.resume) caps |= kCapResume;
   if (cfg_.carrierMasking && prof.masking) caps |= kCapMasking;
   if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
+#ifdef SKW_HAVE_VOICE
+  caps |= kCapVoice;  // the peer may open voice only if we advertise it
+#endif
   const bool css = cfg_.cssTier && prof.cssTier;
   if (css) caps |= kCapCssTier;
   ec.policy.cssEnable = css;
@@ -1521,7 +1542,12 @@ bool ModemWorker::setMode(const std::string& m) {
   }
   if (m.size() < 2 || m[0] != 'M') return false;
   const int want = atoi(m.c_str() + 1);
-  if (want < 4 || want > 13) return false;
+  // Any active OFDM rung of the band (M14 exists on VHF-FM only; the old
+  // fixed 4..13 range refused it).
+  if (want < 4 || want >= kNumModes || !kModes[size_t(want)].active ||
+      (want == 14 && activeBand() != Band::VhfFm)) {
+    return false;
+  }
   cfg_.mode = want;
   if (engine_->state() == FsmState::Connected) {
     return engine_->pinMode(want, nowSec());
@@ -1632,11 +1658,24 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
       {"BUSY", chanBusy_ ? "1" : "0", false},
       {"LISTEN", listen_ ? "1" : "0", false},
       {"COMPRESS", (caps & kCapZstd) ? "1" : "0", false},
-      {"CRYPTO", "0", false},
+#ifdef SKW_HAVE_CRYPTO
+      {"CRYPTO", engine_->cryptoActive() ? "1" : "0", false},
+      {"EPOCH", std::to_string(engine_->cryptoEpoch()), false},
+#else
+      {"CRYPTO", "0", false},  // build without ENABLE_CRYPTO
       {"EPOCH", "0", false},
+#endif
       {"RESUME", (caps & kCapResume) ? "1" : "0", false},
       {"MASK", std::to_string(engine_->rxMaskedCount()), false},
+#ifdef SKW_HAVE_VOICE
+      {"VOICE", engine_->voiceState() == VoiceState::Closed
+                    ? (engine_->broadcastVoiceRx() ? "bcastrx" : "off")
+                    : (engine_->voiceState() == VoiceState::Talking ? "talking"
+                                                                    : "open"),
+       true},
+#else
       {"VOICE", "off", true},
+#endif
       {"TXBUF", std::to_string(engine_->txBacklog()), false},
       {"FOK", std::to_string(engine_->framesOk()), false},
       {"FFAIL", std::to_string(engine_->framesFailed()), false},
@@ -1873,21 +1912,10 @@ std::string ModemWorker::voiceCodecStr() {
 bool ModemWorker::setVoiceCodec(const std::string& c) {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
-  if (c == "AUTO") {
-    voiceCodecWant_.reset();
-    return true;
-  }
-  if (c == "700C") {
-    voiceCodecWant_ = VoiceCodec::C700;
-  } else if (c == "1300") {
-    voiceCodecWant_ = VoiceCodec::C1300;
-  } else if (c == "2400") {
-    voiceCodecWant_ = VoiceCodec::C2400;
-  } else if (c == "3200") {
-    voiceCodecWant_ = VoiceCodec::C3200;
-  } else {
-    return false;
-  }
+  if (!parseVoiceCodecSel(c, voiceCodecWant_)) return false;
+  // A runtime change, saved on exit like the rest.
+  cfg_.voiceCodec = voiceCodecWant_ ? voiceCodecName(*voiceCodecWant_) : "auto";
+  for (char& ch : cfg_.voiceCodec) ch = char(std::tolower(static_cast<unsigned char>(ch)));
   return true;
 #else
   (void)c;
@@ -1899,6 +1927,20 @@ bool ModemWorker::voiceStart() {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
   if (voiceMode_ == VoiceMode::Off) return false;
+  if (voiceMode_ == VoiceMode::Broadcast) {
+    // voice.broadcast_mode (was read from the INI and never used); auto =
+    // the most robust mode that carries a codec in this family.
+    int mode = cfg_.voiceBroadcastMode;
+    if (mode < 0) {
+      for (int m = 8; m < kNumModes; ++m) {
+        if (planVoiceStream(cfg_.family, m, activeProfile().cpDefault, std::nullopt)) {
+          mode = m;
+          break;
+        }
+      }
+    }
+    return mode >= 0 && engine_->openBroadcastVoice(voiceCodecWant_, mode, nowSec());
+  }
   return engine_->openVoice(voiceCodecWant_, nowSec());
 #else
   return false;
@@ -1943,7 +1985,16 @@ std::string ModemWorker::voiceStatusLine() {
          " GRANTED=" + (st == VoiceState::Talking ? "ON" : "OFF") +
          " TXQ=" + std::to_string(engine_->voiceTxQueued()) +
          " RXQ=" + std::to_string(engine_->voiceRxDepthMs() * 8) +
-         " TRANSPORT=M" + std::to_string(engine_->sessionMode());
+         " TRANSPORT=M" + std::to_string(engine_->broadcastVoiceOpen()
+                                             ? engine_->broadcastVoiceMode()
+                                             : engine_->sessionMode()) +
+         (engine_->broadcastVoiceRx() ? " BCASTRX=ON" : "") +
+         // Real-time plan (VOICE.md): unit length, and whether the unit's
+         // airtime stays inside the speech it carries.
+         (st == VoiceState::Closed
+              ? std::string()
+              : " UNIT=" + fmt1(engine_->voicePlanActive().unitSpeechSec) +
+                    "s RT=" + (engine_->voicePlanActive().realTime ? "YES" : "NO"));
 #else
   return "";
 #endif

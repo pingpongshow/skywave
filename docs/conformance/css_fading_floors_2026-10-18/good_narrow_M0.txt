@@ -1,0 +1,26 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+# NARROW M0: 60 B frame, 119.8 s on air, header copies 2
+NARROW  M0     -18.5   -18.5 |    32     6    16    23   77.0% |       4 | est  -17.5 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.1
+NARROW  M0     -18.5   -17.0 |    22     4    11     9   46.0% |       4 | est  -15.9 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.3
+NARROW  M0     -18.5   -15.5 |    18     9     9     1   37.0% |       4 | est  -16.1 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.3
+NARROW  M0     -18.5   -14.0 |     7     2     6     0   15.0% |       4 | est  -13.8 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.4
+NARROW  M0     -18.5   -12.5 |    12     2     3     0   17.0% |       4 | est  -13.6 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.4
+NARROW  M0     -18.5   -11.0 |     6     4     3     0   13.0% |       4 | est  -12.6 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.4
+NARROW  M0     -18.5    -9.5 |     7     2     3     0   12.0% |       4 | est  -11.5 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.4
+NARROW  M0     -18.5    -8.0 |     2     1     1     0    4.0% |       4 | est   -9.9 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    -6.5 |     0     1     1     0    2.0% |       4 | est   -9.0 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    -5.0 |     0     1     0     0    1.0% |       4 | est   -7.8 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    -3.5 |     0     0     1     0    1.0% |       4 | est   -5.5 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    -2.0 |     0     0     1     0    1.0% |       4 | est   -3.9 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    -0.5 |     0     0     0     0    0.0% |       4 | est   -2.6 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     1.0 |     0     0     0     0    0.0% |       4 | est   -1.9 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     2.5 |     0     0     1     0    1.0% |       4 | est    1.2 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     4.0 |     0     0     0     0    0.0% |       4 | est    2.6 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     5.5 |     0     0     0     0    0.0% |       4 | est    3.2 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     7.0 |     0     0     0     0    0.0% |       4 | est    4.5 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5     8.5 |     0     0     0     0    0.0% |       4 | est    6.7 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+NARROW  M0     -18.5    10.0 |     0     0     0     0    0.0% |       4 | est    7.5 evm  -99.0 pilot -1.000 |    60B air 119.8 ovh  95% good    0.5
+FAIL: NARROW M0 @ -18.5 dB FER=77.0%
+FAIL: NARROW M0 @ -17.0 dB FER=46.0%
+FAIL: NARROW M0 @ -15.5 dB FER=37.0%
+== 3 conformance failures ==

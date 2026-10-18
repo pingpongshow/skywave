@@ -1,0 +1,30 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+# ULTRA M2: 60 B frame, 13.3 s on air, header copies 2
+ULTRA   M2     -10.0   -10.0 |    15    15    25    45  100.0% |      36 | est  -11.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    0.0
+ULTRA   M2     -10.0    -8.5 |     4    10    18    68  100.0% |      36 | est  -10.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    0.0
+ULTRA   M2     -10.0    -7.0 |     6     3     4    74   87.0% |      36 | est   -8.9 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    0.6
+ULTRA   M2     -10.0    -5.5 |     4     2     8    49   63.0% |      36 | est   -8.4 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    1.7
+ULTRA   M2     -10.0    -4.0 |     3     2     8    32   45.0% |      36 | est   -6.1 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    2.5
+ULTRA   M2     -10.0    -2.5 |     3     2     2    21   28.0% |      36 | est   -5.1 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.2
+ULTRA   M2     -10.0    -1.0 |     2     1     6    26   35.0% |      36 | est   -3.6 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    2.9
+ULTRA   M2     -10.0     0.5 |     0     0     5    16   21.0% |      36 | est   -2.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.6
+ULTRA   M2     -10.0     2.0 |     1     0     3    19   23.0% |      36 | est   -1.0 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.5
+ULTRA   M2     -10.0     3.5 |     0     0     3    13   16.0% |      36 | est   -0.2 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.8
+ULTRA   M2     -10.0     5.0 |     0     0     3    13   16.0% |      36 | est    1.8 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.8
+ULTRA   M2     -10.0     6.5 |     0     0     2    11   13.0% |      36 | est    3.5 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.9
+ULTRA   M2     -10.0     8.0 |     0     0     0    10   10.0% |      36 | est    4.1 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.0
+ULTRA   M2     -10.0     9.5 |     0     0     4    10   14.0% |      36 | est    5.3 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.9
+ULTRA   M2     -10.0    11.0 |     0     0     4    13   17.0% |      36 | est    6.0 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.7
+ULTRA   M2     -10.0    12.5 |     0     0     1     8    9.0% |      36 | est    7.2 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.1
+ULTRA   M2     -10.0    14.0 |     0     0     3    18   21.0% |      36 | est    7.6 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.6
+ULTRA   M2     -10.0    15.5 |     0     0     2     7    9.0% |      36 | est    8.7 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.1
+ULTRA   M2     -10.0    17.0 |     0     0     0    12   12.0% |      36 | est    8.2 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    4.0
+ULTRA   M2     -10.0    18.5 |     0     0     2    17   19.0% |      36 | est    8.8 evm  -99.0 pilot -1.000 |    60B air  13.3 ovh  44% good    3.6
+FAIL: ULTRA M2 @ -10.0 dB FER=100.0%
+FAIL: ULTRA M2 @ -8.5 dB FER=100.0%
+FAIL: ULTRA M2 @ -7.0 dB FER=87.0%
+FAIL: ULTRA M2 @ -5.5 dB FER=63.0%
+FAIL: ULTRA M2 @ -4.0 dB FER=45.0%
+FAIL: ULTRA M2 @ -1.0 dB FER=35.0%
+FAIL: ULTRA M2 @ 0.5 dB FER=21.0%
+== 7 conformance failures ==

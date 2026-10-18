@@ -223,6 +223,12 @@ struct Node {
     // SKW_ST2_BAND=vhf runs both modems on the VHF-FM profile through
     // the FM radio emulator (World sets the shuttles).
     if (st2Vhf()) cfg.band = Band::VhfFm;
+    // SKW_ST2_PSK=<64 hex>: both modems encrypt with this pre-shared key
+    // (crypto builds; ignored otherwise).
+    if (const char* k = std::getenv("SKW_ST2_PSK")) {
+      cfg.cryptoEnabled = true;
+      cfg.cryptoPsk = k;
+    }
     cfg.pttLeadMs = 20;
     cfg.pttTailMs = 10;
     w.emplace(cfg, clk, rxRing, txRing);

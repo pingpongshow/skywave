@@ -80,6 +80,7 @@ crypto keeps the spaces apart via a stream id in the nonce
 | `VOICE_DATA` | Codec2 voice payload |
 | `KEY_UPDATE` | in-session crypto epoch rotation ([SECURITY.md](SECURITY.md)) |
 | `TURN_GRANT` | turn-taking: hand the data-sender (ISS) role to the peer (body: u8 grant epoch) |
+| `BCAST_VOICE` | connectionless voice (type 31): a `VOICE_DATA` body outside any session; envelope `session_id` = the sender's 16-bit callsign tag, `sequence` = the sender's own voice counter; never encrypted ([VOICE.md](VOICE.md) "Broadcast Voice") |
 
 ## Handshake
 
@@ -147,7 +148,7 @@ attempts go unanswered automatically retries the remaining attempts at
 | 3 | HARQ-IR |
 | 4 | carrier masking |
 | 5 | burst MAC aggregation |
-| 6 | voice |
+| 6 | voice: required on both ends for `VOICE_OPEN` (an incoming one without it is ignored); advertised by every voice build since v1.2.7 - before that nobody set it and nothing read it |
 | 7 | `CAP_CSS_TIER` (deep tier: M0–M3 modes + handshake-on-CSS) |
 | 8 | `CAP_TURN_SCHED` (scheduled ISS/IRS turn-taking, below) |
 | 9–15 | reserved, must be 0 |
@@ -165,7 +166,7 @@ therefore computed from airtime, which the PHY reports per frame:
 | `START` response timeout | same formula; 4 attempts (8 with CSS) |
 | ACK timeout | adaptive: `burst_airtime + expected_ack_airtime + 3 s` |
 | idle disconnect | 120 s without any valid frame; sessions COMMITTED to a CSS mode scale to `max(120 s, 10 × CALL airtime)` — deep links have routine multi-minute decode droughts, OFDM sessions keep tight hang detection |
-| keepalive interval | 20 s idle |
+| keepalive | `K` = `idle_disconnect / 3` (40 s on OFDM), at least 3 airtimes of the longer of a keepalive and a full DATA frame at the committed mode, at most `idle_disconnect / 2`. The session **initiator** sends one after `K` with nothing sent or heard, and never while data is moving (frames in flight or queued, or DATA heard within `idle_disconnect / 2`); the **responder** answers a keepalive with one if it has not transmitted for `K / 2`, which refreshes both idle clocks. Rides the robust transport (CSS on a CSS session). Disabled until v1.2.7, so an idle session with nothing else on the air (e.g. a pinned mode) died at the idle timeout |
 | `DISC` retry | `2 × frame_airtime + 3 s` cadence, 3 attempts, then unilateral teardown |
 
 (`NARROW` robust-tier exchanges sit near the upper clamps by design; the

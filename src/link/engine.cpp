@@ -43,6 +43,7 @@ FsmConfig fsmConfigFor(const HandshakePolicy& p) {
     c.startAttempts = 8;
   }
   c.jitterSeed = callsignHash24(p.ownCall);  // CALL-retry backoff jitter
+  c.keepaliveEnabled = getenv("SKW_NO_KEEPALIVE") == nullptr;  // A/B knob
   return c;
 }
 
@@ -806,19 +807,103 @@ double LinkEngine::retryRatio() const {
 }
 
 #ifdef SKW_HAVE_VOICE
+std::optional<VoicePlan> planVoiceStream(Family f, int mode, CpMode cp,
+                                         std::optional<VoiceCodec> want) {
+  if (mode < 8 || mode >= kNumModes || !kModes[size_t(mode)].active) {
+    return std::nullopt;  // voice needs an unspread mode
+  }
+  auto shape = [&](VoiceCodec c, int codewords) {
+    VoicePlan p;
+    p.codec = c;
+    const size_t bpf = size_t(voiceCodecBytesPerFrame(c));
+    const double frameSec =
+        double(voiceCodecSamplesPerFrame(c)) / kVoiceSampleRate;
+    const size_t budget = dataPayloadBudget(mode, 1, codewords);
+    size_t frames = std::min<size_t>(budget > 6 ? (budget - 6) / bpf : 0, 255);
+    frames = std::min(frames, size_t(kVoiceUnitMaxSec / frameSec));
+    p.unitBytes = 6 + frames * bpf;
+    p.unitSpeechSec = double(frames) * frameSec;
+    TxFrameParams tp;
+    tp.family = f;
+    tp.mode = mode;
+    tp.sig = sigForMode(mode);
+    tp.cpMode = cp;
+    tp.payload = std::vector<uint8_t>(p.unitBytes + kEnvelopeBytes + 4);
+    p.airFrac = p.unitSpeechSec > 0 ? frameAirtimeSec(tp) / p.unitSpeechSec : 99.0;
+    p.realTime = frames > 0 && p.airFrac <= kVoiceRealTimeFrac;
+    return p;
+  };
+  const VoiceCodec ladder[4] = {VoiceCodec::C3200, VoiceCodec::C2400,
+                                VoiceCodec::C1300, VoiceCodec::C700};
+  for (VoiceCodec c : ladder) {
+    if (want && uint8_t(c) > uint8_t(*want)) continue;  // never above the ask
+    if (!clampVoiceCodec(f, mode, c) || *clampVoiceCodec(f, mode, c) != c) continue;
+    for (int k = 1; k <= 4; ++k) {
+      VoicePlan p = shape(c, k);
+      if (p.realTime) return p;
+    }
+  }
+  if (!want) return std::nullopt;  // AUTO: no codec keeps up here
+  auto c = clampVoiceCodec(f, mode, *want);
+  if (!c) return std::nullopt;
+  VoicePlan p = shape(*c, 4);
+  if (p.unitBytes <= 6) return std::nullopt;
+  return p;  // operator's choice: honoured, flagged not real-time
+}
+
 bool LinkEngine::openVoice(std::optional<VoiceCodec> want, double now) {
   if (fsm_.state() != FsmState::Connected) return false;
-  auto codec = want ? clampVoiceCodec(cfg_.policy.family, mode_, *want)
-                    : autoVoiceCodec(cfg_.policy.family, mode_);
-  if (!codec) return false;  // mode cannot carry voice
+  // The peer must have advertised voice: kCapVoice was defined and sent
+  // by nobody and read by nothing, so a voice-less peer was asked to
+  // open voice it could not play.
+  if (!(sessionCaps_ & kCapVoice)) return false;
+  if (bvOpen_) return false;  // one voice service at a time
+  auto plan = planVoiceStream(cfg_.policy.family, mode_, cpMode_, want);
+  if (!plan) return false;  // mode cannot carry voice
   voiceCodecAuto_ = !want.has_value();
-  voiceEnc_.setCodec(*codec);
-  voiceFsm_.cmdOpen(*codec, now);
+  voicePlan_ = *plan;
+  voiceEnc_.setCodec(plan->codec);
+  voiceFsm_.cmdOpen(plan->codec, now);
   drainVoiceActions(now);
   return true;
 }
 
+bool LinkEngine::openBroadcastVoice(std::optional<VoiceCodec> want, int mode,
+                                    double now) {
+  // A session's channel belongs to the session; broadcast is for an idle
+  // station (VOICE.md).
+  if (fsm_.state() != FsmState::Idle) return false;
+  if (voiceFsm_.state() != VoiceState::Closed) return false;
+  if (mode < kFirstMode || mode >= kNumModes || !kModes[size_t(mode)].active) {
+    return false;
+  }
+  auto plan = planVoiceStream(cfg_.policy.family, mode,
+                              activeProfile().cpDefault, want);
+  if (!plan) return false;  // the mode cannot carry voice
+  voiceCodecAuto_ = !want.has_value();
+  bvPlan_ = *plan;
+  voiceEnc_.reset();
+  voiceEnc_.setCodec(plan->codec);
+  bvOpen_ = true;
+  bvTalking_ = false;
+  bvMode_ = mode;
+  events_.push_back("EVT:VOICE OPEN");
+  (void)now;
+  return true;
+}
+
 void LinkEngine::closeVoice(double now) {
+  if (bvOpen_) {
+    if (bvTalking_) {
+      emitVoiceUnits(/*flush=*/true);  // the tail
+      events_.push_back("EVT:VOICE STOPPED");
+    }
+    bvOpen_ = false;
+    bvTalking_ = false;
+    voiceEnc_.reset();
+    events_.push_back("EVT:VOICE CLOSED");
+    return;
+  }
   if (voiceFsm_.talking()) emitVoiceUnits(/*flush=*/true);  // the tail
   voiceFsm_.cmdClose(now);
   drainVoiceActions(now);
@@ -829,6 +914,21 @@ void LinkEngine::closeVoice(double now) {
 }
 
 bool LinkEngine::setVoicePtt(bool on, double now) {
+  if (bvOpen_) {
+    // No grant to wait for: the operator keys a broadcast like a voice
+    // transceiver.
+    if (on && !bvTalking_) {
+      voiceEnc_.discardPcm();
+      bvTalking_ = true;
+      events_.push_back("EVT:VOICE TALKING");
+    } else if (!on && bvTalking_) {
+      emitVoiceUnits(/*flush=*/true);
+      bvTalking_ = false;
+      voiceEnc_.discardPcm();
+      events_.push_back("EVT:VOICE STOPPED");
+    }
+    return true;
+  }
   if (voiceFsm_.state() == VoiceState::Closed) return false;
   if (on) {
     // A new spurt starts with what is said from now on - never stale
@@ -869,7 +969,7 @@ void LinkEngine::pushVoicePcm(std::span<const int16_t> pcm) {
   // Only while a spurt is being requested or spoken: the app streams mic
   // audio continuously, and the encoder used to accumulate it all and
   // replay it at the next PTT.
-  if (!voiceFsm_.capturing()) return;
+  if (!voiceFsm_.capturing() && !bvTalking_) return;
   voiceEnc_.pushPcm(pcm);
 }
 
@@ -925,20 +1025,35 @@ void LinkEngine::drainVoiceActions(double now) {
 }
 
 void LinkEngine::pumpVoice(double now) {
+  // A broadcast receiver goes quiet when its sender does.
+  if (bvRxActive_ && now - bvRxLastAt_ > kBcastVoiceIdleSec) {
+    bvRxActive_ = false;
+    events_.push_back("EVT:VOICE BCAST END");
+  }
+  if (bvTalking_) {
+    emitVoiceUnits(/*flush=*/false);
+    return;
+  }
   if (!voiceFsm_.talking()) return;
   // AMC demoted below what the codec needs: step down at the next frame
   // boundary rather than dropping voice (VOICE.md).
-  if (voiceCodecAuto_) {
-    if (auto best = autoVoiceCodec(cfg_.policy.family, mode_)) {
-      if (*best != voiceFsm_.codec()) {
-        voiceFsm_.setCodec(*best);
-        voiceEnc_.setCodec(*best);
-        events_.push_back("EVT:VOICE codec");
-      }
-    } else {
+  // The AMC moved the session: re-plan at the new mode (codec and unit
+  // size), stepping the codec at the next frame boundary.
+  {
+    std::optional<VoiceCodec> want;
+    if (!voiceCodecAuto_) want = voiceFsm_.codec();
+    auto plan = planVoiceStream(cfg_.policy.family, mode_, cpMode_,
+                                voiceCodecAuto_ ? std::nullopt : want);
+    if (!plan) {
       closeVoice(now);  // below the family's voice floor entirely
       return;
     }
+    if (plan->codec != voiceFsm_.codec()) {
+      voiceFsm_.setCodec(plan->codec);
+      voiceEnc_.setCodec(plan->codec);
+      events_.push_back("EVT:VOICE codec");
+    }
+    voicePlan_ = *plan;
   }
   emitVoiceUnits(/*flush=*/false);
 }
@@ -947,21 +1062,33 @@ void LinkEngine::emitVoiceUnits(bool flush) {
   // Stream units back-to-back while the talkspurt holds the channel.
   // Voice preempts queued DATA but never control (queueControl pushes
   // control ahead of data already).
-  while (auto unit = voiceEnc_.nextUnit(dataBudget_, flush)) {
+  // Broadcast: no session, no key, no ARQ floor - the sender's tag in
+  // the session field and its own counter, at the broadcast mode.
+  const bool bcast = bvOpen_;
+  const int mode = bcast ? bvMode_ : mode_;
+  const size_t budget = bcast ? bvPlan_.unitBytes : voicePlan_.unitBytes;
+  while (auto unit = voiceEnc_.nextUnit(budget, flush)) {
     OutFrame f;
-    f.env.type = LinkType::VoiceData;
-    f.env.sessionId = sessionId_;
-    f.env.sequence = voiceTxSeq_++;  // independent voice counter
-    f.env.ackBase = arqRx_.ackBase();
     f.body = unit->pack();
+    if (bcast) {
+      f.env.type = LinkType::BcastVoice;
+      f.env.sessionId = bcastSenderTag();
+      f.env.sequence = bvTxSeq_++;
+      f.env.ackBase = 0;
+    } else {
+      f.env.type = LinkType::VoiceData;
+      f.env.sessionId = sessionId_;
+      f.env.sequence = voiceTxSeq_++;  // independent voice counter
+      f.env.ackBase = arqRx_.ackBase();
 #ifdef SKW_HAVE_CRYPTO
-    if (cryptoOn_) {
-      f.env.flags |= kFlagEncrypted;
-      if (!sealPayload(f.env, f.body)) return;  // no key: never send
-    }
+      if (cryptoOn_) {
+        f.env.flags |= kFlagEncrypted;
+        if (!sealPayload(f.env, f.body)) return;  // no key: never send
+      }
 #endif
-    f.sig = sigForMode(mode_);
-    f.mode = mode_;
+    }
+    f.sig = sigForMode(mode);
+    f.mode = mode;
     // Ahead of DATA, behind control.
     outQueue_.insert(std::find_if(outQueue_.begin(), outQueue_.end(),
                                   [](const OutFrame& q) {
@@ -969,6 +1096,39 @@ void LinkEngine::emitVoiceUnits(bool flush) {
                                   }),
                      std::move(f));
   }
+}
+void LinkEngine::rxBroadcastVoice(const ParsedFrame& f, double now) {
+  // A session owns the voice path; so does our own voice service.
+  if (fsm_.state() != FsmState::Idle || bvOpen_ ||
+      voiceFsm_.state() != VoiceState::Closed) {
+    return;
+  }
+  auto vd = VoiceDataBody::parse(f.body);
+  if (!vd || (f.env.flags & kFlagEncrypted)) return;
+  const uint16_t tag = f.env.sessionId;
+  if (!bvRxActive_ || (tag != bvRxTag_ && now - bvRxLastAt_ > kBcastVoiceIdleSec)) {
+    // New broadcast (or the previous sender went quiet): start clean.
+    jitter_.reset();
+    voiceDec_.reset();
+    bvRxActive_ = true;
+    bvRxTag_ = tag;
+    char ev[40];
+    snprintf(ev, sizeof(ev), "EVT:VOICE BCAST %04X", unsigned(tag));
+    events_.push_back(ev);
+  } else if (tag != bvRxTag_) {
+    return;  // another sender keyed over the one we follow
+  } else {
+    const int16_t gap = seqDiff(f.env.sequence, bvRxSeq_);
+    if (gap > 1) {
+      voiceDec_.onGap(std::min<int>(gap - 1, 16) * vd->frameCount);
+    } else if (gap <= 0) {
+      return;  // duplicate or reordered
+    }
+  }
+  bvRxSeq_ = f.env.sequence;
+  bvRxLastAt_ = now;
+  voiceDec_.onVoiceData(*vd);
+  jitter_.push(voiceDec_.takePcm());
 }
 #endif  // SKW_HAVE_VOICE
 
@@ -1290,6 +1450,16 @@ void LinkEngine::drainFsmActions(double now) {
                      mode_ <= 3 ? 0 : 4);
         break;
       case FsmAction::SendKeepalive:
+        // The INITIATOR probes a quiet link; the responder answers (see
+        // the Keepalive handler), which refreshes both idle clocks. A
+        // responder probing as well keyed a CSS keepalive into the
+        // initiator's 40 s deep-tier DATA frame - silence to it until the
+        // frame decodes. Neither end probes while data is moving.
+        if (!isInitiator_ || arqTx_.inFlight() > 0 || !outQueue_.empty() ||
+            (lastDataRxAt_ > 0.0 &&
+             now - lastDataRxAt_ < fsm_.idleDisconnectSec() / 2.0)) {
+          break;
+        }
         // Robust transport ALWAYS: the keepalive is the liveness probe
         // of last resort. Riding the fast session mode made a stranded
         // fast-mode session totally deaf when the channel collapsed
@@ -1334,9 +1504,7 @@ void LinkEngine::drainFsmActions(double now) {
         txMask_ = CarrierMask();
         rxMask_ = CarrierMask();
         pendingMaskEpoch_ = -1;
-        fsm_.setIdleDisconnectSec(
-            kModes[size_t(mode_)].waveform == Waveform::Css ? deepIdleSec_
-                                                            : 120.0);
+        applySessionTimers();
         AmcConfig ac;
         ac.family = cfg_.policy.family;
         ac.maxMode = cfg_.policy.maxMode;
@@ -1942,9 +2110,7 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
   // Deep-tier sessions survive routine multi-minute decode droughts
   // (only a DECODED frame refreshes the idle clock at ~50% frame FER);
   // OFDM sessions keep the tight 120 s hang detection.
-  fsm_.setIdleDisconnectSec(
-      kModes[size_t(mode_)].waveform == Waveform::Css ? deepIdleSec_
-                                                      : 120.0);
+  applySessionTimers();
   updateArqTimeout();
   if (amc_) amc_->onModeApplied(uint8_t(mode), now);
   // A responder's pin request is satisfied once the mode it asked for is
@@ -1964,6 +2130,34 @@ void LinkEngine::applyMode(int mode, CpMode cp, double now) {
 void LinkEngine::onCfoReport(double reportedHz) {
   txShiftHz_ =
       std::clamp(txShiftHz_ - reportedHz / 2.0, -kTxShiftMaxHz, kTxShiftMaxHz);
+}
+
+// Idle-disconnect and keepalive timers for the committed mode. A keepalive
+// rides the robust transport (CSS on a CSS session): ~4.4 s of air on
+// WIDE, ~20 s on NARROW, so every 20 s from both ends kept an idle WIDE
+// channel ~40% busy. The interval is a third of the idle timeout (three
+// chances before the peer gives up), at least three keepalive airtimes,
+// and at most half the idle timeout (PROTOCOL.md).
+void LinkEngine::applySessionTimers() {
+  const bool css = kModes[size_t(mode_)].waveform == Waveform::Css;
+  const double idle = css ? deepIdleSec_ : 120.0;
+  fsm_.setIdleDisconnectSec(idle);
+  // The longer of the keepalive itself and a full DATA frame at the
+  // committed mode: a station receiving a 40 s deep-tier frame has heard
+  // nothing for that long and must not read it as a quiet link.
+  TxFrameParams ka;
+  ka.family = cfg_.policy.family;
+  ka.sig = mode_ <= 3 ? ChirpSig::Css : ChirpSig::Robust;
+  ka.mode = mode_ <= 3 ? mode_ : 4;
+  ka.payload = std::vector<uint8_t>(kEnvelopeBytes + 8);
+  TxFrameParams data;
+  data.family = cfg_.policy.family;
+  data.sig = sigForMode(mode_);
+  data.mode = mode_;
+  data.cpMode = cpMode_;
+  data.payload = std::vector<uint8_t>(dataPayloadBudget(mode_, 1, 2) + 15);
+  const double air = std::max(frameAirtimeSec(ka), frameAirtimeSec(data));
+  fsm_.setKeepaliveSec(std::min(std::max(idle / 3.0, 3.0 * air), idle / 2.0));
 }
 
 void LinkEngine::requestModeChange(int target, CpMode cp, double now) {
@@ -2906,6 +3100,9 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   }
   OutFrame f = std::move(*pick);
   outQueue_.erase(pick);
+  // Our own traffic is what keeps the PEER's idle clock fresh: no
+  // keepalive while we are sending anything.
+  if (fsm_.state() == FsmState::Connected) fsm_.txTraffic(now);
   // Handshake round-trip stopwatch: the four-frame connect exchange is
   // the only unambiguous latency measurement the link ever gets (no
   // retransmission ambiguity), and it measures exactly what the ARQ
@@ -3283,6 +3480,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Cq:
     case LinkType::Beacon:
     case LinkType::BcastData:
+    case LinkType::BcastVoice:
       break;  // pre-session / connectionless: their handlers gate them
     default:
       if ((fsm_.state() != FsmState::Connected &&
@@ -3332,6 +3530,7 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::Cq:
     case LinkType::Beacon:
     case LinkType::BcastData:
+    case LinkType::BcastVoice:
       break;
     default:
       if (fsm_.state() == FsmState::Connected &&
@@ -3963,12 +4162,14 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
     case LinkType::VoiceOpen: {
       auto vo = VoiceOpenBody::parse(f.body);
       if (!vo || fsm_.state() != FsmState::Connected) return;
+      if (!(sessionCaps_ & kCapVoice) || bvOpen_) return;  // not negotiated
       // Accept at what our transport can carry (never above the peer's
       // proposal): the responder may only lower it.
-      auto codec = clampVoiceCodec(cfg_.policy.family, mode_, vo->codec);
-      if (!codec) return;  // cannot carry voice here: stay silent
-      voiceEnc_.setCodec(*codec);
-      voiceFsm_.rxOpen(*codec, now);
+      auto plan = planVoiceStream(cfg_.policy.family, mode_, cpMode_, vo->codec);
+      if (!plan) return;  // cannot carry voice here: stay silent
+      voicePlan_ = *plan;
+      voiceEnc_.setCodec(plan->codec);
+      voiceFsm_.rxOpen(plan->codec, now);
       drainVoiceActions(now);
       break;
     }
@@ -4029,9 +4230,24 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       jitter_.push(voiceDec_.takePcm());
       break;
     }
+    case LinkType::BcastVoice:
+      rxBroadcastVoice(f, now);
+      break;
 #endif
     case LinkType::Keepalive:
-      break;  // rxTraffic already refreshed the idle timer
+      // rxTraffic already refreshed OUR idle timer. Answer if we have been
+      // silent a while, so the sender's is refreshed too: on a quiet link
+      // the station that hears keepalives would otherwise never send.
+      if (fsm_.state() == FsmState::Connected &&
+          now - fsm_.lastTxTime() >= fsm_.keepaliveSec() / 2.0 &&
+          std::none_of(outQueue_.begin(), outQueue_.end(), [](const OutFrame& q) {
+            return q.env.type == LinkType::Keepalive;
+          })) {
+        queueControl(LinkType::Keepalive, KeepaliveBody{20}.pack(),
+                     mode_ <= 3 ? ChirpSig::Css : ChirpSig::Robust,
+                     mode_ <= 3 ? mode_ : 4);
+      }
+      break;
     case LinkType::TurnGrant: {
       auto tg = TurnGrantBody::parse(f.body);
       if (!tg || !turnSchedActive()) return;

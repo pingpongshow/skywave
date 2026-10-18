@@ -198,8 +198,13 @@ void SessionFsm::tick(double now) {
         toIdle(FsmDiscCause::IdleTimeout);
         break;
       }
+      // Only on a quiet link: nothing sent AND nothing heard for
+      // keepaliveSec. A station that is receiving is in a live session
+      // and must not key over the sender (a deep-tier IRS between ACKs
+      // keyed a CSS keepalive into the DATA window).
       if (cfg_.keepaliveEnabled &&
-          now - lastTxTime_ >= cfg_.keepaliveSec) {
+          now - lastTxTime_ >= cfg_.keepaliveSec &&
+          now - lastRxTime_ >= cfg_.keepaliveSec) {
         emit(FsmAction::SendKeepalive);
         lastTxTime_ = now;
       }

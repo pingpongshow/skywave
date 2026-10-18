@@ -263,6 +263,14 @@ inline constexpr double kFadingNA = 99.0;
 // docs/conformance/css_fading_floors_2026-10-14/ - RE-RUN after the CSS
 // branch-retry fix (same campaign): about ten entries moved by 0.5-3 dB,
 // mostly down (Poor WIDE M1 2.0 -> -1.0, ULTRA M1 4.0 -> 1.5).
+// RE-MEASURED 2026-10-18 (same campaign, docs/conformance/
+// css_fading_floors_2026-10-18/): every common point identical to the
+// 10-14 curves (seeded; the CSS receiver is unchanged), so the tables
+// stand - except three entries that had not been set to what
+// tools/floor_tables.py derives from those curves, now applied after a
+// fresh-seed check (200 trials at floor+1 / floor+3): Good NARROW M0
+// -11.5 -> -12.0 (12.5% / 6.5%), Poor WIDE M2 NA -> 5.0 (10.5% / 10.0%,
+// an outage plateau at the gate), Poor ULTRA M1 1.5 -> 0.5 (11% / 8%).
 inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // WIDE
     {{-8.5, -5.5, -4.0, -1.5,
@@ -274,7 +282,7 @@ inline constexpr std::array<FloorTable, kNumFamilies> kFadingFloors = {{
     // for v1.2.1: 400 trials gave 15.2% at the old floor+1 (the 15% gate
     // passed on slack alone) and 12.2% at -7.0; the fixed-seed 40-trial
     // release sweep failed the point identically at v1.2.0 and v1.2.1.
-    {{-11.5, -11.0, -10.0, -7.5,
+    {{-12.0, -11.0, -10.0, -7.5,
       -10.5, -8.0, -5.5, -3.0, 5.0, 8.0, 10.0, 13.5, 16.5, 21.5, kFadingNA}},
     // ULTRA
     {{-7.5, -6.5, -4.0, -1.5,
@@ -314,7 +322,7 @@ inline constexpr std::array<FloorTable, kNumFamilies> kModerateFloors = {{
 }};
 inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
     // WIDE
-    {{-3.5, -1.0, kFadingNA, kFadingNA,
+    {{-3.5, -1.0, 5.0, kFadingNA,
       -4.0, -2.5, 0.5, 2.0, 11.5, 19.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // MID
     {{-9.0, -5.0, -5.0, 2.5,
@@ -323,7 +331,7 @@ inline constexpr std::array<FloorTable, kNumFamilies> kPoorFloors = {{
     {{-13.0, -12.0, -9.5, -6.0,
       -10.0, -9.5, -8.0, -5.0, 10.5, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
     // ULTRA
-    {{-3.0, 1.5, kFadingNA, kFadingNA,
+    {{-3.0, 0.5, kFadingNA, kFadingNA,
       -4.0, -2.5, 0.5, 3.5, 12.5, 20.0, kFadingNA, kFadingNA, kFadingNA, kFadingNA, kFadingNA}},
 }};
 inline double fadingFloorDb(Family f, int mode);  // active profile

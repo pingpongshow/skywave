@@ -30,7 +30,7 @@ std::optional<std::string> getCall(ByteReader& r) {
 }  // namespace
 
 bool isKnownLinkType(uint8_t v) {
-  return v >= uint8_t(LinkType::Call) && v <= uint8_t(LinkType::TurnGrant);
+  return v >= uint8_t(LinkType::Call) && v <= uint8_t(LinkType::BcastVoice);
 }
 
 // ----------------------------------------------------------------- envelope

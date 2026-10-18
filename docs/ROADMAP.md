@@ -597,6 +597,12 @@ others `[P]` across tracks.*
   with an exact sample count; 5%/10% unit loss over a 20 s spurt keeps
   the timeline sample-exact with concealment counted; decay to silence
   verified. `SKW_VOICE_ARTIFACTS=<dir>` dumps 8 kHz s16le for listening.
+  **Correction 2026-10-18:** "a talkspurt pays the preamble once" was
+  never true - every unit is its own PHY frame with its own preamble,
+  sync and header, which put most HF modes behind real time (see "Voice
+  through the whole modem" below). No artifacts were archived and no
+  listening result is recorded; the system tests now score fidelity by
+  correlation against a local Codec2 round trip.
   Deviations: (1) frame geometry is queried from libcodec2 at runtime, not
   tabulated — Codec2's frame durations are non-uniform (700C/1300 are
   40 ms, 2400/3200 are 20 ms) and a stale local table would silently
@@ -604,7 +610,10 @@ others `[P]` across tracks.*
   so CMake must put the PARENT of the pkg-config include dir on the path.
 - [x] **5.5 Voice: session control + port** — OPEN/PTT-arbitration/CLOSE
   flows, broadcast voice, jitter buffer, voice TCP port records, codec
-  auto-mapping with demotion stepdown.
+  auto-mapping with demotion stepdown. **Correction 2026-10-18:** broadcast
+  voice was not built (`VOICE BROADCAST` only set a flag) and the voice
+  port was never tested; both done in "Voice through the whole modem"
+  below.
   *Gate: two-modem `voice_loop` scenario + command surface.*
   ✓ 2026-07-29 — `voice/session`: `VoiceFsm` (Closed/Opening/Open/
   Requesting/Talking/Receiving) with OPEN retries, a deterministic
@@ -1349,6 +1358,54 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### Voice through the whole modem; keepalive; CSS floors (2026-10-18)
+
+Until now voice had run only between two in-process engines on a clean
+channel. New: `voice_st2` (two full modems: CCIR Good/Moderate, both
+directions, encrypted, VHF-FM with flutter and at 700C, broadcast on
+static and fading channels), a voice phase in `st3_hardware` (both TCP
+voice ports over real audio devices), engine tests for capability,
+broadcast and the voice plan, and companion-app voice port tests.
+
+- **Broadcast voice implemented.** `VOICE BROADCAST` + `VOICESTART` +
+  `VOICEPTT` send `BCAST_VOICE` (new link type 31) talkspurts with no
+  session at `voice.broadcast_mode`; any listening idle Skywave plays one
+  out, locked to one sender (`EVT:VOICE BCAST <tag>` / `... END`,
+  `BCASTRX=ON`). Before, the mode was a flag and `VOICESTART` failed.
+- **Voice capability enforced.** `CAP_VOICE` is advertised by voice
+  builds and required on both ends; it was sent by nobody and read by
+  nothing.
+- **Voice kept up with real time only on WIDE M8/M9 and VHF.** Every unit
+  is its own PHY frame (0.6-1.3 s of fixed overhead on HF), so AUTO's
+  NET-rate rule put most HF modes behind: WIDE M10 at 2400 aired 160% of
+  its speech. AUTO now plans codec and unit size together (1-4 codewords,
+  <= 3 s of speech, airtime <= 85% of the speech); it declines where no
+  plan keeps up (NARROW, MID below M12), and a manual codec still works,
+  reported `RT=NO`. Latency to first audio: 4-7 s HF, 1-2 s VHF.
+- **Keepalive was never enabled** (flag-gated in Phase 2, nothing set the
+  flag): an idle session with nothing else on the air died at 120 s - any
+  pinned-mode session did, which is how the voice tests found it. The
+  initiator now probes a quiet link and the responder answers; neither
+  probes while data moves, and the interval scales with the mode's frame
+  airtime (a responder probe keyed into a 40 s deep-tier DATA frame in
+  the first version). Test `st2_idle_pinned_session_stays_up`.
+- **Unwired settings:** `voice.codec` and `voice.broadcast_mode` were
+  parsed and ignored; `STATUS` reported `CRYPTO=0 EPOCH=0` and `VOICE=off`
+  always; `MODE` refused M14. All fixed.
+- **Results** (`voice_st2`, all pass): CCIR Good 20 dB 100% of speech at
+  similarity 1.00; Moderate 74% (fades lose whole units, never the
+  session); static both directions 100%; encrypted 100%; VHF-FM walking
+  flutter 100%; broadcast static 100%, Good 75%. `st3_hardware` voice:
+  8.0 of 8.0 s through the TCP voice ports over real devices.
+- **CSS fading floors re-measured** (`docs/conformance/
+  css_fading_floors_2026-10-18/`): every common point identical to the
+  2026-10-14 curves, so the tables stand; three entries are now set to
+  what the derivation gives, after a fresh-seed check: Good NARROW M0
+  -11.5 -> -12.0, Poor WIDE M2 NA -> 5.0, Poor ULTRA M1 1.5 -> 0.5.
+- **Still open:** voice on air and by a human listener; preamble-once
+  talkspurt streaming (would cut HF latency and bring MID/NARROW voice
+  back) needs PHY support for continuation frames.
+
 ### VHF-FM through an FM radio (2026-10-17)
 
 Until now every VHF test ran on a flat audio-noise channel, and none ran
@@ -1677,7 +1734,9 @@ MID M0 fading floor.
   WIDE M1 -12.0 -> -12.5, NARROW M1 -17.5 -> -18.0, ULTRA M1 -12.0 ->
   -12.5, NARROW M3 -15.0 -> -14.5 (raised: 19% at -15.0 on this run).
   The CSS fading floors were measured before this fix and are now
-  slightly conservative.
+  slightly conservative. **(Stale: they were re-run after the fix the
+  same day - "CSS fading floors re-run" below - and re-measured again
+  2026-10-18 with identical curves.)**
 - [x] **M7-M9 window 8 re-checked - CLOSED, stays 4 (2026-10-14).** On
   the deterministic harness, window 4 vs 8 over 21 configurations (churn
   seeds 11-16 at 4 and 64 KiB feeds, coupled, one-way floor points on
@@ -1704,8 +1763,12 @@ MID M0 fading floor.
 ## Standing Gates (every phase)
 
 - full unit suite + quick bertool profile green in CI before any check-off
+  (**no CI exists**: "CI" has meant local ctest runs; a Linux build is
+  not recorded)
 - ASan/UBSan green from Phase 0; TSan on thread-touching steps
-- no allocations in the modem worker after startup (debug hook, Phase 0.5+)
+- no allocations in the modem worker after startup (debug hook, Phase
+  0.5+) - **never built**: no allocation hook exists in the tree, and the
+  worker does allocate (captures, frames); the rule is aspirational
 - doc drift fixed in the same change that causes it
 
 ## Deviations Log

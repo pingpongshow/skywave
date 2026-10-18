@@ -57,12 +57,18 @@ enum class LinkType : uint8_t {
   VoiceData = 28,
   KeyUpdate = 29,
   TurnGrant = 30,
+  // Connectionless voice (VOICE.md "Broadcast Voice"): a VOICE_DATA body
+  // outside any session; the envelope session_id carries the sender's
+  // 16-bit tag (as BCAST_DATA) and sequence a per-sender voice counter.
+  BcastVoice = 31,
 };
 bool isKnownLinkType(uint8_t v);
 
 // VOICE_DATA rides the independent voice-stream counter; everything else
 // (that carries a meaningful sequence at all) is ARQ space.
-inline bool usesVoiceSequence(LinkType t) { return t == LinkType::VoiceData; }
+inline bool usesVoiceSequence(LinkType t) {
+  return t == LinkType::VoiceData || t == LinkType::BcastVoice;
+}
 
 // -------------------------------------------------------------------- flags
 inline constexpr uint8_t kFlagCompressed    = 1u << 0;

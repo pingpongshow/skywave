@@ -374,4 +374,21 @@ TEST_CASE(st2_peer_death_digital_silence) {
   CHECK(w.waitState(w.b, "CONNECTED", 1000));
 }
 
+// Keepalives were flag-gated off and nothing enabled them: an idle
+// session with nothing else on the air died at the 120 s idle timeout.
+// An unpinned session hid it (AMC probes are traffic); a pinned one (an
+// operator's MODE, the voice tests) dropped every time. Both ends now
+// keep it alive.
+TEST_CASE(st2_idle_pinned_session_stays_up) {
+  World w(24.0, 33);
+  CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+  CHECK(w.waitState(w.a, "CONNECTED", 6000));
+  CHECK(w.waitState(w.b, "CONNECTED", 1000));
+  CHECK(w.cmd(w.a, "MODE M10") == "MODE M10");
+  for (int i = 0; i < int(300.0 / kRoundSec); ++i) w.round();  // 5 idle minutes
+  CHECK(w.cmd(w.a, "STATE") == "STATE CONNECTED");
+  CHECK(w.cmd(w.b, "STATE") == "STATE CONNECTED");
+  CHECK(!w.a.saw("EVT:DISCONNECTED"));
+}
+
 SKYTEST_MAIN

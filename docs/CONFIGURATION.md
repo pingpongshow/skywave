@@ -136,8 +136,8 @@ depends on it.)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `codec` | `auto` | `auto/700c/1300/2400/3200` |
-| `broadcast_mode` | `m9` | manual mode for broadcast voice |
+| `codec` | `auto` | `auto/700c/1300/2400/3200`: the startup `VOICECODEC` (a `VOICECODEC` change is saved on exit). Parsed but ignored before v1.2.7 |
+| `broadcast_mode` | `m9` | mode for broadcast voice (`m8`..., or `auto` = the most robust mode with a real-time voice plan). Parsed but ignored before v1.2.7 |
 
 ### `[gui]`
 
@@ -304,6 +304,7 @@ Read by the test and soak binaries, never by `skywave` itself.
 | `SKW_MONKEY_SIMSEC` | `900` | Phase-1 duration of the monkey soak |
 | `SKW_HARQ_TRIALS` | `12` / `10` | Trial counts in `test_harq` |
 | `SKW_GUI_WINDOW` | (unset) | Runs the real-window GUI test; headless path only when unset |
+| `SKW_NO_KEEPALIVE` | (unset) | A/B: disable session keepalives (PROTOCOL.md) |
 | `SKW_VOICE_ARTIFACTS` | (unset) | Directory for decoded voice artifacts from `test_voice` |
 | `SKW_ST3_SOAK` | `60` | ST3 hardware soak duration in seconds |
 | `SKW_ST3_IMPAIR` | (unset) | ST3 impairment string |

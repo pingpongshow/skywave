@@ -11,48 +11,59 @@ port only ever carries PCM; the modem performs all codec work internally.
 - on-air media: Codec2 frames inside `VOICE_DATA` link frames
 - voice requires an unspread OFDM mode — there is no robust-tier voice
 
-## Talkspurt Streaming (Key Design Constraint)
+## Talkspurt Streaming and Real Time
 
-A per-packet preamble + PHY header costs ~0.4–3 s of airtime — more than the
-speech it would carry. Voice therefore **streams**: a granted talkspurt is
-one continuous transmission that pays the preamble + header cost once, then
-sends `VOICE_DATA` codewords back-to-back until PTT end. The receiver's
-tracking loop and scattered pilots hold sync across the whole spurt.
-Streaming overhead (envelope + body headers amortized over a spurt) is ~5%
-of the codec rate.
+The original design streamed a talkspurt as one continuous transmission
+that paid the preamble + PHY header once. That was never built: every
+`VOICE_DATA` unit is its own PHY frame with its own chirp preamble, ZC
+sync and header. On HF that fixed cost is 0.6-1.3 s per frame, so a codec
+that merely fits a mode's NET rate can still fall behind real time - WIDE
+`M10` at `2400` aired 160% of the speech it carried, and a long spurt
+lagged further every second (found 2026-10-18; ROADMAP).
+
+Voice therefore plans the **codec and the unit size together**
+(`planVoiceStream`): the highest codec, and the smallest unit of 1-4 LDPC
+codewords holding at most 3 s of speech, whose frame airtime is at most
+85% of the speech it carries. AUTO uses only such real-time plans. A
+manual `VOICECODEC` that no plan can stream is still honoured (4-codeword
+units) and `VOICESTATUS` reports `RT=NO`.
+
+Latency follows from the unit: first audio arrives one unit of speech
+plus its airtime after PTT - about 4-6 s on HF (2-3 s units), 1-2 s on
+VHF-FM (0.4-1 s units). A fade loses a whole unit of speech, never the
+session.
 
 ## Codec Set and Mode Mapping
 
 Codec2 modes used: `700C` (700 bps), `1300`, `2400`, `3200`.
 
-`VOICECODEC AUTO` resolves from family + current session mode, choosing the
-highest codec whose streamed rate (codec + ~5% overhead) fits the mode's NET
-rate with margin:
+`VOICECODEC AUTO` (MEDIUM CP; unit = speech per frame):
 
-| Family | Session mode | Effective codec |
-|---|---|---|
-| `ULTRA` | `M8` | `1300` |
-| `ULTRA` | `M9` | `2400` |
-| `ULTRA` | `M10+` | `3200` |
-| `WIDE` | `M8` | `1300` |
-| `WIDE` | `M9` | `2400` |
-| `WIDE` | `M10+` | `3200` |
-| `MID` | `M8`–`M9` | `700C` |
-| `MID` | `M10`–`M11` | `1300` |
-| `MID` | `M12+` | `2400` |
-| `NARROW` | `M11+` | `700C` |
+| Family | Mode | Codec | Unit | Airtime / speech |
+|---|---|---|---|---|
+| `WIDE` | `M8` | `700C` | 2.5 s | 74% |
+| `WIDE` | `M9` | `1300` | 3.0 s | 81% |
+| `WIDE` | `M10` | `1300` | 2.1 s | 76% |
+| `WIDE` | `M11` | `2400` | 2.5 s | 76% |
+| `WIDE` | `M12` | `2400` | 1.6 s | 82% |
+| `WIDE` | `M13` | `3200` | 2.0 s | 75% |
+| `ULTRA` | `M8`-`M13` | `700C`/`1300`/`1300`/`2400`/`2400`/`3200` | 1.5-2.5 s | 68-81% |
+| `MID` | `M12` | `700C` | 3.0 s | 71% |
+| `MID` | `M13` | `700C` | 2.1 s | 81% |
+| `NARROW` | - | none (no plan keeps up; a manual codec is allowed at `M11+`, `RT=NO`) | | |
+| `VHF` | `M8`-`M14` | `3200` | 0.4-0.9 s | 55-82% |
 
-Voice does not auto-open below the first row of its family. Manual codec
-selection is clamped to what the current mode can carry.
+Voice does not open where AUTO has no plan. Manual codec selection is
+clamped to what the mode's NET rate can carry.
 
-If AMC demotes below the active codec's requirement mid-talkspurt, the codec
-steps down at the next frame boundary (with an `EVT:VOICE codec` event); if
-the session drops below the family's voice floor, voice closes cleanly.
+If AMC moves the session mid-talkspurt, the plan is redone at the new
+mode: the codec steps at the next frame boundary (`EVT:VOICE codec`); if
+no plan exists any more, voice closes cleanly.
 
 ## Framing
 
-- within a talkspurt stream, Codec2 frames are packed into `VOICE_DATA`
-  units sized to one LDPC codeword each (typically 160–480 ms of speech
+- Codec2 frames are packed into `VOICE_DATA` units sized by the voice
+  plan above (1-4 LDPC codewords, at most 3 s of speech; ~0.4-3 s
   depending on codec and mode)
 - `VOICE_DATA` body: codec id (u8), frame count (u8), timestamp (u32,
   8 kHz sample units), packed codec frames
@@ -88,10 +99,28 @@ A or B: VOICE_CLOSE
 
 ### Broadcast Voice
 
-One-way announcement without a session: the `VOICE BROADCAST` state transmits
-`VOICE_DATA` frames after a beacon-style header at a fixed manual mode
-(config choice among the family's voice-capable modes). Any monitoring
-Skywave can play it out.
+One-way talkspurts without a session (`VOICE BROADCAST`, `VOICESTART`,
+`VOICEPTT ON|OFF`). Units go out as `BCAST_VOICE` link frames - a
+`VOICE_DATA` body whose envelope `session_id` carries the sender's 16-bit
+callsign tag (as `BCAST_DATA`) and whose `sequence` is the sender's own
+voice counter - at the fixed mode `voice.broadcast_mode` (default `m9`;
+`auto` = the most robust mode with a real-time plan, WIDE `M8`), never
+encrypted.
+There is no grant: the operator keys it like a voice transceiver, so
+listen before talking.
+
+Any **listening** Skywave that is not in a session plays a broadcast out
+on its voice port. It locks onto one sender (`EVT:VOICE BCAST <tag>`),
+ignores others keying over it, conceals gaps in the sender's counter,
+and releases after 3 s of silence (`EVT:VOICE BCAST END`). `VOICESTATUS`
+shows `BCASTRX=ON` meanwhile. Implemented 2026-10-18: before that,
+`VOICE BROADCAST` only set a flag.
+
+### Capability
+
+Voice is negotiated: each modem built with voice advertises `CAP_VOICE`,
+and `VOICESTART` (and an incoming `VOICE_OPEN`) needs it on both ends.
+Before 2026-10-18 the bit was sent by nobody and read by nothing.
 
 ## Control Surface
 
@@ -105,8 +134,25 @@ Skywave can play it out.
 
 ```text
 VOICESTATUS MODE=CONNECTED CODEC=AUTO(1300) STATE=OPEN PTT=OFF GRANTED=OFF
-TXQ=0 RXQ=960 TRANSPORT=M9
+TXQ=0 RXQ=960 TRANSPORT=M9 UNIT=3.0s RT=YES
 ```
+
+`UNIT`/`RT` appear while voice is open (the plan's unit length and
+whether it keeps up with real time); `BCASTRX=ON` while a broadcast is
+playing out. INI: `voice.codec` (`auto`/`700c`/`1300`/`2400`/`3200`,
+the startup `VOICECODEC`; a runtime change is saved on exit) and
+`voice.broadcast_mode` (`auto` or `m8`...).
+
+## Testing
+
+`test_voice` (codec, framing, FSM, jitter buffer, real-time plans,
+capability, broadcast between engines); `voice_st2` (two full modems:
+CCIR Good and Moderate, both directions, encrypted, VHF-FM through the FM
+radio with flutter and at 700C, broadcast on static and fading channels);
+`st3_hardware` (live voice A->B through both TCP voice ports over real
+audio devices). Not yet tested: on air, and by a human listener - the
+test signal is a synthetic voiced buzz, judged by correlation against a
+local Codec2 round trip.
 
 ## Build Integration
 

@@ -8,7 +8,17 @@ This plan covers the three gaps that stand between Skywave and an on-air compari
 
 Every item below comes from a measured root cause, not a hypothesis. The investigation was done on copies of the tree. Prototypes, CSVs and logs are archived in [investigations/2026-10-gap/](investigations/2026-10-gap/). The execution checklist is **Phase 8** in [ROADMAP.md](ROADMAP.md#phase-8--gap-closure-fading-cfo-killresume). This document is the reference behind those checkboxes.
 
-## Status (2026-10-11)
+## Status (2026-10-18)
+
+All steps 8.0-8.10 are closed, including the three carried forward from
+2026-10-11: 8.8 CSS drift (drift-search design), AMC capture on Good
+ramps, and the soak cycle-rate "drop" (not a regression; ROADMAP). Of the
+deferred list below, duplicate decodes from overlapping captures were
+fixed in v1.2.5; the per-attempt decode deadline, periodic robust probe,
+DATA-borne CFO report and frame-wide interleaving remain open; ST4 on-air
+Stage 2 is pending.
+
+### Status (2026-10-11, superseded)
 
 8.0-8.7, 8.9 and 8.10 landed (released as v1.2.0); per-step results,
 gate numbers and deviations are in the ROADMAP Phase 8 entries, final

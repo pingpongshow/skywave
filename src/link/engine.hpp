@@ -43,6 +43,30 @@
 
 namespace skw {
 
+#ifdef SKW_HAVE_VOICE
+// How voice rides a mode (VOICE.md "Codec Set and Mode Mapping"). Every
+// VOICE_DATA unit is its own PHY frame - preamble, sync and header
+// included - so a codec that merely fits the mode's NET rate can still
+// fall behind real time: WIDE M10 at 2400 spent 160% of the speech
+// duration on the air and the talkspurt lagged further every second.
+// AUTO picks the highest codec, and the smallest unit (1-4 codewords,
+// at most kVoiceUnitMaxSec of speech), whose airtime stays within
+// kVoiceRealTimeFrac of the speech it carries. A manual codec the plan
+// cannot carry in real time is still honoured (the NET-rate rule, 4
+// codeword units) and reported as not real-time.
+struct VoicePlan {
+  VoiceCodec codec = VoiceCodec::C700;
+  size_t unitBytes = 0;    // VOICE_DATA body budget (6-byte header incl.)
+  double unitSpeechSec = 0;
+  double airFrac = 0;      // unit airtime / speech it carries
+  bool realTime = false;
+};
+inline constexpr double kVoiceRealTimeFrac = 0.85;
+inline constexpr double kVoiceUnitMaxSec = 3.0;
+std::optional<VoicePlan> planVoiceStream(Family f, int mode, CpMode cp,
+                                         std::optional<VoiceCodec> want);
+#endif
+
 struct EngineConfig {
   HandshakePolicy policy;
   int arqMaxRetries = 8;
@@ -104,12 +128,32 @@ class LinkEngine {
   // VOICESTART/VOICESTOP/VOICEPTT. openVoice picks the codec from the
   // session transport (AUTO) or clamps a manual choice; false when the
   // current mode cannot carry voice at all.
+  // Session voice: needs a connected session whose peer advertised
+  // kCapVoice.
   bool openVoice(std::optional<VoiceCodec> want, double now);
+  // Broadcast voice (VOICE.md): one-way talkspurts without a session, at
+  // a fixed mode (M8+ that carries a codec). closeVoice / setVoicePtt /
+  // pushVoicePcm drive it like session voice. Any listening station that
+  // is not in a session plays a broadcast out (takeVoicePcm), locked to
+  // one sender until it has been silent for kBcastVoiceIdleSec.
+  bool openBroadcastVoice(std::optional<VoiceCodec> want, int mode, double now);
+  bool broadcastVoiceOpen() const { return bvOpen_; }
+  int broadcastVoiceMode() const { return bvMode_; }
+  bool broadcastVoiceRx() const { return bvRxActive_; }
   void closeVoice(double now);
   bool setVoicePtt(bool on, double now);
-  VoiceState voiceState() const { return voiceFsm_.state(); }
-  VoiceCodec voiceCodec() const { return voiceFsm_.codec(); }
+  VoiceState voiceState() const {
+    if (bvOpen_) return bvTalking_ ? VoiceState::Talking : VoiceState::Open;
+    return voiceFsm_.state();
+  }
+  VoiceCodec voiceCodec() const {
+    return bvOpen_ ? voiceEnc_.codec() : voiceFsm_.codec();
+  }
   bool voiceCodecAuto() const { return voiceCodecAuto_; }
+  // The plan the open voice service runs on (VOICESTATUS RT=, UNIT=).
+  const VoicePlan& voicePlanActive() const {
+    return bvOpen_ ? bvPlan_ : voicePlan_;
+  }
   // Microphone PCM in (8 kHz mono), speaker PCM out (jitter-buffered).
   void pushVoicePcm(std::span<const int16_t> pcm);
   std::vector<int16_t> takeVoicePcm(size_t samples);
@@ -637,6 +681,23 @@ class LinkEngine {
   JitterBuffer jitter_;
   bool voiceCodecAuto_ = true;
   uint16_t voiceTxSeq_ = 0;
+  // Broadcast voice: TX side (open/talking, mode, own sequence) and RX
+  // side (the sender tag locked onto and when it was last heard).
+  VoicePlan voicePlan_;      // session voice
+  VoicePlan bvPlan_;         // broadcast voice
+  bool bvOpen_ = false;
+  bool bvTalking_ = false;
+  int bvMode_ = 8;
+  uint16_t bvTxSeq_ = 0;
+  bool bvRxActive_ = false;
+  uint16_t bvRxTag_ = 0;
+  uint16_t bvRxSeq_ = 0;
+  double bvRxLastAt_ = 0.0;
+  static constexpr double kBcastVoiceIdleSec = 3.0;
+  void rxBroadcastVoice(const ParsedFrame& f, double now);
+#endif
+  void applySessionTimers();
+#ifdef SKW_HAVE_VOICE
   uint16_t voiceRxSeq_ = 0;
   bool haveVoiceRxSeq_ = false;
 #endif

@@ -82,7 +82,7 @@ gated feature from a typo.
 | Command | Meaning |
 |---|---|
 | `FAMILY [WIDE\|MID\|NARROW\|ULTRA]` | set/query bandwidth family (IDLE/LISTENING only; `ULTRA` requires `ultra_enable` in config) |
-| `MODE [M4-M13\|AUTO]` | pin or free the runtime mode |
+| `MODE [M4-M14\|AUTO]` | pin or free the runtime mode (`M14` on VHF-FM only) |
 | `MAXMODE [M4-M13]` | cap AMC promotion |
 | `CPMODE [AUTO\|SHORT\|MEDIUM\|LONG]` | cyclic prefix policy |
 | `HARQ [AUTO\|CHASE\|IR]` | HARQ mode |
@@ -135,7 +135,7 @@ gated feature from a typo.
 | `VOICECODEC [AUTO\|700C\|1300\|2400\|3200]` | codec selector |
 | `VOICESTART` / `VOICESTOP` | open/close voice state |
 | `VOICEPTT ON\|OFF` | talkspurt control |
-| `VOICESTATUS` | voice state snapshot |
+| `VOICESTATUS` | voice state snapshot; while voice is open it adds `UNIT=<s>` and `RT=YES\|NO` (the voice plan's unit length and whether it keeps up with real time), and `BCASTRX=ON` while a broadcast plays out ([VOICE.md](VOICE.md)) |
 
 ### `STATUS` Fields
 
@@ -143,7 +143,7 @@ gated feature from a typo.
 STATUS STATE=<fsm> CALL=<my> REMOTE=<peer|-> FAMILY=<f> MODE=<Mx|AUTO(Mx)>
 NET=<bps> SNR=<local> RSNR=<remote|-> CFO=<tx_align_hz> RETRY=<ratio>
 BUSY=<0|1> LISTEN=<0|1> COMPRESS=<0|1> CRYPTO=<0|1> EPOCH=<n> RESUME=<0|1>
-MASK=<count> VOICE=<off|state> TXBUF=<bytes> FOK=<n> FFAIL=<n>
+MASK=<count> VOICE=<off|open|talking|bcastrx> TXBUF=<bytes> FOK=<n> FFAIL=<n>
 ```
 
 `CFO` is the current TX frequency-alignment correction
@@ -169,7 +169,9 @@ EVT:TXCOMPLETE
 EVT:STREAM_REPLAY <bytes>    # re-sent after a peer restart; see below
 EVT:FILE_RX <name> <size> <crc32ok>
 EVT:FILE_ERROR <name> <reason>
-EVT:VOICE <state>
+EVT:VOICE <state>             # OPEN, TALKING, STOPPED, CLOSED, codec
+EVT:VOICE BCAST <tag>        # a broadcast started playing out (sender tag, hex)
+EVT:VOICE BCAST END          # ...and went quiet for 3 s
 MON:<src>:<dst|*>:<frame_type>:<family>:<Mx>:<hex_payload>
 ```
 

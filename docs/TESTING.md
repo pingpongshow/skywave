@@ -272,6 +272,16 @@ through the FM radio emulator; `soak_st2`'s SNR axis becomes CNR (churn
 found that a vhf-fm worker kept HF's converters. `SKW_ST2_FM_BYPASS=1`
 passes the audio untouched, to separate the modem from the radio model.
 
+Voice: `voice_st2` runs live voice between the two full modems - CCIR
+Good and Moderate, both directions, encrypted (crypto builds), VHF-FM
+through the FM radio with flutter and at 700C, and broadcast voice on
+static and fading channels - feeding speech in and playing it out in
+real time, and scoring how much arrived, its correlation with a local
+Codec2 round trip, and the latency to first audio. `st3_hardware` ends
+with a voice phase through both modems' TCP voice ports over the real
+audio devices. `SKYTEST_ONLY=<substring>` runs only the matching cases of
+any skytest binary.
+
 Frequency scenarios: `cfo_st2` runs one-way bulk while B's LO is offset
 (`CFO0`), stepped (`STEP` at `STEP_AT`) or drifting (`DRIFT` Hz/s), and
 fails on a drop or on fewer than `MIN_BYTES` delivered. Registered as

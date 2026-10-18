@@ -1,0 +1,28 @@
+family  mode   floor     snr | noDet   zcF  hdrF  payF     FER |   netEff
+# MID M0: 60 B frame, 58.5 s on air, header copies 2
+MID     M0     -17.5   -17.5 |     8    36    52     4  100.0% |       8 | est  -16.6 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.0
+MID     M0     -17.5   -16.0 |     3    24    49    24  100.0% |       8 | est  -16.9 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.0
+MID     M0     -17.5   -14.5 |     2    26    39    26   93.0% |       8 | est  -15.7 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.1
+MID     M0     -17.5   -13.0 |     0     8    23    19   50.0% |       8 | est  -15.2 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.5
+MID     M0     -17.5   -11.5 |     0     7    13     6   26.0% |       8 | est  -13.4 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.8
+MID     M0     -17.5   -10.0 |     0     3    17     0   20.0% |       8 | est  -12.8 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.8
+MID     M0     -17.5    -8.5 |     0     2     6     1    9.0% |       8 | est  -11.0 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    0.9
+MID     M0     -17.5    -7.0 |     0     0     7     0    7.0% |       8 | est   -9.4 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5    -5.5 |     0     0     6     0    6.0% |       8 | est   -8.0 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5    -4.0 |     0     0     3     0    3.0% |       8 | est   -6.5 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5    -2.5 |     0     0     1     0    1.0% |       8 | est   -5.6 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5    -1.0 |     0     0     3     0    3.0% |       8 | est   -4.3 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     0.5 |     0     0     2     0    2.0% |       8 | est   -2.2 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     2.0 |     0     0     4     0    4.0% |       8 | est   -0.8 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     3.5 |     0     0     5     0    5.0% |       8 | est    0.0 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     5.0 |     0     0     2     0    2.0% |       8 | est    0.8 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     6.5 |     0     0     4     0    4.0% |       8 | est    2.3 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     8.0 |     0     0     4     0    4.0% |       8 | est    3.3 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5     9.5 |     0     0     3     0    3.0% |       8 | est    4.7 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+MID     M0     -17.5    11.0 |     0     0     1     0    1.0% |       8 | est    5.2 evm  -99.0 pilot -1.000 |    60B air  58.5 ovh  90% good    1.0
+FAIL: MID M0 @ -17.5 dB FER=100.0%
+FAIL: MID M0 @ -16.0 dB FER=100.0%
+FAIL: MID M0 @ -14.5 dB FER=93.0%
+FAIL: MID M0 @ -13.0 dB FER=50.0%
+FAIL: MID M0 @ -11.5 dB FER=26.0%
+== 5 conformance failures ==

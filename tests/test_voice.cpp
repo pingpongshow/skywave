@@ -441,7 +441,8 @@ struct VoicePair {
   int lossEvery = 0;
   int passes = 0;
 
-  VoicePair() : a(mk("W1AW")), b(mk("K6XYZ")) {
+  explicit VoicePair(uint16_t capsB = kCapZstd | kCapResume | kCapVoice)
+      : a(mk("W1AW")), b(mk("K6XYZ", capsB)) {
     chanAB.fading = false;
     chanAB.snr3kDb = 26.0;
     chanBA = chanAB;
@@ -449,10 +450,11 @@ struct VoicePair {
     chanBA.seed = 9100;
   }
 
-  static EngineConfig mk(const char* call) {
+  static EngineConfig mk(const char* call,
+                         uint16_t caps = kCapZstd | kCapResume | kCapVoice) {
     EngineConfig c;
     c.policy.ownCall = call;
-    c.policy.caps = kCapZstd | kCapResume;
+    c.policy.caps = caps;
     return c;
   }
 
@@ -586,8 +588,10 @@ TEST_CASE(voice_loop_conceals_lost_frames) {
   // Loss starts only now: the subject here is VOICE_DATA loss, and
   // dropping the OPEN/PTT control frames instead would just test the
   // FSM retries (covered above) while stalling the spurt.
-  p.lossEvery = 5;  // drop 1 in 5 A->B bursts
-  p.a.pushVoicePcm(testSpeech(6.0));
+  // Units are sized for real time (~2 s of speech at M10), so a spurt
+  // must span several of them for a lost one to sit between two heard.
+  p.lossEvery = 3;  // drop 1 in 3 A->B bursts
+  p.a.pushVoicePcm(testSpeech(12.0));
   std::vector<int16_t> heard;
   for (int i = 0; i < 1200 && p.a.voiceTxQueued() > 0; ++i) {
     p.step();
@@ -748,6 +752,111 @@ TEST_CASE(voice_fsm_recovers_lost_grant_and_end) {
   CHECK(!a.capturing());  // Open after releasing
   a.cmdPttOn(40.0);
   CHECK(a.capturing());   // Requesting: speech before the grant is kept
+}
+
+// kCapVoice was defined but advertised by nobody and read by nothing, so
+// a station without voice was asked to open it. Voice now needs the
+// capability on both ends.
+TEST_CASE(voice_needs_the_peer_voice_capability) {
+  VoicePair p(kCapZstd | kCapResume);  // B has no voice
+  CHECK(p.connect());
+  CHECK(p.pinMode(10));
+  CHECK(!p.a.openVoice(std::nullopt, p.now));
+  CHECK(p.a.voiceState() == VoiceState::Closed);
+}
+
+// VOICE BROADCAST only set a flag: VOICESTART then called the session-only
+// openVoice and failed. A broadcast is a one-way talkspurt from an idle
+// station that any idle listener plays out.
+TEST_CASE(voice_broadcast_reaches_an_idle_listener) {
+  VoicePair p;  // never connected: both idle
+  CHECK(!p.a.openVoice(std::nullopt, p.now));             // no session
+  CHECK(!p.a.openBroadcastVoice(std::nullopt, 6, p.now));  // spread: no voice
+  CHECK(p.a.openBroadcastVoice(std::nullopt, 9, p.now));
+  CHECK(p.a.voiceState() == VoiceState::Open);
+  CHECK(p.a.setVoicePtt(true, p.now));
+  CHECK(p.a.voiceState() == VoiceState::Talking);
+  // The mic feeds speech in real time (8 kHz), as the voice port does.
+  const auto speech = testSpeech(4.0);
+  size_t fed = 0;
+  double lastNow = p.now;
+  std::vector<int16_t> heard;
+  bool sawStart = false, sawEnd = false;
+  double lastTake = p.now;
+  auto collect = [&] {
+    // The speaker drains in real time too: a step lasts as long as the
+    // burst on the air (~2 s for a full unit).
+    auto pcm = p.b.takeVoicePcm(size_t((p.now - lastTake) * kVoiceSampleRate) + 800);
+    lastTake = p.now;
+    heard.insert(heard.end(), pcm.begin(), pcm.end());
+    for (const auto& e : p.b.takeEvents()) {
+      if (e.rfind("EVT:VOICE BCAST ", 0) == 0 && e != "EVT:VOICE BCAST END") sawStart = true;
+      if (e == "EVT:VOICE BCAST END") sawEnd = true;
+    }
+  };
+  for (int i = 0; i < 2000 && fed < speech.size(); ++i) {
+    const size_t n = std::min(speech.size() - fed,
+                              size_t((p.now - lastNow) * kVoiceSampleRate) + 400);
+    lastNow = p.now;
+    p.a.pushVoicePcm(std::span<const int16_t>(speech.data() + fed, n));
+    fed += n;
+    p.step();
+    collect();
+  }
+  CHECK(p.a.setVoicePtt(false, p.now));  // flushes the tail
+  for (int i = 0; i < 400 && !sawEnd; ++i) {
+    p.step();
+    collect();
+  }
+  std::printf("broadcast voice: heard %zu of %zu samples, rms ratio %.2f, "
+              "codec %d at M%d\n",
+              heard.size(), speech.size(),
+              rms(speech) > 0 ? rms(heard) / rms(speech) : 0.0,
+              int(p.a.voiceCodec()), p.a.broadcastVoiceMode());
+  writeArtifact("voice_broadcast_rx.s16", heard);
+  CHECK(sawStart);
+  CHECK(sawEnd);
+  CHECK(heard.size() >= speech.size() * 9 / 10);
+  CHECK(rms(heard) > 0.2 * rms(speech));
+  CHECK(p.a.state() == FsmState::Idle);  // no session was made
+  CHECK(p.b.state() == FsmState::Idle);
+  p.a.closeVoice(p.now);
+  CHECK(p.a.voiceState() == VoiceState::Closed);
+}
+
+// Each VOICE_DATA unit is a whole PHY frame (preamble, sync, header), so
+// a codec that only fit the NET rate fell behind real time - WIDE M10 at
+// 2400 aired 160% of the speech it carried. AUTO now plans codec AND unit
+// size together; every AUTO plan keeps up, and where none can, AUTO
+// declines (a manual codec is still honoured, flagged not real-time).
+TEST_CASE(voice_auto_plans_keep_up_with_real_time) {
+  int plans = 0;
+  for (Family f : {Family::Wide, Family::Mid, Family::Narrow, Family::Ultra}) {
+    for (int m = 8; m <= 13; ++m) {
+      auto p = planVoiceStream(f, m, CpMode::Medium, std::nullopt);
+      if (!p) continue;
+      ++plans;
+      CHECK(p->realTime);
+      CHECK(p->airFrac <= kVoiceRealTimeFrac);
+      CHECK(p->unitSpeechSec <= kVoiceUnitMaxSec + 1e-9);
+      CHECK(p->unitBytes > 6);
+    }
+  }
+  CHECK(plans >= 12);
+  // WIDE M10 used to take 2400 and lag; it now keeps up at a lower rate.
+  auto w10 = planVoiceStream(Family::Wide, 10, CpMode::Medium, std::nullopt);
+  CHECK(w10.has_value());
+  CHECK(w10 && uint8_t(w10->codec) < uint8_t(VoiceCodec::C2400));
+  // NARROW cannot stream voice in real time at any mode...
+  for (int m = 8; m <= 13; ++m) {
+    CHECK(!planVoiceStream(Family::Narrow, m, CpMode::Medium, std::nullopt));
+  }
+  // ...but an operator who asks for 700C at M11 still gets it, flagged.
+  auto n11 = planVoiceStream(Family::Narrow, 11, CpMode::Medium, VoiceCodec::C700);
+  CHECK(n11.has_value());
+  CHECK(n11 && !n11->realTime);
+  // Spread modes never carry voice.
+  CHECK(!planVoiceStream(Family::Wide, 7, CpMode::Medium, VoiceCodec::C700));
 }
 
 SKYTEST_MAIN
