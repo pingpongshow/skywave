@@ -1449,6 +1449,15 @@ verified, then fixed in severity order (details:
 
 Verification: default suite 46/46, crypto 45/45 (each fix has a test).
 
+### v1.2.6 (2026-10-17)
+
+Fix release: the full bug review's fixes, the waveform analysis (VHF TX
+level, frame geometry), config merge on save, and the VHF fixes found by
+the FM radio testing (converters rebuilt per band, per-band detector
+grid). Suites, all three sanitizers and the ST2 VHF soaks run; HF
+conformance sweeps and the 2-hour soak not re-run. Release notes:
+docs/releases/v1.2.6.md.
+
 ### v1.2.5 (2026-10-16)
 
 Fix release: ULTRA handshake policy, promotions on the target mode,
