@@ -1358,6 +1358,13 @@ they are not re-raised. Commands are the original measurements.
   station), and the unexplained 120 Hz modulation seen on the nearby
   Web-888 (ONAIR_TEST_PLAN.md).
 
+### License adopted (2026-10-18)
+
+The standing LICENSE hold (RELEASE.md gate 7) is resolved: both repos
+are GPL-3.0-or-later, copyright The Skywave authors. Every linked and
+vendored component is compatible (THIRD_PARTY.md). Releases from here on
+no longer list the hold.
+
 ### Voice through the whole modem; keepalive; CSS floors (2026-10-18)
 
 Until now voice had run only between two in-process engines on a clean

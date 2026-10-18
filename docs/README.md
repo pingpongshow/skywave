@@ -51,6 +51,7 @@ These decisions were made deliberately and are binding unless revisited:
 | [ONAIR_TEST_PLAN.md](ONAIR_TEST_PLAN.md) | ST4 with one transmitter: bench and one-way skywave stages, `tools/onair/` tooling, what each run feeds |
 | [TESTING.md](TESTING.md) | Test strategy: unit, loopback, channel-simulator, two-modem, conformance |
 | [RELEASE.md](RELEASE.md) | Release gate sequence, how to cut a release, and the open blockers |
+| [../LICENSE](../LICENSE) | GPL-3.0-or-later, copyright The Skywave authors |
 | [../THIRD_PARTY.md](../THIRD_PARTY.md) | Every linked or vendored component, with licenses (repository root) |
 | [releases/](releases/) | Per-release notes and recorded gate results |
 | [conformance/](conformance/) | Measured sweep and soak results (CSVs and findings), e.g. `vhf_fm_2026-10-17/` |

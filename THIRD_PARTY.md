@@ -74,7 +74,7 @@ project.
 
 ## Skywave's own license
 
-**Not yet set.** There is no `LICENSE` file at the repository root, so
-the terms under which Skywave itself may be used or redistributed are
-undefined. That is an owner decision, not a technical one, and it blocks
-any public release. See RELEASE.md gate 7.
+GPL-3.0-or-later ([LICENSE](LICENSE)), copyright The Skywave authors,
+adopted 2026-10-18. Every component above is compatible with it: MIT,
+BSD-3-Clause, ISC and zlib are permissive; Codec2's LGPL-2.1 allows
+use from GPL-3.0 code (and the default build links it dynamically).

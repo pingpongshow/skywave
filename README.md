@@ -9,8 +9,8 @@ to it over three localhost TCP ports.
 **Status:** v1.2.7 (2026-10-18). Not publicly released: every result below
 comes from simulation (Watterson HF channels, an FM radio emulator, and a
 two-modem world running the real modem process), plus real-audio-device
-tests. On-air confirmation is pending. There is no LICENSE yet (see
-[Known limitations](#known-limitations)).
+tests. On-air confirmation is pending. Licensed under the GNU GPL v3 or
+later ([License](#license)).
 
 ## What it does
 
@@ -137,8 +137,6 @@ per-release notes in [docs/releases/](docs/releases/).
 ## Known limitations
 
 - **Simulation only so far.** On-air tests (HF and FM) are pending.
-- **No LICENSE file.** Terms of use and redistribution are undefined,
-  which blocks any public release. This is a deliberate hold.
 - **VHF `M14` needs a data port flat below 300 Hz.** On a port that rolls
   off at 300 Hz the modem tops out at `M13`.
 - **Voice latency is seconds on HF** (4-7 s to first audio): every voice
@@ -148,3 +146,18 @@ per-release notes in [docs/releases/](docs/releases/).
   robust frames are ~20 s long.
 - Both ends of a link must run the same release: there is no backward
   compatibility before the first public release.
+
+## License
+
+Copyright (C) 2026 The Skywave authors.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE)
+for the full text (GPL-3.0-or-later).
+
+Third-party components keep their own licenses, all compatible with
+GPL-3.0 ([THIRD_PARTY.md](THIRD_PARTY.md)).
