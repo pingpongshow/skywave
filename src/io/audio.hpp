@@ -49,6 +49,10 @@ struct AudioConfig {
   std::string outputName;
   double inputGainDb = 0.0;
   double outputGainDb = 0.0;  // informational: the worker applies it (once)
+  // Optional second copy of the (gain-scaled) input for the GUI's
+  // waterfall and level meter, so they keep moving while the worker is
+  // busy decoding. Written from the audio callback; excess is dropped.
+  SampleRing* rxTap = nullptr;
 };
 
 // Current PortAudio index of the device called `name` that has input

@@ -1772,6 +1772,46 @@ MID M0 fading floor.
   seed 12 (4 concurrent with 11 bertool jobs, 1 alone) byte-identical
   output. Earlier soak-based conclusions that rested on single runs
   (notably the M7-M9 window-8 "seed 13 stall") need re-checking.
+- [x] **GUI froze while the modem decoded - FIXED 2026-10-18.** The
+  operator saw a laggy waterfall and a GUI that stopped responding for
+  seconds. A profile of the running app showed the main thread spending
+  99% of its time blocked on the modem mutex
+  (`ModemWorker::txBufferBytes()`), which the worker holds through whole
+  decode attempts. On microphone noise those attempts are false alarms:
+  32 a minute live, mean 485 ms, worst 1.35 s. Fix: the GUI and the main
+  loop never take the modem mutex.
+  - The worker publishes a `WorkerStatus` at 4 Hz and keeps the TX
+    backlog in an atomic.
+  - App data and voice in and out cross through bridge queues under
+    their own mutex.
+  - Control lines from TCP and the GUI run on a `ControlExecutor` thread
+    and answer asynchronously.
+  - The waterfall and RX meter read their own copy of the input from
+    the audio callback (`AudioConfig::rxTap`).
+  - Measured with real decode load (two modems over a loopback audio
+    device): 0 mutex waits on the GUI thread, which spends about 95% of
+    its time idle in vsync.
+  - The GUI was redesigned at the same time: fixed layout with no
+    floating panels, a window sized to the display, embedded
+    Roboto/Cousine fonts, a 20 rows/s waterfall with a frequency axis,
+    and tabbed settings.
+- [x] **Decode cost on noise roughly halved - 2026-10-18.** Replay of 80 s
+  of real microphone noise: 113 decode attempts took 59.6 s (mean 528 ms,
+  max 2.7 s). After the change they take 31.8 s (mean 282 ms, max 1.7 s);
+  the number of attempts is unchanged.
+  - Cause: every rung of a capture's retry ladder re-ran the chirp
+    search over the whole window from scratch. That covers the
+    narrower-family retry while idle, which alone was half of all decode
+    time, and the drift retry too.
+  - Fix: `DetectCache` (receiver.hpp) keeps each capture's detector and
+    how far it has scanned, so a rung scans only new audio. The engine
+    keeps 12 entries, least-recently-used first out.
+  - The chunking matches a fresh scan, so results are identical:
+    `rx_detect_cache_matches_fresh_scan` checks every window length
+    against a fresh `receiveFrame`.
+  - What remains is about 20 overlapping noise captures, each scanning
+    its own window. Sharing one scan between them would change the
+    detector's warm-up state, so it was not done.
 
 ---
 

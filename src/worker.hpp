@@ -83,6 +83,18 @@ struct Telemetry {
   uint16_t maskCarriers = 0;     // carriers in the active family plan
 };
 
+// Status the worker publishes for threads that must never wait on the
+// modem: the GUI and the TCP owner (main loop). The worker holds
+// modemMutex_ through whole decode attempts - 0.5 s typical, 1.3 s
+// measured on microphone noise - and the GUI used to take it for these
+// strings (and the main loop for the TX backlog), freezing the window.
+struct WorkerStatus {
+  std::string state, call, family, mode;  // fsmState(), myCall(), ...
+  std::string status;                     // statusLine(): STATUS fields
+  std::string freqInfo, audioLevel;
+  double netBps = 0.0;
+};
+
 struct WorkerCommand {
   std::string line;  // control-port command syntax; parsed by the worker
 };
@@ -107,6 +119,9 @@ class ModemWorker : public ControlBackend {
 
   // Thread-safe: copy the latest consistent telemetry snapshot.
   Telemetry telemetry() const;
+  // Thread-safe, never waits on the modem: the status published by the
+  // worker (refreshed ~4 Hz).
+  WorkerStatus status() const;
 
   // Thread-safe: the audio stream's output latency (AudioBackend::
   // outputLatencySec). PTT stays keyed this long - plus a margin - after
@@ -372,6 +387,18 @@ class ModemWorker : public ControlBackend {
   std::vector<uint8_t> appRx_;
   std::vector<std::string> notes_;
   std::vector<std::vector<uint8_t>> monRecords_;
+  // Inbound app data and voice, and outbound voice: queued here by the
+  // TCP owner and moved to/from the engine by the worker each chunk, so
+  // the main loop never takes modemMutex_.
+  std::vector<uint8_t> appIn_;
+  std::vector<int16_t> voiceIn_;
+  std::deque<int16_t> voiceOut_;
+  std::atomic<size_t> txBacklogPub_{0};  // engine backlog + appIn_
+  void exchangeBridgesLocked();
+  mutable std::mutex statusMutex_;
+  WorkerStatus status_;
+  double lastStatusPubSec_ = -1.0;
+  void publishStatusLocked(double now);
 
   std::vector<float> chunk_;
   uint64_t rxTotal_ = 0, txTotal_ = 0;

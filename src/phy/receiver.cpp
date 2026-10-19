@@ -1708,13 +1708,74 @@ std::optional<RxFrameResult> receiveFrameImpl(
   return res;
 }
 
+// Chirp acquisition: the first detection in `rx`, scanning in fixed
+// chunks from its start and stopping at the first chunk that yields one.
+// With a cache, only audio past the cached scan is processed: whole
+// chunks advance the cached detector, a trailing partial chunk runs on a
+// copy (the next, longer window processes it as part of a whole chunk,
+// exactly as a fresh scan of that window would).
+std::optional<ChirpDetection> detectFirst(Family family,
+                                          std::span<const cfloat> rx,
+                                          DetectCache* cache) {
+  constexpr size_t kChunk = 1472;
+  std::vector<ChirpDetection> hits;
+  bool usable = cache && cache->family == family &&
+                cache->scanned <= rx.size() && rx.size() >= cache->head.size();
+  if (usable) {
+    const size_t nh = std::min(cache->head.size(), rx.size());
+    if (cache->det) {
+      for (size_t i = 0; i < nh && usable; ++i) usable = rx[i] == cache->head[i];
+    } else {
+      std::copy_n(rx.begin(), nh, cache->head.begin());
+    }
+  }
+  if (!usable) {
+    ChirpDetector det(family);
+    for (size_t i = 0; i < rx.size() && hits.empty(); i += kChunk) {
+      det.process(rx.subspan(i, std::min(kChunk, rx.size() - i)), hits);
+    }
+    if (hits.empty()) return std::nullopt;
+    return hits.front();
+  }
+  if (cache->hit) return cache->hit;
+  if (!cache->det) cache->det = std::make_unique<ChirpDetector>(family);
+  while (cache->scanned + kChunk <= rx.size()) {
+    cache->det->process(rx.subspan(cache->scanned, kChunk), hits);
+    cache->scanned += kChunk;
+    if (!hits.empty()) return cache->hit = hits.front();
+  }
+  if (cache->scanned < rx.size()) {
+    ChirpDetector tail = *cache->det;
+    tail.process(rx.subspan(cache->scanned), hits);
+    if (!hits.empty()) return hits.front();
+  }
+  return std::nullopt;
+}
+
 }  // namespace
+
+void DetectCache::bind(uint64_t k, Family f) {
+  if (k == key && f == family) return;
+  key = k;
+  family = f;
+  det.reset();
+  scanned = 0;
+  hit.reset();
+}
 
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut, HarqChase* harq,
                                           const CarrierMask* payloadMask,
-                                          bool wantConstellation) {
+                                          bool wantConstellation,
+                                          DetectCache* detCache) {
+  // Detect once here: the attempts below (primary, runner-up signature,
+  // drift retry) all start from this same detection.
+  const auto first = detectFirst(family, rx, detCache);
+  if (!first) {
+    if (stageOut) *stageOut = RxStage::NoDetect;
+    return std::nullopt;
+  }
   bool retryable = false;
   std::vector<std::pair<double, double>> trace;
   ChirpDetection hit{};
@@ -1722,7 +1783,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   bool truncated = false;
   auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
                               wantConstellation, -1.0, &retryable, 0.0,
-                              &trace, nullptr, &hit, &truncated);
+                              &trace, &*first, &hit, &truncated);
   // RUNNER-UP SIGNATURE (ChirpDetection::hasAlt): near the floor a slope
   // slot flips and a CSS preamble reads as robust/calling (or the other
   // way round), sending the frame down the wrong receive path. When the
@@ -1785,7 +1846,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   RxStage st2 = RxStage::NoDetect;
   auto res2 = receiveFrameImpl(family, rx, &st2, nullptr, payloadMask,
                                wantConstellation, fllDriftGain(), nullptr,
-                               rate);
+                               rate, nullptr, &*first);
   if (!res2) return res;
   if (res && res->payloadOk) return res;
   if (res && !res2->payloadOk) return res;  // keep the first header pass

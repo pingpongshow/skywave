@@ -146,14 +146,19 @@ Four threads, lock-free where it matters:
 |---|---|---|
 | Audio callback (PortAudio) | move samples between device and SPSC ring buffers | hard real-time; no allocation, no locks, no logging |
 | Modem worker | all PHY + link processing, pulled from the RX ring, pushed to the TX ring | soft real-time; owns all modem state |
-| Main thread | headless: startup/shutdown, TCP polling, PTT service, command dispatch, poll loop. GUI mode: the SDL2/ImGui event + render loop **must run here** (macOS requires SDL event handling on the main thread) | GUI reads only the telemetry snapshot |
-| Service thread (GUI mode only) | takes over TCP polling, PTT service, and command dispatch when the main thread is occupied by the GUI loop | — |
+| Main thread | startup/shutdown, TCP polling, PTT service, poll loop; in GUI mode also the SDL2/ImGui event and render loop between polls (macOS requires SDL event handling on the main thread) | **never takes the modem mutex**: the worker holds it through whole decode attempts (up to seconds) |
+| Control executor | runs control-port and GUI command lines through the dispatcher, in order, and hands the answers back | the only caller of `ModemWorker::control()` in the app |
 
 Data crossing rules:
 
 - audio <-> worker: single-producer/single-consumer sample ring buffers
-- worker -> main/GUI: versioned telemetry snapshot (double-buffered POD struct)
-- main -> worker: serialized command queue; the worker applies commands at
+- audio -> GUI: a copy of the input (`AudioConfig::rxTap`) for the
+  waterfall and RX meter
+- worker -> main/GUI: versioned telemetry snapshot (double-buffered POD
+  struct) and a `WorkerStatus` published at 4 Hz
+- main -> worker: app data and voice through bridge queues (their own
+  mutex), drained by the worker each chunk; the TX backlog is an atomic
+- commands: queued to the control executor; the worker applies them at
   frame boundaries
 
 This keeps the entire modem core single-threaded and deterministically

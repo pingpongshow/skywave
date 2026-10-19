@@ -284,6 +284,17 @@ class LinkEngine {
                bool finalAttempt = true, double windowStartSec = -1.0);
 
  private:
+  // Incremental preamble search per capture (receiver.hpp DetectCache),
+  // keyed by window start and family: several captures are pending at
+  // once on a noisy band, each climbing its own retry ladder.
+  struct DetCacheSlot {
+    DetectCache cache;
+    uint64_t lastUse = 0;
+  };
+  static constexpr size_t kDetCacheSlots = 12;
+  std::vector<DetCacheSlot> detCaches_;
+  uint64_t detCacheClock_ = 0;
+  DetectCache* detCacheFor(uint64_t key, Family family);
   struct OutFrame {
     LinkEnvelope env;
     std::vector<uint8_t> body;

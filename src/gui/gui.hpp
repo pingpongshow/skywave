@@ -1,6 +1,6 @@
 // GUI shell (ARCHITECTURE.md "GUI", ROADMAP 5.6-5.8): SDL2 + Dear ImGui on
 // the MAIN thread; the modem worker keeps running on its own thread and the
-// GUI only ever reads telemetry snapshots and writes through the control
+// GUI only ever reads published snapshots and writes through the control
 // dispatcher. Compiled only under ENABLE_GUI (SKW_HAVE_GUI).
 //
 // Load-bearing rule (M5 gate): every GUI mutation goes through
@@ -8,17 +8,31 @@
 // GUI has no privileged path into modem state, so anything it can do a
 // script can do, and there is exactly one place where state changes are
 // validated.
+//
+// The GUI never waits on the modem: the worker holds its mutex through
+// whole decode attempts (0.5-1.3 s), so status comes from the worker's
+// published WorkerStatus, widget commands run on a ControlExecutor
+// thread, and the waterfall and RX meter read their own copy of the
+// input audio (the audio-callback tap) instead of worker telemetry.
 #pragma once
 #ifdef SKW_HAVE_GUI
 
 #include <deque>
+#include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "dsp/fft.hpp"
 #include "io/audio.hpp"
+#include "io/ring.hpp"
+#include "tcp/executor.hpp"
 #include "worker.hpp"
+
+struct ImFont;
 
 namespace skw {
 
@@ -34,6 +48,7 @@ struct GuiInstruments {
 struct GuiLogLine {
   std::string cmd;
   std::string response;
+  std::string time;  // HH:MM:SS when answered
 };
 
 class Gui {
@@ -44,92 +59,122 @@ class Gui {
   Gui& operator=(const Gui&) = delete;
 
   // Create the window + ImGui context. False on failure (caller falls
-  // back to headless).
+  // back to headless). The size is a request; the window is fitted to the
+  // display it opens on.
   bool init(int width, int height);
   // One frame: pump SDL events, build the UI, present. Returns false when
   // the user closed the window.
   bool frame();
   void shutdown();
 
-  // Exposed for tests: run the dispatcher exactly as the widgets do.
+  // Synchronous dispatcher call, logged exactly as the widgets' commands
+  // are (tests; the widgets themselves use the asynchronous path).
   std::string submit(const std::string& cmd);
   // The form of `cmd` the on-screen log shows (secrets masked).
   static std::string redactForLog(const std::string& cmd);
-  // --- audio device selection (Settings panel) ------------------------
+  // --- audio device selection (Settings) ------------------------------
   // The AUDIO STREAM is owned by main(), not the worker, so a device
   // change is a request the main loop performs between frames: it
   // stops the old backend, opens the new one, and reports the outcome
   // back via noteAudio().
   void setAudioSelection(int inDev, int outDev);  // current devices
   void setPortInfo(int data, int ctrl, int voice);
+  // The audio callback's copy of the input (may be null: file mode, or
+  // tests) - the waterfall then falls back to the worker's spectrum.
+  void setAudioTap(SampleRing* tap) { tap_ = tap; }
   std::optional<std::pair<int, int>> takeAudioRequest();
   void noteAudio(const std::string& result);
-  const std::vector<GuiLogLine>& log() const { return log_; }
+  const std::deque<GuiLogLine>& log() const { return log_; }
   const GuiInstruments& instruments() const { return inst_; }
   void sampleTelemetry();  // pull a snapshot into the instrument history
 
  private:
-  void drawSessionPanel();
-  void drawLadderPanel();
-  void drawInstrumentPanel();
-  void drawSettingsPanel();
-  void drawLogPanel();
+  // Asynchronous widget command: queued to the executor, logged (and
+  // `then` called with the answer) when it completes.
+  void send(const std::string& cmd,
+            std::function<void(const std::string&)> then = nullptr);
+  void drainResults();
+  void pushLog(const std::string& cmd, const std::string& resp);
+  void loadFonts(float scale);
+  void applyTheme();
+  void fitWindowToDisplay(int reqW, int reqH);
+
+  // Panels (fixed layout: nothing floats over anything else).
+  void drawTopBar();
+  void drawSessionCard();
+  void drawLinkCard();
+  void drawLevelsCard();
+  void drawWaterfallCard(float height);
+  void drawConstellationCard(float side);
+  void drawLogCard();
+  void drawSettingsWindow();
+  void drawStationTab();
+  void drawAudioTab();
+  void drawPttTab();
+  void drawSecurityTab();
+
+  // Waterfall source: audio tap (preferred) or worker spectrum rows.
+  void pumpSpectrum();
+  void pushWaterfallRow(const std::vector<float>& dbRow);
+  void uploadWaterfall();
 
   ModemWorker& worker_;
   void* window_ = nullptr;    // SDL_Window
   void* renderer_ = nullptr;  // SDL_Renderer
   bool ready_ = false;
+  float dpiScale_ = 1.0f;
+  ImFont* fontUi_ = nullptr;
+  ImFont* fontBig_ = nullptr;
+  ImFont* fontMono_ = nullptr;
+  std::unique_ptr<ControlExecutor> exec_;
+  std::map<uint64_t, std::function<void(const std::string&)>> pending_;
+  uint64_t nextTag_ = 1;
+
   Telemetry snap_{};
+  WorkerStatus status_;
+  std::map<std::string, std::string> fields_;  // parsed STATUS line
+  double lastStatusSec_ = -1.0;
   GuiInstruments inst_;
-  // Waterfall history: a ring of spectrum rows, newest last. Rendered as
-  // a texture-free ImDrawList blit so no GPU resources are needed.
-  static constexpr int kWaterfallRows = 96;
-  std::vector<float> waterfall_;      // kWaterfallRows * kSpectrumBins
-  int waterfallHead_ = 0;
+  std::deque<GuiLogLine> log_;
+
+  // Waterfall: kWfCols x kWfRows RGBA, newest row on top.
+  static constexpr int kWfCols = 512;
+  static constexpr int kWfRows = 240;
+  static constexpr int kSpecFft = 4096;  // 11.7 Hz bins at 48 kHz
+  static constexpr int kSpecHop = 2400;  // 20 rows/s
+  SampleRing* tap_ = nullptr;
+  std::vector<float> tapBuf_;            // recent input samples
+  std::unique_ptr<Fft> fft_;
+  std::vector<uint32_t> wfPixels_;
+  void* wfTexture_ = nullptr;            // SDL_Texture
+  bool wfDirty_ = false;
   uint32_t lastSpectrumSeq_ = 0;
-  float wfFloorDb_ = -100.0f, wfCeilDb_ = -30.0f;
+  float wfFloorDb_ = -100.0f, wfCeilDb_ = -40.0f;
   bool wfAutoScale_ = true;
-  void drawWaterfallPanel();
-  void drawConstellationPanel();
-  std::vector<GuiLogLine> log_;
-  // Settings-panel edit buffers (applied via submit()).
+  float wfMaxHz_ = 3000.0f;              // display span (2 x band centre)
+  float rxMeterDb_ = -120.0f;            // from the tap, smoothed
+  std::deque<float> rxMeterHist_;
+
+  // Edit buffers / selections (applied via the dispatcher).
   char callBuf_[16] = {0};
   char connectBuf_[16] = {0};
   int familyIdx_ = 0;
   int modeIdx_ = 0;   // 0 = AUTO, else M4..M13
-  // Cached status strings (refreshed at 4 Hz in sampleTelemetry - the
-  // string helpers take the modem mutex and must not run per frame).
-  std::string strFsmState_, strMyCall_, strFamily_, strMode_;
-  std::string strStatus_, strFreqInfo_, strAudioLevel_;
-  double netBps_ = 0.0;
+  int cpIdx_ = 0;     // 0 = AUTO
   int portData_ = 0, portCtrl_ = 0, portVoice_ = 0;
-  bool ultraOn_ = false, listenOn_ = true, cwidOn_ = false;
+  bool ultraOn_ = false, listenOn_ = true, cwidOn_ = false, monitor_ = false;
   int maxModeIdx_ = 9;      // 0 = M4 .. 9 = M13
   char pttMethodBuf_[24] = {0};
   char pttPortBuf_[64] = {0};
   int pttLead_ = 50, pttTail_ = 20;
-  // Crypto page (5.8's deferred item). The PSK never leaves this buffer
-  // except through the same command dispatcher as everything else; it is
-  // masked on screen and cleared once installed.
   char pskBuf_[80] = {0};
   bool encryptOn_ = false;
   std::string securityLine_;
-  void drawCryptoSection();
-  // Window visibility (menu-driven). Settings lives behind the menu
-  // bar; the operating panels are on by default.
   bool showSettings_ = false;
-  bool showWaterfall_ = true;
-  bool showConstellation_ = true;
-  bool showSession_ = true, showLadder_ = true;
-  bool showInstruments_ = true, showLog_ = true;
-  double lastStrPollSec_ = -1.0;
-  // Audio device picker state.
   std::vector<AudioDeviceInfo> audioDevs_;
   int audioInSel_ = -1;   // device INDEX (not combo position)
   int audioOutSel_ = -1;
   std::optional<std::pair<int, int>> audioReq_;
-  int cpIdx_ = 0;     // 0 = AUTO
-  bool monitor_ = false;
 };
 
 }  // namespace skw

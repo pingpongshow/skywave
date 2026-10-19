@@ -555,8 +555,67 @@ void ModemWorker::applyPendingCommands() {
 // --- data / notification bridges ---------------------------------------------
 
 void ModemWorker::submitAppData(std::span<const uint8_t> bytes) {
-  std::lock_guard lock(modemMutex_);
-  engine_->sendData(bytes);
+  std::lock_guard lock(bridgeMutex_);
+  appIn_.insert(appIn_.end(), bytes.begin(), bytes.end());
+  txBacklogPub_.fetch_add(bytes.size(), std::memory_order_relaxed);
+}
+
+// Worker side of the bridges (modemMutex_ held): queued app data and mic
+// PCM into the engine, decoded PCM out.
+void ModemWorker::exchangeBridgesLocked() {
+  std::vector<uint8_t> data;
+  std::vector<int16_t> mic;
+  {
+    std::lock_guard lock(bridgeMutex_);
+    data.swap(appIn_);
+    mic.swap(voiceIn_);
+  }
+  if (!data.empty()) engine_->sendData(data);
+#ifdef SKW_HAVE_VOICE
+  if (!mic.empty()) engine_->pushVoicePcm(mic);
+  auto out = engine_->takeVoicePcm(size_t(kFsAudio));
+  if (!out.empty()) {
+    std::lock_guard lock(bridgeMutex_);
+    voiceOut_.insert(voiceOut_.end(), out.begin(), out.end());
+    // Bounded like the jitter buffer: a voice client that stopped reading
+    // must not grow this without limit (keep the newest).
+    constexpr size_t kMax = size_t(kFsAudio) / 6 * 12;  // ~12 s at 8 kHz
+    while (voiceOut_.size() > kMax) voiceOut_.pop_front();
+  }
+#endif
+  size_t pending;
+  {
+    std::lock_guard lock(bridgeMutex_);
+    pending = appIn_.size();
+  }
+  txBacklogPub_.store(engine_->txBacklog() + pending, std::memory_order_relaxed);
+}
+
+WorkerStatus ModemWorker::status() const {
+  std::lock_guard lock(statusMutex_);
+  return status_;
+}
+
+void ModemWorker::publishStatusLocked(double now) {
+  if (lastStatusPubSec_ >= 0.0 && now - lastStatusPubSec_ < 0.25) return;
+  lastStatusPubSec_ = now;
+  WorkerStatus st;
+  const FsmState fs = engine_->state();
+  st.state = (fs == FsmState::Idle && listen_) ? "LISTENING" : fsmStateNameLocked(fs);
+  st.call = cfg_.callsign;
+  st.family = upperStr(toString(cfg_.family));
+  const int m = engine_->sessionMode();
+  st.mode = (engine_->modePinned() || cfg_.mode >= 4)
+                ? "M" + std::to_string(cfg_.mode >= 4 ? cfg_.mode : m)
+                : "AUTO(M" + std::to_string(m) + ")";
+  st.status = statusFieldsLocked(false);
+  st.freqInfo = "CENTER=" + fmt1(centerHz()) +
+                " SHIFT=" + fmt1(engine_->txShiftHz()) +
+                " CFO=" + fmt1(engine_->lastRxCfoHz());
+  st.audioLevel = "RX=" + fmt1(rxLevel_) + " TX=" + fmt1(txLevel_);
+  st.netBps = engine_->netBps();
+  std::lock_guard lock(statusMutex_);
+  status_ = std::move(st);
 }
 
 std::vector<uint8_t> ModemWorker::takeAppData() {
@@ -1239,6 +1298,7 @@ void ModemWorker::updateStateEventsLocked() {
 size_t ModemWorker::processChunk() {
   std::lock_guard lock(modemMutex_);
   const double now = nowSec();
+  exchangeBridgesLocked();
   const size_t availBefore = rx_.readAvailable();
   pumpRxLocked(now);
   engine_->setChannelBusy(peerBusyLocked(now) ||  // Pre-TX CCA gate input
@@ -1251,6 +1311,8 @@ size_t ModemWorker::processChunk() {
   drainEngineOutputsLocked();
   updateStateEventsLocked();
   applyDeferredLocked(now);
+  exchangeBridgesLocked();  // decoded voice out, backlog after this pass
+  publishStatusLocked(now);
 
   working_.clockUs = clock_.nowUs();
   working_.rxSamplesTotal = rxTotal_;
@@ -1417,8 +1479,9 @@ bool ModemWorker::busy() {
 }
 
 size_t ModemWorker::txBufferBytes() {
-  std::lock_guard lock(modemMutex_);
-  return engine_->txBacklog();
+  // Published by the worker (plus data still queued for it): the main
+  // loop asks on every pass and must not wait out a decode for it.
+  return txBacklogPub_.load(std::memory_order_relaxed);
 }
 
 std::string ModemWorker::family() {
@@ -2000,10 +2063,16 @@ std::string ModemWorker::voiceStatusLine() {
 #endif
 }
 
+// Voice port bridges (main loop, every pass): queued for / taken from the
+// worker, never under modemMutex_.
 void ModemWorker::submitVoicePcm(std::span<const int16_t> pcm) {
 #ifdef SKW_HAVE_VOICE
-  std::lock_guard lock(modemMutex_);
-  engine_->pushVoicePcm(pcm);
+  std::lock_guard lock(bridgeMutex_);
+  voiceIn_.insert(voiceIn_.end(), pcm.begin(), pcm.end());
+  constexpr size_t kMax = 30 * 8000;  // the encoder's own backlog cap
+  if (voiceIn_.size() > kMax) {
+    voiceIn_.erase(voiceIn_.begin(), voiceIn_.begin() + long(voiceIn_.size() - kMax));
+  }
 #else
   (void)pcm;
 #endif
@@ -2011,8 +2080,11 @@ void ModemWorker::submitVoicePcm(std::span<const int16_t> pcm) {
 
 std::vector<int16_t> ModemWorker::takeVoicePcm(size_t samples) {
 #ifdef SKW_HAVE_VOICE
-  std::lock_guard lock(modemMutex_);
-  return engine_->takeVoicePcm(samples);
+  std::lock_guard lock(bridgeMutex_);
+  const size_t n = std::min(samples, voiceOut_.size());
+  std::vector<int16_t> out(voiceOut_.begin(), voiceOut_.begin() + long(n));
+  voiceOut_.erase(voiceOut_.begin(), voiceOut_.begin() + long(n));
+  return out;
 #else
   (void)samples;
   return {};

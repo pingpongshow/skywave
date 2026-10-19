@@ -3218,13 +3218,40 @@ std::optional<std::vector<cfloat>> LinkEngine::tick(double now) {
   return solo;
 }
 
+DetectCache* LinkEngine::detCacheFor(uint64_t key, Family family) {
+  DetCacheSlot* slot = nullptr;
+  for (auto& s : detCaches_) {
+    if (s.cache.key == key && s.cache.family == family) {
+      slot = &s;
+      break;
+    }
+  }
+  if (!slot && detCaches_.size() < kDetCacheSlots) slot = &detCaches_.emplace_back();
+  if (!slot) {
+    slot = &*std::min_element(detCaches_.begin(), detCaches_.end(),
+                              [](const DetCacheSlot& a, const DetCacheSlot& b) {
+                                return a.lastUse < b.lastUse;
+                              });
+  }
+  slot->lastUse = ++detCacheClock_;
+  slot->cache.bind(key, family);
+  return &slot->cache;
+}
+
 bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
                          bool finalAttempt, double windowStartSec) {
   lastNow_ = now;
   RxStage stage;
+  // Captures are re-decoded with growing windows from one start sample;
+  // the detection caches carry the preamble search across those calls.
+  const bool cacheable = windowStartSec >= 0.0;
+  const uint64_t winKey =
+      cacheable ? uint64_t(std::llround(windowStartSec * kFsBaseband)) : 0;
   auto res = receiveFrame(cfg_.policy.family, samples, &stage,
                           finalAttempt ? &harq_ : nullptr, &rxMask_,
-                          wantConstellation_);
+                          wantConstellation_,
+                          cacheable ? detCacheFor(winKey, cfg_.policy.family)
+                                    : nullptr);
 
   // RECEIVER-SIDE FAMILY SCAN. A listener that only ever demodulates its
   // own family is DEAF to a caller that stepped down the bandwidth ladder
@@ -3244,7 +3271,9 @@ bool LinkEngine::rxBurst(std::span<const cfloat> samples, double now,
     const Family alt = narrowerFamily(cfg_.policy.family);
     if (alt != cfg_.policy.family) {
       RxStage altStage;
-      auto altRes = receiveFrame(alt, samples, &altStage, nullptr, nullptr);
+      auto altRes = receiveFrame(alt, samples, &altStage, nullptr, nullptr,
+                                 false,
+                                 cacheable ? detCacheFor(winKey, alt) : nullptr);
       if (altRes) {
         res = std::move(altRes);
         stage = altStage;

@@ -20,7 +20,7 @@ float dbToLinear(double db) { return float(std::pow(10.0, db / 20.0)); }
 class DeviceBackend final : public AudioBackend {
  public:
   DeviceBackend(const AudioConfig& cfg, SampleRing& rx, SampleRing& tx)
-      : cfg_(cfg), rx_(rx), tx_(tx),
+      : cfg_(cfg), rx_(rx), tx_(tx), tap_(cfg.rxTap),
         inGain_(dbToLinear(cfg.inputGainDb)) {}
 
   ~DeviceBackend() override { stop(); }
@@ -137,6 +137,7 @@ class DeviceBackend final : public AudioBackend {
                                              : kFramesPerBuffer;
       for (unsigned i = 0; i < n; ++i) scaled[i] = in[i] * self->inGain_;
       self->rx_.write({scaled, n});
+      if (self->tap_) self->tap_->write({scaled, n});
     }
     if (out) {
       // output_gain_db is applied once, by the worker when it stages the
@@ -151,6 +152,7 @@ class DeviceBackend final : public AudioBackend {
   AudioConfig cfg_;
   SampleRing& rx_;
   SampleRing& tx_;
+  SampleRing* tap_ = nullptr;  // GUI copy of the input (may be null)
   float inGain_;
   double outLatencySec_ = 0.0;
   PaStream* stream_ = nullptr;

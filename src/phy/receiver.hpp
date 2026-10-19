@@ -7,11 +7,15 @@
 // integration (continuous state machine) arrives in Phase 2.
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
 
+#include "dsp/chirp.hpp"
 #include "phy/framer.hpp"
 
 namespace skw {
@@ -137,12 +141,35 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
                                           ChirpSig chirpSig, double cfoHz,
                                           double zcCoarse, int zcCount);
 
+// INCREMENTAL PREAMBLE SEARCH over one growing capture. The worker's
+// retry ladder decodes the same capture again and again with longer
+// windows (2.5 -> 90 s), all starting at the same sample, and each
+// attempt used to run the chirp search over the whole window from
+// scratch - on idle noise the narrower-family retry alone spent half of
+// all decode time re-scanning audio it had already scanned. The cache
+// keeps the detector and how far it got, so an attempt scans only the
+// new audio. The chunking is the same as a fresh scan, so the result is
+// identical. The caller sets `key` (the window's absolute start sample)
+// and `family`; a different key or family, or windows whose first
+// samples differ, discard the state.
+struct DetectCache {
+  uint64_t key = ~uint64_t(0);
+  Family family = Family::Wide;
+  std::array<cfloat, 16> head{};       // first samples of the window seen
+  std::unique_ptr<ChirpDetector> det;  // state after `scanned` samples
+  size_t scanned = 0;
+  std::optional<ChirpDetection> hit;   // first hit within `scanned`
+  // Point the cache at the window starting at absolute sample `key`.
+  void bind(uint64_t key, Family family);
+};
+
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut = nullptr,
                                           HarqChase* harq = nullptr,
                                           const CarrierMask* payloadMask =
                                               nullptr,
-                                          bool wantConstellation = false);
+                                          bool wantConstellation = false,
+                                          DetectCache* detCache = nullptr);
 
 }  // namespace skw

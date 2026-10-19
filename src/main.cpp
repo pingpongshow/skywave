@@ -11,6 +11,7 @@
 
 #include "core/config.hpp"
 #include "core/constants.hpp"
+#include "tcp/executor.hpp"
 #include "core/log.hpp"
 #include "io/audio.hpp"
 #include "tcp/server.hpp"
@@ -167,6 +168,10 @@ int main(int argc, char** argv) {
   // re-selects it too, and rebuilds its own converters).
   skw::setActiveBand(cfg.band);
   skw::SampleRing rxRing(skw::kFsAudio * 8);
+  // GUI copy of the input (waterfall, level meter): written by the audio
+  // callback alongside rxRing, read by the GUI on the main thread.
+  skw::SampleRing guiTap(skw::kFsAudio * 2);
+  skw::SampleRing* const guiTapPtr = cfg.guiEnabled ? &guiTap : nullptr;
   skw::SampleRing txRing(skw::kFsAudio);
 
   const bool fileMode = !pre.replayPath.empty() || !pre.recordPath.empty();
@@ -176,7 +181,7 @@ int main(int argc, char** argv) {
                    : skw::makeDeviceBackend(
                          {cfg.inputDevice, cfg.outputDevice,
                           cfg.inputDeviceName, cfg.outputDeviceName,
-                          cfg.inputGainDb, cfg.outputGainDb},
+                          cfg.inputGainDb, cfg.outputGainDb, guiTapPtr},
                          rxRing, txRing);
   if (!audio->start()) return 1;
 
@@ -220,6 +225,8 @@ int main(int argc, char** argv) {
              ctrlSrv.boundPort());
     skw::LineBuffer ctrlLines;
     uint32_t ctrlGen = ctrlSrv.clientGeneration();
+    skw::ControlExecutor ctrlExec(
+        [&worker](const std::string& l) { return worker.control(l); });
     // Data-port intake stops while the modem's own TX backlog (coalesce
     // window + sealed messages) is this deep: unread bytes then stay in
     // the kernel socket buffer and TCP flow control pushes back on the
@@ -240,6 +247,7 @@ int main(int argc, char** argv) {
     std::optional<skw::Gui> gui;
     if (cfg.guiEnabled) {
       gui.emplace(worker);
+      gui->setAudioTap(guiTapPtr);
       if (!gui->init(cfg.guiWidth, cfg.guiHeight)) {
         SKW_WARN("gui: no window available; continuing headless");
         gui.reset();
@@ -313,8 +321,13 @@ int main(int argc, char** argv) {
         ctrlLines.reset();
       }
       ctrlLines.feed(ctrlIn);
-      for (auto& line : ctrlLines.takeLines()) {
-        ctrlSrv.send(worker.control(line) + "\n");
+      // Commands run on the executor's thread (it may wait out a decode);
+      // answers go back in order, and only to the client that asked.
+      for (auto& line : ctrlLines.takeLines()) ctrlExec.post(line, ctrlGen);
+      for (auto& r : ctrlExec.takeResults()) {
+        if (r.tag == ctrlGen && ctrlSrv.clientConnected()) {
+          ctrlSrv.send(r.response + "\n");
+        }
       }
       for (auto& note : worker.takeNotifications()) {
         if (ctrlSrv.clientConnected()) ctrlSrv.send(note + "\n");
@@ -330,7 +343,7 @@ int main(int argc, char** argv) {
         if (auto req = gui->takeAudioRequest(); req && !fileMode) {
           audio->stop();
           audio = skw::makeDeviceBackend({req->first, req->second, "", "",
-                                          cfg.inputGainDb, cfg.outputGainDb},
+                                          cfg.inputGainDb, cfg.outputGainDb, guiTapPtr},
                                          rxRing, txRing);
           if (audio->start()) {
             worker.setOutputLatencySec(audio->outputLatencySec());
@@ -350,7 +363,7 @@ int main(int argc, char** argv) {
                                             cfg.inputDeviceName,
                                             cfg.outputDeviceName,
                                             cfg.inputGainDb,
-                                            cfg.outputGainDb},
+                                            cfg.outputGainDb, guiTapPtr},
                                            rxRing, txRing);
             const bool back = audio->start();
             if (back) worker.setOutputLatencySec(audio->outputLatencySec());

@@ -270,3 +270,48 @@ TEST_CASE(rx_narrow_drift_2hz_estimate) {
   std::printf("NARROW M4/M5 2 Hz/s: %d/%d frames\n", ok, total);
   CHECK(ok >= total - 1);
 }
+
+// DetectCache (receiver.hpp): the worker re-decodes one capture with ever
+// longer windows from the same start, and the cache carries the preamble
+// search across those calls. It must change only the cost: for every
+// window length - including lengths that end mid-chunk, before the frame
+// and after it - the cached result equals a fresh receiveFrame's.
+TEST_CASE(rx_detect_cache_matches_fresh_scan) {
+  for (Family fam : {Family::Wide, Family::Narrow}) {
+    auto payload = testPayload(40);
+    TxFrameParams p;
+    p.family = fam;
+    p.sig = ChirpSig::Fast;
+    p.mode = 8;
+    p.frameType = 9;
+    p.payload = payload;
+    // 3 s of noise ahead of the frame: many chunks scan before the hit.
+    auto x = withPadding(buildFrameBaseband(p), size_t(3 * kFsBaseband), 6000);
+    auto y = Chansim::run(cleanChannel(10.0), x);
+    DetectCache cache;
+    cache.bind(1234, fam);
+    int same = 0, total = 0, decoded = 0;
+    for (size_t n = 5000; n <= y.size(); n += 3777) {
+      std::span<const cfloat> win(y.data(), n);
+      RxStage s0 = RxStage::Ok, s1 = RxStage::Ok;
+      auto r0 = receiveFrame(fam, win, &s0);
+      auto r1 = receiveFrame(fam, win, &s1, nullptr, nullptr, false, &cache);
+      bool eq = s0 == s1 && bool(r0) == bool(r1);
+      if (eq && r0) {
+        eq = r0->payloadOk == r1->payloadOk && r0->payload == r1->payload &&
+             r0->header.mode == r1->header.mode;
+        decoded += r0->payloadOk ? 1 : 0;
+      }
+      same += eq ? 1 : 0;
+      ++total;
+    }
+    CHECK_EQ(same, total);
+    CHECK(decoded > 0);  // the frame is in the later windows
+    // Different audio under the same key is detected and rescanned.
+    std::vector<cfloat> z(y.begin(), y.end());
+    for (size_t i = 0; i < 16; ++i) z[i] += cfloat(1e-3f, 0.0f);
+    auto rz = receiveFrame(fam, z, nullptr, nullptr, nullptr, false, &cache);
+    auto rf = receiveFrame(fam, z);
+    CHECK(bool(rz) == bool(rf));
+  }
+}
