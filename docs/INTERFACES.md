@@ -144,7 +144,11 @@ STATUS STATE=<fsm> CALL=<my> REMOTE=<peer|-> FAMILY=<f> MODE=<Mx|AUTO(Mx)>
 NET=<bps> SNR=<local> RSNR=<remote|-> CFO=<tx_align_hz> RETRY=<ratio>
 BUSY=<0|1> LISTEN=<0|1> COMPRESS=<0|1> CRYPTO=<0|1> EPOCH=<n> RESUME=<0|1>
 MASK=<count> VOICE=<off|open|talking|bcastrx> TXBUF=<bytes> FOK=<n> FFAIL=<n>
+TURN=<ISS|IRS|->
 ```
+
+`TURN` is this station's role in the scheduled turn-taking MAC: `ISS`
+(sending), `IRS` (receiving), `-` when no turn schedule is active.
 
 `MODE` is `Mx` when the mode is pinned (`MODE Mx`), including while idle
 (the pin applies from the next session), and `AUTO(Mx)` when the AMC
@@ -157,8 +161,9 @@ decode anywhere within ±55 Hz regardless (since v1.2.0); a persistently
 large value means the dial needs retuning before that margin runs out,
 and an `EVT:CFO_WARN` fires past ±40 Hz.
 
-`STATUS JSON` carries the same keys lower-cased in one JSON object — the
-GUI and companion app consume this form.
+`STATUS JSON` carries the same keys lower-cased in one JSON object, for
+clients that prefer it (the built-in GUI and Skywave Link parse the plain
+line).
 
 ### Notifications
 
