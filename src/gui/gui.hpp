@@ -232,6 +232,13 @@ class Gui {
   float wfMaxHz_ = 3000.0f;              // display span (2 x band centre)
   float rxMeterDb_ = -120.0f;            // from the tap, smoothed
   std::deque<float> rxMeterHist_;
+  // Constellation display: snapshot sequence last seen, when it changed,
+  // whether it arrived with the channel already quiet, and whether the
+  // points are on screen (cleared when the signal stops).
+  uint32_t constSeenSeq_ = 0;
+  double constAt_ = -1.0;
+  bool constLate_ = false;
+  bool constVisible_ = false;
 
   Controls ctl_;
   // Mode combos, built from the band's mode range in syncFromModem().

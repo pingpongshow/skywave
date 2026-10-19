@@ -904,8 +904,34 @@ void Gui::drawWaterfallCard(float height) {
 // the visual signature of the fading the tracker cannot follow.
 void Gui::drawConstellationCard(float side) {
   if (beginCard("##const", "CONSTELLATION", ImVec2(side, 0))) {
-    char pts[32];
-    snprintf(pts, sizeof(pts), "M%u  %u pts", unsigned(snap_.mode), unsigned(snap_.constellationN));
+    // The snapshot keeps the LAST decoded frame's symbols for good; on its
+    // own the plot went on showing a frame long after reception ended.
+    // Now it clears the moment the signal stops (channel BUSY falls). A
+    // frame decoded after the signal already stopped - the usual case for
+    // a single burst, which decodes at burst end - flashes for at most
+    // kLateSec so it is seen at all, then clears.
+    constexpr double kLateSec = 1.0;
+    const double now = double(SDL_GetTicks64()) / 1000.0;
+    const bool signal = snap_.busy;
+    if (snap_.constellationSeq != constSeenSeq_) {
+      constSeenSeq_ = snap_.constellationSeq;
+      constAt_ = now;
+      constLate_ = !signal;  // decoded with the channel already quiet
+      constVisible_ = true;
+    }
+    if (constVisible_ && !signal) {
+      if (!constLate_ || now - constAt_ >= kLateSec) constVisible_ = false;
+    }
+    if (signal && constVisible_) constLate_ = false;  // signal back: hold again
+    const float fade = constVisible_ ? 1.0f : 0.0f;
+    const double ageSec = constAt_ < 0.0 ? 1e9 : now - constAt_;
+    char pts[48];
+    if (constVisible_ && snap_.constellationN > 0) {
+      snprintf(pts, sizeof(pts), "M%u  %u pts", unsigned(snap_.mode),
+               unsigned(snap_.constellationN));
+    } else {
+      snprintf(pts, sizeof(pts), "M%u", unsigned(snap_.mode));
+    }
     cardHeaderRight(ImGui::CalcTextSize(pts).x);
     ImGui::AlignTextToFramePadding();
     ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
@@ -923,16 +949,23 @@ void Gui::drawConstellationCard(float side) {
     dl->AddLine(ImVec2(c.x, o.y), ImVec2(c.x, o.y + sq), grid);
     dl->AddCircle(c, sq * 0.35f, grid, 64);
     const float scale = sq * 0.35f;  // unit amplitude at 35% of the box
-    const int n = int(snap_.constellationN);
+    const int n = fade > 0.0f ? int(snap_.constellationN) : 0;
     for (int i = 0; i < n; ++i) {
       const float x = std::clamp(c.x + snap_.constellationI[i] * scale, o.x, o.x + sq);
       const float y = std::clamp(c.y - snap_.constellationQ[i] * scale, o.y, o.y + sq);
       const float age = float(i) / float(std::max(n, 1));  // newer = brighter
       dl->AddCircleFilled(ImVec2(x, y), 1.8f,
-                          ImGui::GetColorU32(withAlpha(col::accentHi, 0.35f + 0.6f * age)));
+                          ImGui::GetColorU32(withAlpha(col::accentHi,
+                                                       (0.35f + 0.6f * age) * fade)));
     }
     if (n == 0) {
-      const char* t = "no decoded frame yet";
+      char idle[48];
+      if (constAt_ >= 0.0 && snap_.constellationN > 0) {
+        snprintf(idle, sizeof(idle), "idle - last frame %.0f s ago", ageSec);
+      } else {
+        snprintf(idle, sizeof(idle), "no decoded frame yet");
+      }
+      const char* t = idle;
       const ImVec2 ts = ImGui::CalcTextSize(t);
       dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + 8.0f), ImGui::GetColorU32(col::dim), t);
     }
