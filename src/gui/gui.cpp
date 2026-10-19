@@ -150,16 +150,28 @@ const std::vector<uint32_t>& waterfallLut() {
 }
 
 // Rounded status chip.
-void pill(const char* text, ImVec4 c) {
+// Status pill; with `clickable`, returns true when clicked (same shape, so
+// a row of pills lines up whatever mixes of the two it holds).
+bool pill(const char* text, ImVec4 c, bool clickable = false) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 pad(10.0f, 3.0f);
   const ImVec2 ts = ImGui::CalcTextSize(text);
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 q(p.x + ts.x + 2 * pad.x, p.y + ts.y + 2 * pad.y);
-  dl->AddRectFilled(p, q, ImGui::GetColorU32(withAlpha(c, 0.18f)), 999.0f);
+  const ImVec2 size(q.x - p.x, q.y - p.y);
+  bool clicked = false;
+  bool hovered = false;
+  if (clickable) {
+    clicked = ImGui::InvisibleButton(text, size);
+    hovered = ImGui::IsItemHovered();
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  } else {
+    ImGui::Dummy(size);
+  }
+  dl->AddRectFilled(p, q, ImGui::GetColorU32(withAlpha(c, hovered ? 0.32f : 0.18f)), 999.0f);
   dl->AddRect(p, q, ImGui::GetColorU32(withAlpha(c, 0.55f)), 999.0f);
   dl->AddText(ImVec2(p.x + pad.x, p.y + pad.y), ImGui::GetColorU32(c), text);
-  ImGui::Dummy(ImVec2(q.x - p.x, q.y - p.y));
+  return clicked;
 }
 
 // Label over a large value (top-bar statistic).
@@ -616,44 +628,69 @@ void Gui::drawTopBar() {
   ImGui::PopFont();
   ImGui::SameLine(0, 14);
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3);
+  const float pillY = ImGui::GetCursorPosY();  // every pill on one line
+  auto nextPill = [&] {
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(pillY);
+  };
   pill(state.c_str(), sc);
   if (snap_.ptt) {
-    ImGui::SameLine();
+    nextPill();
     pill("TX", col::bad);
   } else if (snap_.busy) {
-    ImGui::SameLine();
+    nextPill();
     pill("BUSY", col::warn);
   }
   // The placeholder callsign cannot transmit (the modem refuses).
   if (isPlaceholderCall(status_.call)) {
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, withAlpha(col::warn, 0.22f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, withAlpha(col::warn, 0.35f));
-    ImGui::PushStyleColor(ImGuiCol_Text, col::warn);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 3);
-    if (ImGui::SmallButton("SET CALLSIGN")) showSettings_ = true;
-    ImGui::PopStyleColor(3);
+    nextPill();
+    if (pill("SET CALLSIGN", col::warn, true)) showSettings_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open Settings to set your callsign");
   }
   const std::string crypto = field(fields_, "CRYPTO", "0");
   if (crypto == "1") {
-    ImGui::SameLine();
+    nextPill();
     pill("ENCRYPTED", col::good);
   }
 
-  // Right side: statistics, then the settings button.
+  // Where the left-hand title and pills end (window-local x).
+  const float leftEnd = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+
+  // Right side: statistics, then the settings button. The columns used to
+  // sit at fixed offsets from the right edge, so on a narrower window they
+  // slid over the pills; now as many as fit are shown, least important
+  // dropped first.
   const float right = ImGui::GetWindowContentRegionMax().x;
   const float statW = 112.0f;
   const char* settingsLabel = "Settings";
   const float btnW = ImGui::CalcTextSize(settingsLabel).x + 2 * ImGui::GetStyle().FramePadding.x;
-  float x = right - btnW - 6 * statW - 16.0f;
-  // The last action's outcome (Settings shows it in its own window).
+  char net[32];
+  snprintf(net, sizeof(net), "%.0f bps", status_.netBps);
+  struct Stat {
+    const char* label;
+    std::string value;
+    int priority;  // 0 = kept longest
+  };
+  const Stat stats[] = {
+      {"CALLSIGN", status_.call.empty() ? "(set me)" : status_.call, 0},
+      {"REMOTE", field(fields_, "REMOTE"), 3},
+      {"FAMILY", status_.family.empty() ? "-" : status_.family, 1},
+      {"MODE", status_.mode.empty() ? "-" : status_.mode, 2},
+      {"NET RATE", net, 5},
+      {"SNR", field(fields_, "SNR") + " dB", 4},
+  };
+  const float room = right - btnW - 16.0f - (leftEnd + 16.0f);
+  const int fit = std::clamp(int(room / statW), 0, 6);
+  float x = right - btnW - float(fit) * statW - 16.0f;
+  // The last action's outcome (Settings shows it in its own window), in
+  // whatever gap is left between the pills and the columns.
   const double now = double(SDL_GetTicks64()) / 1000.0;
   if (!showSettings_ && !notice_.text.empty() && now - noticeAt_ <= 8.0) {
     ImGui::SameLine(0, 14);
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float room = ImGui::GetWindowPos().x + x - 14.0f - p.x;
-    if (room > 60.0f) {
-      ImGui::PushClipRect(p, ImVec2(p.x + room, p.y + 40.0f), true);
+    const float gap = ImGui::GetWindowPos().x + x - 14.0f - p.x;
+    if (gap > 60.0f) {
+      ImGui::PushClipRect(p, ImVec2(p.x + gap, p.y + 40.0f), true);
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2);
       ImGui::TextColored(notice_.error ? col::bad : col::good, "%s", notice_.text.c_str());
       ImGui::PopClipRect();
@@ -664,20 +701,12 @@ void Gui::drawTopBar() {
     ImGui::SetCursorPosX(px);
   };
   ImGui::SetCursorPosY(6.0f);
-  at(x);
-  stat("CALLSIGN", status_.call.empty() ? "(set me)" : status_.call, fontMono_);
-  at(x += statW);
-  stat("REMOTE", field(fields_, "REMOTE"), fontMono_);
-  at(x += statW);
-  stat("FAMILY", status_.family.empty() ? "-" : status_.family, fontMono_);
-  at(x += statW);
-  stat("MODE", status_.mode.empty() ? "-" : status_.mode, fontMono_);
-  at(x += statW);
-  char net[32];
-  snprintf(net, sizeof(net), "%.0f bps", status_.netBps);
-  stat("NET RATE", net, fontMono_);
-  at(x += statW);
-  stat("SNR", field(fields_, "SNR") + " dB", fontMono_);
+  for (const Stat& st : stats) {
+    if (st.priority >= fit) continue;
+    at(x);
+    stat(st.label, st.value, fontMono_);
+    x += statW;
+  }
   at(right - btnW);
   ImGui::SetCursorPosY(10.0f);
   if (ImGui::Button(settingsLabel)) showSettings_ = !showSettings_;
