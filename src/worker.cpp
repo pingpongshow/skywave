@@ -1458,6 +1458,7 @@ void ModemWorker::abortSession() {
 bool ModemWorker::setListen(bool on) {
   std::lock_guard lock(modemMutex_);
   listen_ = on;
+  cfg_.listen = on;  // persisted like every other control-port setting
   return true;
 }
 
@@ -1673,7 +1674,9 @@ bool ModemWorker::setFeature(const std::string& name, bool on) {
   } else if (name == "ULTRA") {
     // GUI/control-port gate for the ULTRA family (config
     // modem.ultra_enable). Without this the FAMILY ULTRA command was
-    // simply refused with no way to enable it at runtime.
+    // simply refused with no way to enable it at runtime. Not OFF while
+    // ULTRA is the family: that saved family=ultra with ultra_enable=false.
+    if (!on && cfg_.family == Family::Ultra) return false;
     cfg_.ultraEnable = on;
   } else if (name == "PROBE") {
     return on;  // always on; nothing to rebuild
@@ -1696,8 +1699,11 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
   const std::string remote =
       conn && !engine_->remoteCall().empty() ? engine_->remoteCall() : "-";
   const int m = engine_->sessionMode();
+  // A mode pinned while idle applies from the next session; report it
+  // (it used to read AUTO until a session started).
   const std::string mode =
       engine_->modePinned() ? "M" + std::to_string(m)
+      : cfg_.mode >= 4      ? "M" + std::to_string(cfg_.mode)
                             : "AUTO(M" + std::to_string(m) + ")";
   const double rsnr = engine_->remoteSnrDb();
   struct KV {
@@ -1832,9 +1838,14 @@ bool ModemWorker::cryptoSupported() {
 std::string ModemWorker::securityLine() {
 #ifdef SKW_HAVE_CRYPTO
   std::lock_guard lock(modemMutex_);
+  // AUTH/ENCRYPT/EPOCH describe the live session; PSK and REQUEST what
+  // the next session will use (without them, ENCRYPTION ON looked as if
+  // it had done nothing until a session came up).
   return std::string("AUTH=") + (engine_->cryptoAuth() ? "ON" : "OFF") +
          " ENCRYPT=" + (engine_->cryptoActive() ? "ON" : "OFF") +
-         " EPOCH=" + std::to_string(engine_->cryptoEpoch());
+         " EPOCH=" + std::to_string(engine_->cryptoEpoch()) +
+         " PSK=" + (cfg_.cryptoPsk.size() == kPskBytes * 2 ? "SET" : "NONE") +
+         " REQUEST=" + (cfg_.cryptoEnabled ? "ON" : "OFF");
 #else
   return "";
 #endif

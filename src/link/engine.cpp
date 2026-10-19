@@ -3591,6 +3591,11 @@ void LinkEngine::onFrame(const ParsedFrame& f, const QualityMeasurement& q,
       if (fsm_.state() != FsmState::Idle && call->srcCall != remoteCall_) {
         return;
       }
+      // A CALL this station will not answer (placeholder callsign, ULTRA
+      // not enabled) stays silent BEFORE it touches the FSM: it used to
+      // enter CallAnswered with no CALL_ACK queued, showing CONNECTING
+      // and ignoring every other caller until the answer window expired.
+      if (!respondToCall(cfg_.policy, *call, lastRxQuality_)) return;
       if ((fsm_.state() == FsmState::Connected ||
            fsm_.state() == FsmState::Disconnecting) &&
           call->srcCall == remoteCall_) {

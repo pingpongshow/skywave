@@ -958,3 +958,23 @@ TEST_CASE(m3_monitor_third_party) {
 }
 
 SKYTEST_MAIN
+
+// A CALL the responder will not answer - here from the placeholder
+// callsign - must leave it idle. It used to enter CallAnswered without
+// queueing a CALL_ACK: the station showed CONNECTING, sent nothing, and
+// ignored every other caller until the answer window ran out.
+TEST_CASE(m2_unanswered_call_leaves_responder_idle) {
+  struct PlaceholderPair : Pair {
+    PlaceholderPair() : Pair(30.0, 93) { a = LinkEngine(makeCfg("N0CALL", Family::Wide)); }
+  };
+  PlaceholderPair p;
+  p.a.connectTo("K6XYZ", p.now);
+  bool heard = false;
+  for (int i = 0; i < 40; ++i) {
+    p.step();
+    heard = heard || p.b.state() != FsmState::Idle;
+  }
+  CHECK(!heard);
+  CHECK(p.b.state() == FsmState::Idle);
+  CHECK(p.a.state() != FsmState::Connected);
+}

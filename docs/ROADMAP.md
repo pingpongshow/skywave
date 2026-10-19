@@ -1812,6 +1812,56 @@ MID M0 fading floor.
   - What remains is about 20 overlapping noise captures, each scanning
     its own window. Sharing one scan between them would change the
     detector's warm-up state, so it was not done.
+- [x] **GUI settings that silently did nothing - FIXED 2026-10-18.**
+  Reported by the operator: changing the family from WIDE to ULTRA did
+  nothing. The modem refused `FAMILY ULTRA` because `ULTRA` was off,
+  but the combo kept showing ULTRA and the reason went only to the log.
+  Every widget had the same flaw: each assumed its command succeeded.
+  - **Each widget now calls one action** (`Gui::act*`). If the modem
+    refuses, the widget goes back to the modem's value, and a notice line
+    at the top of Settings, or in the top bar, says why in plain words.
+    Accepted changes are confirmed the same way.
+  - **ULTRA:** picking it from the family list now turns `ULTRA` on
+    first. The modem refuses `ULTRA OFF` while ULTRA is the family; that
+    command used to save the contradictory `family = ultra` with
+    `ultra_enable = false`.
+  - **Widgets follow changes made elsewhere** (the control port, the
+    companion app): family, mode, callsign and listen. A widget only
+    moves when the modem's value changes, so an edit in progress is not
+    overwritten. Mode, cyclic prefix and encryption are read from the
+    configuration at start-up; before, they always started at AUTO/off.
+  - **Settings that did not stick:** `LISTEN` changed only the runtime
+    flag, so the next start went back to listening. `STATUS` showed
+    `AUTO` for a mode pinned while idle. `SECURITY` reported only the
+    live session, so "Request encryption" looked as if it had done
+    nothing until a session came up. It now adds `PSK=SET|NONE` and
+    `REQUEST=ON|OFF`.
+  - **Smaller fixes:**
+    - PTT method is a list (None, VOX, RTS, DTR, TCP) instead of free
+      text, and the port field is disabled where it doesn't apply.
+    - The notice row is reserved, so controls never move under the
+      pointer.
+    - Audio-device results show as a notice.
+    - With the placeholder callsign `N0CALL` (which no station answers)
+      the top bar shows a SET CALLSIGN button, and Connect, CQ and
+      Beacon explain why instead of transmitting.
+  - **Responder fix found while testing:** a CALL the responder will
+    not answer (placeholder caller, ULTRA not enabled) moved its FSM to
+    CallAnswered without queueing a CALL_ACK. The station showed
+    CONNECTING, sent nothing, and ignored every other caller until the
+    answer window ran out. The engine now declines before the FSM
+    (`m2_unanswered_call_leaves_responder_idle`, which fails without
+    the fix).
+  - **Verified:**
+    - `gui_widget_actions_reach_modem` drives every action against a real
+      worker, both the accepted and the refused paths, in the default and
+      crypto builds.
+    - The real window was driven through `SKW_GUI_SCRIPT` clicks on
+      every tab. Each setting reached the modem and was saved to the
+      INI; audio devices switched to BlackHole and were saved.
+    - A session was run over two loopback devices: connect, a mode
+      pinned mid-session, payload with the constellation filled (M13,
+      9.1 kbps), then disconnect.
 
 ---
 

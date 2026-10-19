@@ -90,7 +90,7 @@ gated feature from a typo.
 | `PROBE [ON]` | probe-before-promote: always on (query answers `PROBE ON`; `PROBE OFF` is refused with `ERROR:STATE`) |
 | `MASKING ON\|OFF` | carrier masking |
 | `RESUME ON\|OFF` | session resume |
-| `ULTRA ON\|OFF` | permit the opt-in 2.7 kHz ULTRA family (`ultra_enable`); `FAMILY ULTRA` is refused while this is OFF |
+| `ULTRA ON\|OFF` | permit the opt-in 2.7 kHz ULTRA family (`ultra_enable`); `FAMILY ULTRA` is refused while this is OFF, and `ULTRA OFF` while ULTRA is the family |
 
 #### Status and Observability
 
@@ -145,6 +145,10 @@ NET=<bps> SNR=<local> RSNR=<remote|-> CFO=<tx_align_hz> RETRY=<ratio>
 BUSY=<0|1> LISTEN=<0|1> COMPRESS=<0|1> CRYPTO=<0|1> EPOCH=<n> RESUME=<0|1>
 MASK=<count> VOICE=<off|open|talking|bcastrx> TXBUF=<bytes> FOK=<n> FFAIL=<n>
 ```
+
+`MODE` is `Mx` when the mode is pinned (`MODE Mx`), including while idle
+(the pin applies from the next session), and `AUTO(Mx)` when the AMC
+chooses, with the mode in use.
 
 `CFO` is the current TX frequency-alignment correction
 ([PROTOCOL.md](PROTOCOL.md)): the offset of the path this station

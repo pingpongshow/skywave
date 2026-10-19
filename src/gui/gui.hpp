@@ -88,7 +88,83 @@ class Gui {
   const GuiInstruments& instruments() const { return inst_; }
   void sampleTelemetry();  // pull a snapshot into the instrument history
 
+  // --- widget state and actions ----------------------------------------
+  // What the widgets show and edit. Every widget calls exactly one action
+  // below, and test_gui drives the same actions headlessly. A command the
+  // modem refuses puts its widget back to what the modem is running and
+  // explains why in the notice line: a widget never shows a value the
+  // modem is not using.
+  struct Controls {
+    char call[16] = {0};
+    char connect[16] = {0};
+    int family = 0;     // kFamilyNames index
+    int mode = 0;       // 0 = AUTO, else M4..M13
+    int cp = 0;         // 0 = AUTO
+    int maxMode = 9;    // 0 = M4 .. 9 = M13
+    bool listen = true, monitor = false, cwid = false, ultra = false;
+    int pttMethod = 0;  // kPttMethods index
+    char pttPort[64] = {0};
+    int pttLead = 50, pttTail = 20;
+    char psk[80] = {0};
+    bool encrypt = false;
+  };
+  struct Notice {
+    std::string text;
+    bool error = false;
+    uint64_t seq = 0;  // bumps on every new notice
+  };
+  Controls& controls() { return ctl_; }
+  const Notice& notice() const { return notice_; }
+  // Read every widget's value from the modem (start-up; blocking).
+  void syncFromModem();
+  // Re-read the worker's published status and follow changes made
+  // elsewhere (the TCP control port, the companion app).
+  void refreshStatus();
+  // Tests: wait for queued commands, then apply their answers.
+  bool waitIdle(int timeoutMs);
+
+  void actConnect();
+  void actDisconnect();
+  void actCq();
+  void actBeacon();
+  void actAbort();
+  void actMode(int prev);
+  void actCp(int prev);
+  void actCall();
+  void actFamily(int prev);
+  void actMaxMode(int prev);
+  void actListen();
+  void actMonitor();
+  void actCwid();
+  void actUltra();
+  void actTxTest(bool on);
+  void actPttMethod(int prev);
+  void actPttPort();
+  void actPttTimes();
+  void actInstallPsk();
+  void actEncryption();
+  void actKeyRotate();
+  void actSecurityRefresh();
+
  private:
+  // A setting command: on an ERROR answer run `revert` and explain; on
+  // success run `ok` (if any).
+  void apply(const std::string& cmd, std::function<void()> revert,
+             std::function<void(const std::string&)> ok = nullptr);
+  void setNotice(std::string text, bool error);
+  bool needsCallsign();  // placeholder callsign: explain and refuse
+  void drawNotice();
+  void saveScreenshot(const char* path);
+  void runDebugScript();  // SKW_GUI_SCRIPT (gui.cpp)
+  struct ScriptStep {
+    int frame;
+    std::string cmd;
+  };
+  std::vector<ScriptStep> script_;
+  size_t scriptPos_ = 0;
+  bool scriptLoaded_ = false, scriptRelease_ = false, scriptQuit_ = false;
+  std::string pendingShot_;
+  int frameNo_ = 0;
   // Asynchronous widget command: queued to the executor, logged (and
   // `then` called with the answer) when it completes.
   void send(const std::string& cmd,
@@ -155,20 +231,16 @@ class Gui {
   float rxMeterDb_ = -120.0f;            // from the tap, smoothed
   std::deque<float> rxMeterHist_;
 
-  // Edit buffers / selections (applied via the dispatcher).
-  char callBuf_[16] = {0};
-  char connectBuf_[16] = {0};
-  int familyIdx_ = 0;
-  int modeIdx_ = 0;   // 0 = AUTO, else M4..M13
-  int cpIdx_ = 0;     // 0 = AUTO
+  Controls ctl_;
+  Notice notice_;
+  double noticeAt_ = -1e9;  // SDL seconds when the notice was set
+  // Last modem values seen in the published status: a widget follows the
+  // modem only when that value CHANGES, so an edit in progress is kept.
+  std::string seenFamily_, seenMode_, seenCall_, seenListen_;
+  // Last values the modem accepted for the PTT text fields (revert target).
+  std::string pttPortSaved_;
+  int pttLeadSaved_ = 50, pttTailSaved_ = 20;
   int portData_ = 0, portCtrl_ = 0, portVoice_ = 0;
-  bool ultraOn_ = false, listenOn_ = true, cwidOn_ = false, monitor_ = false;
-  int maxModeIdx_ = 9;      // 0 = M4 .. 9 = M13
-  char pttMethodBuf_[24] = {0};
-  char pttPortBuf_[64] = {0};
-  int pttLead_ = 50, pttTail_ = 20;
-  char pskBuf_[80] = {0};
-  bool encryptOn_ = false;
   std::string securityLine_;
   bool showSettings_ = false;
   std::vector<AudioDeviceInfo> audioDevs_;

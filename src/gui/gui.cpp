@@ -5,6 +5,8 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,7 @@
 #include "backends/imgui_impl_sdlrenderer2.h"
 #include "core/constants.hpp"
 #include "core/log.hpp"
+#include "link/frame.hpp"
 #include "imgui.h"
 
 namespace skw {
@@ -30,6 +33,59 @@ namespace {
 
 const char* kFamilyNames[] = {"WIDE", "MID", "NARROW", "ULTRA"};
 const char* kCpNames[] = {"AUTO", "SHORT", "MEDIUM", "LONG"};
+const char* kPttMethods[] = {"NONE", "VOX", "RTS", "DTR", "TCP"};
+
+std::string upperAscii(std::string s) {
+  for (char& ch : s) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  return s;
+}
+
+int familyIndex(const std::string& name) {
+  for (int i = 0; i < 4; ++i) {
+    if (name == kFamilyNames[i]) return i;
+  }
+  return 0;
+}
+
+int pttMethodIndex(const std::string& name) {
+  const std::string n = upperAscii(name);
+  for (int i = 0; i < 5; ++i) {
+    if (n == kPttMethods[i]) return i;
+  }
+  return 0;
+}
+
+// The modem's error codes are terse; say what the operator can do.
+std::string explainError(const std::string& cmd, const std::string& resp) {
+  const std::string verb = cmd.substr(0, cmd.find(' '));
+  const std::string arg = cmd.size() > verb.size() ? cmd.substr(verb.size() + 1) : "";
+  std::string why;
+  if (resp.rfind("ERROR:UNSUPPORTED", 0) == 0) {
+    why = "this build does not support it";
+  } else if (resp.rfind("ERROR:BADARG", 0) == 0) {
+    if (verb == "MYCALL") why = "not a valid callsign";
+    else if (verb == "PTTPORT") why = "not a usable port";
+    else if (verb == "ENCRYPTKEY") why = "the key must be 64 hex digits";
+    else why = "the modem rejected the value";
+  } else if (resp.rfind("ERROR:STATE", 0) == 0) {
+    if (verb == "FAMILY") why = "the family can only change while no session is active";
+    else if (verb == "ULTRA")
+      why = arg == "OFF" ? "ULTRA is the family in use; choose another family first"
+                         : "only while no session is active";
+    else if (verb == "CONNECT" || verb == "CQ" || verb == "BEACON" || verb == "TXTEST")
+      why = "the modem is busy (a call or session is in progress)";
+    else if (verb == "DISCONNECT") why = "there is no session to disconnect";
+    else if (verb == "ENCRYPTION")
+      why = arg == "ON" ? "install a key first (and only while no session is active)"
+                        : "only while no session is active";
+    else if (verb == "ENCRYPTKEY") why = "only while no session is active";
+    else if (verb == "KEYROTATE") why = "needs an encrypted session";
+    else why = "not possible in the current session state";
+  } else {
+    why = resp;
+  }
+  return cmd + " refused: " + why + ".";
+}
 
 // Palette: neutral dark surfaces, one accent, semantic state colours.
 namespace col {
@@ -249,11 +305,7 @@ void Gui::sampleTelemetry() {
   const double nowSec = double(SDL_GetTicks64()) / 1000.0;
   if (nowSec - lastStatusSec_ >= 0.25) {
     lastStatusSec_ = nowSec;
-    status_ = worker_.status();
-    fields_ = parseFields(status_.status);
-    const auto f = parseFields(status_.freqInfo);
-    const double centre = std::atof(field(f, "CENTER", "1500").c_str());
-    wfMaxHz_ = float(std::clamp(2.0 * centre, 2000.0, 12000.0));
+    refreshStatus();
   }
 }
 
@@ -411,25 +463,8 @@ bool Gui::init(int width, int height) {
   fft_ = std::make_unique<Fft>(kSpecFft);
 
   // Initial widget state: one-time synchronous reads at start-up.
-  snprintf(callBuf_, sizeof(callBuf_), "%s", worker_.myCall().c_str());
-  const std::string fam = worker_.family();
-  for (int i = 0; i < 4; ++i) {
-    if (fam == kFamilyNames[i]) familyIdx_ = i;
-  }
-  monitor_ = worker_.monitoring();
-  if (auto u = worker_.feature("ULTRA")) ultraOn_ = *u;
-  listenOn_ = worker_.listening();
-  cwidOn_ = worker_.cwId();
-  maxModeIdx_ = std::clamp(worker_.maxMode() - 4, 0, 9);
-  snprintf(pttMethodBuf_, sizeof(pttMethodBuf_), "%s",
-           worker_.pttGet("METHOD").c_str());
-  snprintf(pttPortBuf_, sizeof(pttPortBuf_), "%s",
-           worker_.pttGet("PORT").c_str());
-  pttLead_ = atoi(worker_.pttGet("LEAD").c_str());
-  pttTail_ = atoi(worker_.pttGet("TAIL").c_str());
+  syncFromModem();
   audioDevs_ = listAudioDevices();
-  status_ = worker_.status();
-  fields_ = parseFields(status_.status);
   ready_ = true;
   return true;
 }
@@ -451,7 +486,13 @@ std::optional<std::pair<int, int>> Gui::takeAudioRequest() {
   return r;
 }
 
-void Gui::noteAudio(const std::string& result) { pushLog("(audio device change)", result); }
+void Gui::noteAudio(const std::string& result) {
+  pushLog("(audio device change)", result);
+  const bool failed = result.rfind("FAILED", 0) == 0;
+  setNotice(failed ? "Audio device change failed: " + result.substr(8)
+                   : "Audio devices switched.",
+            failed);
+}
 
 void Gui::shutdown() {
   if (!ready_) return;
@@ -577,6 +618,16 @@ void Gui::drawTopBar() {
     ImGui::SameLine();
     pill("BUSY", col::warn);
   }
+  // The placeholder callsign transmits, but no station answers it.
+  if (status_.call.empty() || status_.call == kPlaceholderCall) {
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, withAlpha(col::warn, 0.22f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, withAlpha(col::warn, 0.35f));
+    ImGui::PushStyleColor(ImGuiCol_Text, col::warn);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 3);
+    if (ImGui::SmallButton("SET CALLSIGN")) showSettings_ = true;
+    ImGui::PopStyleColor(3);
+  }
   const std::string crypto = field(fields_, "CRYPTO", "0");
   if (crypto == "1") {
     ImGui::SameLine();
@@ -589,6 +640,19 @@ void Gui::drawTopBar() {
   const char* settingsLabel = "Settings";
   const float btnW = ImGui::CalcTextSize(settingsLabel).x + 2 * ImGui::GetStyle().FramePadding.x;
   float x = right - btnW - 6 * statW - 16.0f;
+  // The last action's outcome (Settings shows it in its own window).
+  const double now = double(SDL_GetTicks64()) / 1000.0;
+  if (!showSettings_ && !notice_.text.empty() && now - noticeAt_ <= 8.0) {
+    ImGui::SameLine(0, 14);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float room = ImGui::GetWindowPos().x + x - 14.0f - p.x;
+    if (room > 60.0f) {
+      ImGui::PushClipRect(p, ImVec2(p.x + room, p.y + 40.0f), true);
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2);
+      ImGui::TextColored(notice_.error ? col::bad : col::good, "%s", notice_.text.c_str());
+      ImGui::PopClipRect();
+    }
+  }
   auto at = [&](float px) {
     ImGui::SameLine();
     ImGui::SetCursorPosX(px);
@@ -617,26 +681,27 @@ void Gui::drawSessionCard() {
   if (beginCard("##session", "SESSION", ImVec2(0, 160))) {
     ImGui::Spacing();
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##remote", "Remote callsign", connectBuf_, sizeof(connectBuf_),
-                             ImGuiInputTextFlags_CharsUppercase);
+    const bool enter = ImGui::InputTextWithHint(
+        "##remote", "Remote callsign", ctl_.connect, sizeof(ctl_.connect),
+        ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_EnterReturnsTrue);
     const float w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
     ImGui::PushStyleColor(ImGuiCol_Button, col::accent);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col::accentHi);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, col::accent);
-    const bool canCall = connectBuf_[0] != '\0';
+    const bool canCall = ctl_.connect[0] != '\0';
     ImGui::BeginDisabled(!canCall);
-    if (ImGui::Button("Connect", ImVec2(w, 0))) send(std::string("CONNECT ") + connectBuf_);
+    if (ImGui::Button("Connect", ImVec2(w, 0)) || (enter && canCall)) actConnect();
     ImGui::EndDisabled();
     ImGui::PopStyleColor(3);
     ImGui::SameLine();
-    if (ImGui::Button("Disconnect", ImVec2(w, 0))) send("DISCONNECT");
+    if (ImGui::Button("Disconnect", ImVec2(w, 0))) actDisconnect();
     const float w3 = (ImGui::GetContentRegionAvail().x - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
-    if (ImGui::Button("CQ", ImVec2(w3, 0))) send("CQ");
+    if (ImGui::Button("CQ", ImVec2(w3, 0))) actCq();
     ImGui::SameLine();
-    if (ImGui::Button("Beacon", ImVec2(w3, 0))) send("BEACON");
+    if (ImGui::Button("Beacon", ImVec2(w3, 0))) actBeacon();
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, col::bad);
-    if (ImGui::Button("Abort", ImVec2(w3, 0))) send("ABORT");
+    if (ImGui::Button("Abort", ImVec2(w3, 0))) actAbort();
     ImGui::PopStyleColor();
   }
   endCard();
@@ -654,14 +719,14 @@ void Gui::drawLinkCard() {
       ImGui::PopStyleColor();
       ImGui::TableNextColumn();
       ImGui::SetNextItemWidth(-1);
-      if (ImGui::Combo("##mode", &modeIdx_, "AUTO\0M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
-        send("MODE " + modeArg(modeIdx_));
+      const int prevMode = ctl_.mode;
+      if (ImGui::Combo("##mode", &ctl_.mode, "AUTO\0M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
+        actMode(prevMode);
       }
       ImGui::TableNextColumn();
       ImGui::SetNextItemWidth(-1);
-      if (ImGui::Combo("##cp", &cpIdx_, "AUTO\0SHORT\0MEDIUM\0LONG\0")) {
-        send(std::string("CPMODE ") + kCpNames[cpIdx_]);
-      }
+      const int prevCp = ctl_.cp;
+      if (ImGui::Combo("##cp", &ctl_.cp, "AUTO\0SHORT\0MEDIUM\0LONG\0")) actCp(prevCp);
       ImGui::EndTable();
     }
     ImGui::Spacing();
@@ -858,6 +923,302 @@ void Gui::drawLogCard() {
   endCard();
 }
 
+// --- widget state and actions ----------------------------------------------------
+
+void Gui::syncFromModem() {
+  const Config c = worker_.config();
+  snprintf(ctl_.call, sizeof(ctl_.call), "%s", c.callsign.c_str());
+  ctl_.family = familyIndex(upperAscii(toString(c.family)));
+  ctl_.mode = c.mode >= 4 && c.mode <= 13 ? c.mode - 3 : 0;
+  ctl_.cp = c.cpMode >= 0 && c.cpMode <= 2 ? c.cpMode + 1 : 0;
+  ctl_.maxMode = std::clamp(c.maxMode - 4, 0, 9);
+  ctl_.listen = worker_.listening();
+  ctl_.monitor = worker_.monitoring();
+  ctl_.cwid = c.cwId;
+  ctl_.ultra = c.ultraEnable;
+  ctl_.pttMethod = pttMethodIndex(worker_.pttGet("METHOD"));
+  pttPortSaved_ = worker_.pttGet("PORT");
+  if (pttPortSaved_ == "-") pttPortSaved_.clear();  // the modem's "unset"
+  snprintf(ctl_.pttPort, sizeof(ctl_.pttPort), "%s", pttPortSaved_.c_str());
+  ctl_.pttLead = pttLeadSaved_ = atoi(worker_.pttGet("LEAD").c_str());
+  ctl_.pttTail = pttTailSaved_ = atoi(worker_.pttGet("TAIL").c_str());
+  ctl_.encrypt = c.cryptoEnabled;
+  status_ = worker_.status();
+  fields_ = parseFields(status_.status);
+  seenFamily_ = status_.family;
+  seenMode_ = status_.mode;
+  seenCall_ = status_.call;
+  seenListen_ = field(fields_, "LISTEN", "");
+}
+
+void Gui::refreshStatus() {
+  status_ = worker_.status();
+  fields_ = parseFields(status_.status);
+  const auto f = parseFields(status_.freqInfo);
+  const double centre = std::atof(field(f, "CENTER", "1500").c_str());
+  wfMaxHz_ = float(std::clamp(2.0 * centre, 2000.0, 12000.0));
+  // Follow changes made elsewhere (control port, companion app). Only a
+  // CHANGE of the modem's value moves a widget, so an unapplied edit (a
+  // callsign being typed) is left alone.
+  if (!status_.family.empty() && status_.family != seenFamily_) {
+    seenFamily_ = status_.family;
+    ctl_.family = familyIndex(status_.family);
+    if (ctl_.family == 3) ctl_.ultra = true;
+  }
+  if (!status_.mode.empty() && status_.mode != seenMode_) {
+    seenMode_ = status_.mode;
+    const int m = status_.mode[0] == 'M' ? std::atoi(status_.mode.c_str() + 1) : 0;
+    ctl_.mode = m >= 4 && m <= 13 ? m - 3 : 0;
+  }
+  if (!status_.call.empty() && status_.call != seenCall_) {
+    seenCall_ = status_.call;
+    snprintf(ctl_.call, sizeof(ctl_.call), "%s", status_.call.c_str());
+  }
+  const std::string listen = field(fields_, "LISTEN", "");
+  if (!listen.empty() && listen != seenListen_) {
+    seenListen_ = listen;
+    ctl_.listen = listen == "1";
+  }
+}
+
+bool Gui::waitIdle(int timeoutMs) {
+  for (int i = 0; i < timeoutMs; ++i) {
+    if (exec_->idle()) {
+      drainResults();
+      if (exec_->idle()) return true;  // callbacks may have queued more
+      continue;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  drainResults();
+  return false;
+}
+
+void Gui::setNotice(std::string text, bool error) {
+  notice_.text = std::move(text);
+  notice_.error = error;
+  ++notice_.seq;
+  noticeAt_ = double(SDL_GetTicks64()) / 1000.0;
+}
+
+void Gui::apply(const std::string& cmd, std::function<void()> revert,
+                std::function<void(const std::string&)> ok) {
+  send(cmd, [this, cmd, revert = std::move(revert), ok = std::move(ok)](const std::string& r) {
+    if (r.rfind("ERROR", 0) == 0) {
+      if (revert) revert();
+      setNotice(explainError(redactForLog(cmd), r), true);
+    } else if (ok) {
+      ok(r);
+    }
+  });
+}
+
+bool Gui::needsCallsign() {
+  if (!status_.call.empty() && status_.call != kPlaceholderCall) return false;
+  setNotice(std::string("Set your callsign first (Settings > Station): no station answers ") +
+                kPlaceholderCall + ".",
+            true);
+  return true;
+}
+
+void Gui::actConnect() {
+  if (needsCallsign()) return;
+  if (ctl_.connect[0] == '\0') {
+    setNotice("Enter the callsign of the station to call.", true);
+    return;
+  }
+  const std::string to = ctl_.connect;
+  apply("CONNECT " + to, nullptr, [this, to](const std::string&) {
+    setNotice("Calling " + to + "...", false);
+  });
+}
+void Gui::actDisconnect() {
+  apply("DISCONNECT", nullptr, [this](const std::string&) { setNotice("Disconnecting...", false); });
+}
+void Gui::actCq() {
+  if (needsCallsign()) return;
+  apply("CQ", nullptr, [this](const std::string&) { setNotice("CQ sent.", false); });
+}
+void Gui::actBeacon() {
+  if (needsCallsign()) return;
+  apply("BEACON", nullptr, [this](const std::string&) { setNotice("Beacon sent.", false); });
+}
+void Gui::actAbort() {
+  apply("ABORT", nullptr, [this](const std::string&) { setNotice("Aborted.", false); });
+}
+
+void Gui::actMode(int prev) {
+  apply("MODE " + modeArg(ctl_.mode), [this, prev] { ctl_.mode = prev; },
+        [this](const std::string& r) {
+          setNotice(ctl_.mode == 0 ? "Mode: automatic."
+                                   : "Mode pinned to " + modeArg(ctl_.mode) +
+                                         " (applies to the current or next session).",
+                    false);
+          (void)r;
+        });
+}
+void Gui::actCp(int prev) {
+  apply(std::string("CPMODE ") + kCpNames[ctl_.cp], [this, prev] { ctl_.cp = prev; },
+        [this](const std::string&) {
+          setNotice(std::string("Cyclic prefix: ") + kCpNames[ctl_.cp] + ".", false);
+        });
+}
+
+void Gui::actCall() {
+  const std::string call = ctl_.call;
+  if (call.empty()) {
+    setNotice("Enter a callsign.", true);
+    return;
+  }
+  apply("MYCALL " + call,
+        [this] { snprintf(ctl_.call, sizeof(ctl_.call), "%s", status_.call.c_str()); },
+        [this](const std::string& r) { setNotice("Callsign set: " + r.substr(7) + ".", false); });
+}
+
+void Gui::actFamily(int prev) {
+  const std::string fam = kFamilyNames[ctl_.family];
+  // Choosing ULTRA in the list is the operator's opt-in: allow it first
+  // (the modem refuses FAMILY ULTRA while ultra_enable is off).
+  if (ctl_.family == 3 && !ctl_.ultra) {
+    apply("ULTRA ON", nullptr, [this](const std::string&) { ctl_.ultra = true; });
+  }
+  apply("FAMILY " + fam, [this, prev] { ctl_.family = prev; },
+        [this, fam](const std::string&) {
+          setNotice("Family set to " + fam +
+                        (fam == "ULTRA" ? " (the radio must pass about 100-2900 Hz)." : "."),
+                    false);
+        });
+}
+void Gui::actMaxMode(int prev) {
+  const std::string m = "M" + std::to_string(ctl_.maxMode + 4);
+  apply("MAXMODE " + m, [this, prev] { ctl_.maxMode = prev; },
+        [this, m](const std::string&) { setNotice("Highest mode: " + m + ".", false); });
+}
+void Gui::actListen() {
+  const bool on = ctl_.listen;
+  apply(std::string("LISTEN ") + (on ? "ON" : "OFF"), [this, on] { ctl_.listen = !on; },
+        [this, on](const std::string&) {
+          setNotice(on ? "Answering calls." : "Not answering calls.", false);
+        });
+}
+void Gui::actMonitor() {
+  const bool on = ctl_.monitor;
+  apply(std::string("MONITOR ") + (on ? "ON" : "OFF"), [this, on] { ctl_.monitor = !on; },
+        [this, on](const std::string&) {
+          setNotice(on ? "Monitoring other stations' traffic." : "Monitor off.", false);
+        });
+}
+void Gui::actCwid() {
+  const bool on = ctl_.cwid;
+  apply(std::string("CWID ") + (on ? "ON" : "OFF"), [this, on] { ctl_.cwid = !on; },
+        [this, on](const std::string&) {
+          setNotice(on ? "CW identification on." : "CW identification off.", false);
+        });
+}
+void Gui::actUltra() {
+  const bool on = ctl_.ultra;
+  apply(std::string("ULTRA ") + (on ? "ON" : "OFF"), [this, on] { ctl_.ultra = !on; },
+        [this, on](const std::string&) {
+          setNotice(on ? "ULTRA family allowed." : "ULTRA family not allowed.", false);
+        });
+}
+void Gui::actTxTest(bool on) {
+  apply(on ? "TXTEST 5" : "TXTEST OFF", nullptr, [this, on](const std::string&) {
+    setNotice(on ? "Transmitting a 5 s test burst." : "Test burst stopped.", false);
+  });
+}
+
+void Gui::actPttMethod(int prev) {
+  const std::string m = kPttMethods[ctl_.pttMethod];
+  apply("PTTMETHOD " + m, [this, prev] { ctl_.pttMethod = prev; },
+        [this, m](const std::string&) { setNotice("PTT method: " + m + ".", false); });
+}
+void Gui::actPttPort() {
+  const std::string port = ctl_.pttPort;
+  if (port.empty()) {
+    setNotice("Enter the serial device or host:port.", true);
+    return;
+  }
+  apply("PTTPORT " + port,
+        [this] { snprintf(ctl_.pttPort, sizeof(ctl_.pttPort), "%s", pttPortSaved_.c_str()); },
+        [this, port](const std::string&) {
+          pttPortSaved_ = port;
+          setNotice("PTT port: " + port + ".", false);
+        });
+}
+void Gui::actPttTimes() {
+  const int lead = ctl_.pttLead, tail = ctl_.pttTail;
+  // Tail only once lead is accepted, so a refusal is the last word.
+  apply("PTTLEAD " + std::to_string(lead), [this] { ctl_.pttLead = pttLeadSaved_; },
+        [this, lead, tail](const std::string&) {
+          pttLeadSaved_ = lead;
+          apply("PTTTAIL " + std::to_string(tail), [this] { ctl_.pttTail = pttTailSaved_; },
+                [this, lead, tail](const std::string&) {
+                  pttTailSaved_ = tail;
+                  setNotice("PTT lead " + std::to_string(lead) + " ms, tail " +
+                                std::to_string(tail) + " ms.",
+                            false);
+                });
+        });
+}
+
+void Gui::actInstallPsk() {
+  const std::string psk = ctl_.psk;
+  std::memset(ctl_.psk, 0, sizeof(ctl_.psk));  // never lingers in the UI
+  if (psk.size() != 64) {
+    setNotice("The key must be exactly 64 hex digits (32 bytes).", true);
+    return;
+  }
+  apply("ENCRYPTKEY " + psk, nullptr, [this](const std::string&) {
+    setNotice("Key installed.", false);
+    actSecurityRefresh();
+  });
+}
+void Gui::actEncryption() {
+  const bool on = ctl_.encrypt;
+  apply(std::string("ENCRYPTION ") + (on ? "ON" : "OFF"), [this, on] { ctl_.encrypt = !on; },
+        [this, on](const std::string&) {
+          setNotice(on ? "Encryption requested for the next session." : "Encryption off.",
+                    false);
+          actSecurityRefresh();
+        });
+}
+void Gui::actKeyRotate() {
+  apply("KEYROTATE", nullptr, [this](const std::string&) {
+    setNotice("Key rotation started.", false);
+    actSecurityRefresh();
+  });
+}
+void Gui::actSecurityRefresh() {
+  if (securityLine_.empty()) securityLine_ = "...";
+  send("SECURITY", [this](const std::string& r) { securityLine_ = r; });
+}
+
+// The notice line: what the last action did, or why the modem refused
+// it. Shown for a few seconds at the top of the Settings window and in
+// the top bar.
+void Gui::drawNotice() {
+  const double now = double(SDL_GetTicks64()) / 1000.0;
+  const float h = ImGui::GetTextLineHeightWithSpacing() + 12.0f;
+  // The row is always reserved: a notice appearing must not move the
+  // controls under the pointer.
+  if (notice_.text.empty() || now - noticeAt_ > 8.0) {
+    ImGui::Dummy(ImVec2(0, h));
+    return;
+  }
+  const ImVec4 c = notice_.error ? col::bad : col::good;
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, withAlpha(c, 0.14f));
+  ImGui::PushStyleColor(ImGuiCol_Border, withAlpha(c, 0.55f));
+  if (ImGui::BeginChild("##notice", ImVec2(0, h), ImGuiChildFlags_Borders,
+                        ImGuiWindowFlags_NoScrollbar)) {
+    ImGui::PushStyleColor(ImGuiCol_Text, c);
+    ImGui::TextUnformatted(notice_.text.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleColor(2);
+}
+
 // --- settings ------------------------------------------------------------------
 
 namespace {
@@ -873,41 +1234,53 @@ void rowLabel(const char* text) {
 void Gui::drawStationTab() {
   rowLabel("Callsign");
   ImGui::SetNextItemWidth(160);
-  ImGui::InputText("##call", callBuf_, sizeof(callBuf_), ImGuiInputTextFlags_CharsUppercase);
+  const bool enter = ImGui::InputText("##call", ctl_.call, sizeof(ctl_.call),
+                                      ImGuiInputTextFlags_CharsUppercase |
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
   ImGui::SameLine();
-  if (ImGui::Button("Apply##call")) send(std::string("MYCALL ") + callBuf_);
+  if (ImGui::Button("Apply##call") || enter) actCall();
+
   rowLabel("Family");
   ImGui::SetNextItemWidth(160);
-  if (ImGui::Combo("##family", &familyIdx_, "WIDE\0MID\0NARROW\0ULTRA\0")) {
-    send(std::string("FAMILY ") + kFamilyNames[familyIdx_]);
+  {
+    const int prev = ctl_.family;
+    if (ImGui::Combo("##family", &ctl_.family, "WIDE\0MID\0NARROW\0ULTRA\0")) actFamily(prev);
+  }
+  if (ctl_.family == 3) {
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
+    ImGui::TextUnformatted("radio must pass ~100-2900 Hz");
+    ImGui::PopStyleColor();
   }
   rowLabel("Highest mode");
   ImGui::SetNextItemWidth(160);
-  if (ImGui::Combo("##maxmode", &maxModeIdx_, "M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
-    send("MAXMODE M" + std::to_string(maxModeIdx_ + 4));
+  {
+    const int prev = ctl_.maxMode;
+    if (ImGui::Combo("##maxmode", &ctl_.maxMode, "M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
+      actMaxMode(prev);
+    }
   }
   ImGui::Spacing();
-  if (ImGui::Checkbox("Answer calls (listen)", &listenOn_)) {
-    send(std::string("LISTEN ") + (listenOn_ ? "ON" : "OFF"));
-  }
-  if (ImGui::Checkbox("Monitor other stations", &monitor_)) {
-    send(std::string("MONITOR ") + (monitor_ ? "ON" : "OFF"));
-  }
-  if (ImGui::Checkbox("CW identification", &cwidOn_)) {
-    send(std::string("CWID ") + (cwidOn_ ? "ON" : "OFF"));
-  }
-  if (ImGui::Checkbox("Allow ULTRA family", &ultraOn_)) {
-    send(std::string("ULTRA ") + (ultraOn_ ? "ON" : "OFF"));
+  if (ImGui::Checkbox("Answer calls (listen)", &ctl_.listen)) actListen();
+  if (ImGui::Checkbox("Monitor other stations", &ctl_.monitor)) actMonitor();
+  if (ImGui::Checkbox("CW identification", &ctl_.cwid)) actCwid();
+  // ULTRA cannot be disallowed while it is the family in use.
+  ImGui::BeginDisabled(ctl_.family == 3);
+  if (ImGui::Checkbox("Allow ULTRA family", &ctl_.ultra)) actUltra();
+  ImGui::EndDisabled();
+  if (ctl_.family == 3 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("Choose another family first");
   }
   ImGui::Spacing();
   ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
   ImGui::Text("TCP ports: data %d, control %d, voice %d (restart to change)", portData_,
               portCtrl_, portVoice_);
+  ImGui::TextWrapped("Changes apply at once and are saved to the configuration file on exit.");
   ImGui::PopStyleColor();
 }
 
 void Gui::drawAudioTab() {
-  // Combos show "index: name"; selection is by DEVICE INDEX so a rescan
+  // Combos show device names; selection is by DEVICE INDEX so a rescan
   // that reorders the list cannot silently retarget.
   auto deviceCombo = [&](const char* label, const char* id, bool wantInput, int& sel) {
     rowLabel(label);
@@ -923,6 +1296,7 @@ void Gui::drawAudioTab() {
     }
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo(id, preview)) {
+      if (ImGui::Selectable("System default", sel < 0)) sel = -1;
       for (const auto& d : audioDevs_) {
         if (wantInput ? d.maxInputChannels <= 0 : d.maxOutputChannels <= 0) continue;
         char item[96];
@@ -937,8 +1311,7 @@ void Gui::drawAudioTab() {
   deviceCombo("Output (to radio)", "##out", false, audioOutSel_);
   if (ImGui::Button("Apply devices")) {
     audioReq_ = std::make_pair(audioInSel_, audioOutSel_);
-    pushLog("(audio device change)", "requested in=" + std::to_string(audioInSel_) +
-                                         " out=" + std::to_string(audioOutSel_));
+    setNotice("Switching audio devices...", false);
   }
   ImGui::SameLine();
   if (ImGui::Button("Rescan")) audioDevs_ = listAudioDevices();
@@ -947,51 +1320,58 @@ void Gui::drawAudioTab() {
   ImGui::TextWrapped(
       "Drive calibration: transmit a test burst and adjust the rig so ALC just stays quiet.");
   ImGui::PopStyleColor();
-  if (ImGui::Button("Transmit test (5 s)")) send("TXTEST 5");
+  if (ImGui::Button("Transmit test (5 s)")) actTxTest(true);
   ImGui::SameLine();
-  if (ImGui::Button("Stop")) send("TXTEST OFF");
+  if (ImGui::Button("Stop")) actTxTest(false);
   ImGui::SameLine();
+  ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(status_.audioLevel.c_str());
 }
 
 void Gui::drawPttTab() {
   rowLabel("Method");
   ImGui::SetNextItemWidth(200);
-  ImGui::InputTextWithHint("##pttm", "VOX, RTS, DTR, TCP", pttMethodBuf_, sizeof(pttMethodBuf_));
-  ImGui::SameLine();
-  if (ImGui::Button("Set##pttm")) send(std::string("PTTMETHOD ") + pttMethodBuf_);
-  rowLabel("Port");
-  ImGui::SetNextItemWidth(200);
-  ImGui::InputTextWithHint("##pttp", "serial device or host:port", pttPortBuf_, sizeof(pttPortBuf_));
-  ImGui::SameLine();
-  if (ImGui::Button("Set##pttp")) send(std::string("PTTPORT ") + pttPortBuf_);
-  rowLabel("Lead / tail ms");
-  ImGui::SetNextItemWidth(95);
-  if (ImGui::InputInt("##lead", &pttLead_, 10)) pttLead_ = std::clamp(pttLead_, 0, 2000);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(95);
-  if (ImGui::InputInt("##tail", &pttTail_, 10)) pttTail_ = std::clamp(pttTail_, 0, 2000);
-  ImGui::SameLine();
-  if (ImGui::Button("Set##pttlt")) {
-    send("PTTLEAD " + std::to_string(pttLead_));
-    send("PTTTAIL " + std::to_string(pttTail_));
+  {
+    const int prev = ctl_.pttMethod;
+    if (ImGui::Combo("##pttm", &ctl_.pttMethod, "None\0VOX\0Serial RTS\0Serial DTR\0TCP (companion app)\0")) {
+      actPttMethod(prev);
+    }
   }
+  // The port only matters for the methods that key something.
+  const bool needsPort = ctl_.pttMethod >= 2;
+  ImGui::BeginDisabled(!needsPort);
+  rowLabel("Port");
+  ImGui::SetNextItemWidth(260);
+  const bool enter = ImGui::InputTextWithHint(
+      "##pttp", ctl_.pttMethod == 4 ? "host:port" : "/dev/cu.usbserial-...", ctl_.pttPort,
+      sizeof(ctl_.pttPort), ImGuiInputTextFlags_EnterReturnsTrue);
+  ImGui::SameLine();
+  if (ImGui::Button("Set##pttp") || enter) actPttPort();
+  ImGui::EndDisabled();
+  rowLabel("Lead / tail ms");
+  ImGui::SetNextItemWidth(110);
+  if (ImGui::InputInt("##lead", &ctl_.pttLead, 10)) ctl_.pttLead = std::clamp(ctl_.pttLead, 0, 2000);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(110);
+  if (ImGui::InputInt("##tail", &ctl_.pttTail, 10)) ctl_.pttTail = std::clamp(ctl_.pttTail, 0, 2000);
+  ImGui::SameLine();
+  if (ImGui::Button("Set##pttlt")) actPttTimes();
+  ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
+  ImGui::TextWrapped(
+      "Lead: delay between keying and audio. Tail: hold after the audio ends. VOX needs no "
+      "port; the radio keys on the audio itself.");
+  ImGui::PopStyleColor();
 }
 
 // Security (SECURITY.md). Everything routes through the dispatcher, so
 // the GUI has no privileged path to the crypto state - and a non-crypto
 // build simply reports what the modem answers (ERROR:UNSUPPORTED).
 void Gui::drawSecurityTab() {
-  if (securityLine_.empty()) {
-    securityLine_ = "...";
-    send("SECURITY", [this](const std::string& r) { securityLine_ = r; });
-  }
+  if (securityLine_.empty()) actSecurityRefresh();
   ImGui::PushFont(fontMono_);
   ImGui::TextWrapped("%s", securityLine_.c_str());
   ImGui::PopFont();
-  if (ImGui::Button("Refresh##sec")) {
-    send("SECURITY", [this](const std::string& r) { securityLine_ = r; });
-  }
+  if (ImGui::Button("Refresh##sec")) actSecurityRefresh();
   if (securityLine_.rfind("ERROR:UNSUPPORTED", 0) == 0) {
     ImGui::TextDisabled("This build has no encryption support (ENABLE_CRYPTO=OFF).");
     return;
@@ -1001,35 +1381,18 @@ void Gui::drawSecurityTab() {
   // from the input so it does not linger in the UI.
   rowLabel("Pre-shared key");
   ImGui::SetNextItemWidth(-90);
-  ImGui::InputTextWithHint("##psk", "64 hex digits", pskBuf_, sizeof(pskBuf_),
+  ImGui::InputTextWithHint("##psk", "64 hex digits", ctl_.psk, sizeof(ctl_.psk),
                            ImGuiInputTextFlags_Password | ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  if (ImGui::Button("Install")) {
-    send(std::string("ENCRYPTKEY ") + pskBuf_, [this](const std::string& r) {
-      securityLine_ = r;
-      if (r.rfind("ERROR:", 0) != 0) {
-        send("SECURITY", [this](const std::string& s) { securityLine_ = s; });
-      }
-    });
-    std::memset(pskBuf_, 0, sizeof(pskBuf_));
-  }
-  if (ImGui::Checkbox("Request encryption", &encryptOn_)) {
-    const bool want = encryptOn_;
-    send(std::string("ENCRYPTION ") + (want ? "ON" : "OFF"), [this, want](const std::string& r) {
-      securityLine_ = r;
-      // The modem refuses ON without a PSK and AES-NI; reflect its
-      // verdict rather than the click.
-      if (r.rfind("ERROR:", 0) == 0) encryptOn_ = !want;
-    });
-  }
+  if (ImGui::Button("Install")) actInstallPsk();
+  if (ImGui::Checkbox("Request encryption", &ctl_.encrypt)) actEncryption();
   ImGui::SameLine();
-  if (ImGui::Button("Rotate keys")) {
-    send("KEYROTATE", [this](const std::string& r) { securityLine_ = r; });
-  }
+  if (ImGui::Button("Rotate keys")) actKeyRotate();
   ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
   ImGui::TextWrapped(
-      "Key and encryption changes are accepted while IDLE only; a session with a PSK "
-      "mismatch is refused, never downgraded to cleartext.");
+      "Both stations need the same key. Key and encryption changes are accepted while idle "
+      "only; a session with a key mismatch is refused, never downgraded to cleartext. "
+      "ENCRYPT=ON appears once an encrypted session is up.");
   ImGui::PopStyleColor();
 }
 
@@ -1038,10 +1401,11 @@ void Gui::drawSettingsWindow() {
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
                                  vp->WorkPos.y + vp->WorkSize.y * 0.5f),
                           ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(620, 470), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(620, 500), ImGuiCond_Appearing);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, col::panel);
   if (ImGui::Begin("Settings", &showSettings_,
                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+    drawNotice();
     if (ImGui::BeginTabBar("##settabs")) {
       if (ImGui::BeginTabItem("Station")) { drawStationTab(); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Audio")) { drawAudioTab(); ImGui::EndTabItem(); }
@@ -1082,6 +1446,7 @@ bool Gui::frame() {
   drainResults();
   pumpSpectrum();
   uploadWaterfall();
+  runDebugScript();
   ImGui_ImplSDLRenderer2_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
@@ -1144,23 +1509,101 @@ bool Gui::frame() {
   ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), ren);
   // SKW_GUI_SCREENSHOT=<file.bmp>: save the window once, after ~2 s
   // (layout and styling checks without capturing the whole screen).
-  static int frames = 0;
-  if (++frames == 120) {
-    if (const char* shot = getenv("SKW_GUI_SCREENSHOT")) {
-      int ow = 0, oh = 0;
-      SDL_GetRendererOutputSize(ren, &ow, &oh);
-      SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
-      if (surf) {
-        if (SDL_RenderReadPixels(ren, nullptr, SDL_PIXELFORMAT_ARGB8888, surf->pixels,
-                                 surf->pitch) == 0) {
-          SDL_SaveBMP(surf, shot);
+  ++frameNo_;
+  if (frameNo_ == 120) {
+    if (const char* shot = getenv("SKW_GUI_SCREENSHOT")) saveScreenshot(shot);
+  }
+  if (!pendingShot_.empty()) {
+    saveScreenshot(pendingShot_.c_str());
+    pendingShot_.clear();
+  }
+  SDL_RenderPresent(ren);
+  return !scriptQuit_;
+}
+
+void Gui::saveScreenshot(const char* path) {
+  auto* ren = static_cast<SDL_Renderer*>(renderer_);
+  int ow = 0, oh = 0;
+  SDL_GetRendererOutputSize(ren, &ow, &oh);
+  SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
+  if (!surf) return;
+  if (SDL_RenderReadPixels(ren, nullptr, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch) ==
+      0) {
+    SDL_SaveBMP(surf, path);
+  }
+  SDL_FreeSurface(surf);
+}
+
+// SKW_GUI_SCRIPT=<file>: a debug hook that drives the real widgets through
+// ImGui's own input queue, for end-to-end checks without accessibility
+// permissions. One step per line, `<frame> <verb> [args]`, frames counted
+// from start-up (60/s):
+//   move X Y        pointer to window coordinates (points)
+//   click X Y       left click there
+//   type TEXT       characters (as typed)
+//   key enter|backspace|selectall
+//   shot FILE.bmp   save the window after this frame renders
+//   quit
+void Gui::runDebugScript() {
+  if (!scriptLoaded_) {
+    scriptLoaded_ = true;
+    if (const char* path = getenv("SKW_GUI_SCRIPT")) {
+      if (FILE* fp = std::fopen(path, "r")) {
+        char line[512];
+        while (std::fgets(line, sizeof(line), fp)) {
+          std::string l(line);
+          while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+          if (l.empty() || l[0] == '#') continue;
+          const size_t sp = l.find(' ');
+          if (sp == std::string::npos) continue;
+          script_.push_back({std::atoi(l.c_str()), l.substr(sp + 1)});
         }
-        SDL_FreeSurface(surf);
+        std::fclose(fp);
       }
     }
   }
-  SDL_RenderPresent(ren);
-  return true;
+  ImGuiIO& io = ImGui::GetIO();
+  // A click is press on one frame, release on the next.
+  if (scriptRelease_) {
+    io.AddMouseButtonEvent(0, false);
+    scriptRelease_ = false;
+  }
+  while (scriptPos_ < script_.size() && script_[scriptPos_].frame <= frameNo_) {
+    const std::string& cmd = script_[scriptPos_++].cmd;
+    const size_t sp = cmd.find(' ');
+    const std::string verb = cmd.substr(0, sp);
+    const std::string arg = sp == std::string::npos ? "" : cmd.substr(sp + 1);
+    if (verb == "move") {
+      float x = 0, y = 0;
+      if (std::sscanf(arg.c_str(), "%f %f", &x, &y) == 2) io.AddMousePosEvent(x, y);
+    } else if (verb == "click") {
+      float x = 0, y = 0;
+      if (std::sscanf(arg.c_str(), "%f %f", &x, &y) == 2) {
+        io.AddMousePosEvent(x, y);
+        io.AddMouseButtonEvent(0, true);
+        scriptRelease_ = true;
+      }
+    } else if (verb == "type") {
+      io.AddInputCharactersUTF8(arg.c_str());
+    } else if (verb == "key") {
+      ImGuiKey k = arg == "enter"       ? ImGuiKey_Enter
+                   : arg == "backspace" ? ImGuiKey_Backspace
+                                        : ImGuiKey_None;
+      if (arg == "selectall") {
+        io.AddKeyEvent(ImGuiMod_Super, true);
+        io.AddKeyEvent(ImGuiKey_A, true);
+        io.AddKeyEvent(ImGuiKey_A, false);
+        io.AddKeyEvent(ImGuiMod_Super, false);
+      } else if (k != ImGuiKey_None) {
+        io.AddKeyEvent(k, true);
+        io.AddKeyEvent(k, false);
+      }
+    } else if (verb == "shot") {
+      pendingShot_ = arg;
+    } else if (verb == "quit") {
+      scriptQuit_ = true;
+    }
+  }
 }
 
 }  // namespace skw

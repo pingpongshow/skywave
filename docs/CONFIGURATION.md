@@ -304,6 +304,8 @@ Read by the test and soak binaries, never by `skywave` itself.
 | `SKW_MONKEY_SIMSEC` | `900` | Phase-1 duration of the monkey soak |
 | `SKW_HARQ_TRIALS` | `12` / `10` | Trial counts in `test_harq` |
 | `SKW_GUI_WINDOW` | (unset) | Runs the real-window GUI test; headless path only when unset |
+| `SKW_GUI_SCREENSHOT` | (unset) | `skywave --gui`: save the window as BMP to this path after ~2 s |
+| `SKW_GUI_SCRIPT` | (unset) | `skywave --gui`: drive the real widgets from a script file, one `<frame> <verb> [args]` per line: `move X Y`, `click X Y` (window points), `type TEXT`, `key enter\|backspace\|selectall`, `shot FILE.bmp`, `quit`. Frames are display refreshes (120/s on a ProMotion screen). End-to-end GUI checks without accessibility permissions |
 | `SKW_NO_KEEPALIVE` | (unset) | A/B: disable session keepalives (PROTOCOL.md) |
 | `SKW_VOICE_ARTIFACTS` | (unset) | Directory for decoded voice artifacts from `test_voice` |
 | `SKW_ST3_SOAK` | `60` | ST3 hardware soak duration in seconds |

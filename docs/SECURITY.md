@@ -123,7 +123,7 @@ crypto.
 
 | Surface | Behavior |
 |---|---|
-| `SECURITY` | `SECURITY AUTH=<ON\|OFF> ENCRYPT=<ON\|OFF> EPOCH=<n>` |
+| `SECURITY` | `SECURITY AUTH=<ON\|OFF> ENCRYPT=<ON\|OFF> EPOCH=<n> PSK=<SET\|NONE> REQUEST=<ON\|OFF>` (AUTH/ENCRYPT/EPOCH: the live session; PSK/REQUEST: what the next session uses) |
 | `ENCRYPTION ON\|OFF` | request/withdraw encryption for future connects |
 | `ENCRYPTKEY <hex>` | install PSK |
 | `KEYROTATE` | manual epoch bump on live encrypted session |

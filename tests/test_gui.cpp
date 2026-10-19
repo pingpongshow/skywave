@@ -206,3 +206,185 @@ TEST_CASE(instrument_taps_reach_telemetry) {
 }
 
 SKYTEST_MAIN
+
+// Every widget action, driven exactly as a click drives it (the async
+// executor path), must change the modem - and a refused one must put its
+// widget back and say why. Before this the widgets assumed success: FAMILY
+// ULTRA was refused (ultra_enable off) while the combo went on showing
+// ULTRA, with the reason only in the log.
+TEST_CASE(gui_widget_actions_reach_modem) {
+  Fixture f;
+  Gui& g = f.gui;
+  g.syncFromModem();
+  auto& c = g.controls();
+  auto settle = [&] { CHECK(g.waitIdle(5000)); };
+  auto noticeIs = [&](bool error) {
+    if (g.notice().error != error) std::printf("  notice: %s\n", g.notice().text.c_str());
+    return g.notice().error == error;
+  };
+  CHECK_EQ(c.family, 0);  // WIDE
+  CHECK(!c.ultra);
+
+  // ULTRA from the family list: one choice enables the gate and switches.
+  int prev = c.family;
+  c.family = 3;
+  g.actFamily(prev);
+  settle();
+  CHECK(f.worker.family() == "ULTRA");
+  CHECK(c.ultra);
+  CHECK(noticeIs(false));
+  // The gate cannot be closed under the family in use: refused, reverted.
+  c.ultra = false;
+  g.actUltra();
+  settle();
+  CHECK(c.ultra);
+  CHECK(noticeIs(true));
+  CHECK(f.worker.config().ultraEnable);
+  prev = c.family;
+  c.family = 1;
+  g.actFamily(prev);
+  settle();
+  CHECK(f.worker.family() == "MID");
+  c.ultra = false;
+  g.actUltra();
+  settle();
+  CHECK(!f.worker.config().ultraEnable);
+
+  // Mode / CP / highest mode.
+  prev = c.mode;
+  c.mode = 5;  // M8
+  g.actMode(prev);
+  prev = c.cp;
+  c.cp = 3;  // LONG
+  g.actCp(prev);
+  prev = c.maxMode;
+  c.maxMode = 6;  // M10
+  g.actMaxMode(prev);
+  settle();
+  CHECK_EQ(f.worker.config().mode, 8);
+  CHECK_EQ(f.worker.config().cpMode, 2);
+  CHECK_EQ(f.worker.maxMode(), 10);
+  prev = c.mode;
+  c.mode = 0;
+  g.actMode(prev);
+  settle();
+  CHECK_EQ(f.worker.config().mode, -1);
+
+  // Station toggles.
+  std::snprintf(c.call, sizeof(c.call), "K6ABC");
+  g.actCall();
+  c.listen = false;
+  g.actListen();
+  c.monitor = true;
+  g.actMonitor();
+  c.cwid = true;
+  g.actCwid();
+  settle();
+  CHECK(f.worker.myCall() == "K6ABC");
+  CHECK(!f.worker.listening());
+  CHECK(f.worker.monitoring());
+  CHECK(f.worker.cwId());
+  // A refused callsign goes back to the modem's.
+  f.worker.runOnce();
+  g.refreshStatus();
+  std::snprintf(c.call, sizeof(c.call), "!!");
+  g.actCall();
+  settle();
+  CHECK(std::string(c.call) == "K6ABC");
+  CHECK(noticeIs(true));
+
+  // PTT.
+  prev = c.pttMethod;
+  c.pttMethod = 1;  // VOX
+  g.actPttMethod(prev);
+  c.pttLead = 120;
+  c.pttTail = 40;
+  g.actPttTimes();
+  std::snprintf(c.pttPort, sizeof(c.pttPort), "127.0.0.1:4532");
+  g.actPttPort();
+  settle();
+  CHECK(f.worker.pttGet("METHOD") == "vox" || f.worker.pttGet("METHOD") == "VOX");
+  CHECK(f.worker.pttGet("LEAD") == "120");
+  CHECK(f.worker.pttGet("TAIL") == "40");
+  CHECK(f.worker.pttGet("PORT") == "127.0.0.1:4532");
+  c.pttLead = 9999;  // out of range: refused, back to the accepted value
+  g.actPttTimes();
+  settle();
+  CHECK_EQ(c.pttLead, 120);
+  CHECK(noticeIs(true));
+
+  // Session buttons: an idle modem calls, CQs and beacons; DISCONNECT
+  // with nothing to disconnect is explained, not silently logged.
+  g.actTxTest(true);
+  g.actTxTest(false);
+  g.actCq();
+  g.actAbort();
+  g.actBeacon();
+  g.actAbort();
+  settle();
+  CHECK(noticeIs(false));
+  g.actDisconnect();
+  settle();
+  CHECK(noticeIs(true));
+  std::snprintf(c.connect, sizeof(c.connect), "W1XYZ");
+  g.actConnect();
+  settle();
+  CHECK(noticeIs(false));
+  g.actAbort();
+  settle();
+
+  // Security: a non-crypto build answers UNSUPPORTED and the GUI says so.
+  g.actSecurityRefresh();
+  settle();
+#ifndef SKW_HAVE_CRYPTO
+  c.encrypt = true;
+  g.actEncryption();
+  settle();
+  CHECK(!c.encrypt);
+  CHECK(noticeIs(true));
+#else
+  c.encrypt = true;  // no key yet: refused, reverted
+  g.actEncryption();
+  settle();
+  CHECK(!c.encrypt);
+  std::snprintf(c.psk, sizeof(c.psk), "%s",
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+  g.actInstallPsk();
+  settle();
+  CHECK(c.psk[0] == '\0');  // wiped from the widget
+  c.encrypt = true;
+  g.actEncryption();
+  settle();
+  CHECK(c.encrypt);
+  CHECK(f.worker.config().cryptoEnabled);
+#endif
+
+  // Changes made elsewhere (control port, companion app) move the widgets.
+  f.gui.submit("FAMILY NARROW");
+  f.gui.submit("MODE M9");
+  for (int i = 0; i < 4; ++i) {
+    std::vector<float> quiet(size_t(kFsAudio / 10), 0.0f);
+    f.rx.write(quiet);
+    f.worker.runOnce();
+    f.clk.advanceSec(0.3);
+  }
+  g.refreshStatus();
+  CHECK_EQ(c.family, 2);
+  CHECK_EQ(c.mode, 6);  // M9
+
+  // The placeholder callsign: CQ is explained and not sent (no station
+  // answers N0CALL).
+  f.gui.submit("MYCALL N0CALL");
+  for (int i = 0; i < 2; ++i) {
+    std::vector<float> quiet(size_t(kFsAudio / 10), 0.0f);
+    f.rx.write(quiet);
+    f.worker.runOnce();
+    f.clk.advanceSec(0.3);
+  }
+  g.refreshStatus();
+  const size_t logBefore = g.log().size();
+  g.actCq();
+  settle();
+  CHECK(noticeIs(true));
+  CHECK_EQ(int(g.log().size()), int(logBefore));  // nothing went to the modem
+}

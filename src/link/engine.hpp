@@ -507,7 +507,6 @@ class LinkEngine {
   // codewords per frame, grown on clean deliveries, halved on loss.
   int robustCwTarget_ = kRobustCwMin;
   int robustCleanRun_ = 0;
-  int cssLastTimeouts_ = 0;
   // When a standalone ACK was skipped in favour of piggybacking, so the
   // skip can be undone if our data never airs. -1 = nothing deferred.
   double ackDeferredAt_ = -1.0;
