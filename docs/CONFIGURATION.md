@@ -50,14 +50,14 @@ A CLI override differs from the loaded base, so it is persisted on exit
 | Option | Meaning |
 |---|---|
 | `--gui` | launch GUI |
-| `--callsign <CALL>` | local callsign |
+| `--callsign <CALL>` | local callsign (same rule as the INI key: validated, stored uppercase; invalid = placeholder + `WARN`) |
 | `--config <path>` | INI load/save path |
 | `--family <wide\|mid\|narrow\|ultra>` | bandwidth family |
 | `--data-port / --ctrl-port / --voice-port <n>` | TCP ports (9100/9101/9102) |
-| `--audio-in / --audio-out <index>` | PortAudio device indices |
+| `--audio-in / --audio-out <index\|name>` | PortAudio device, by name (preferred) or index, as the INI keys below |
 | `--list-audio` | list devices and exit |
 | `--replay <wav>` | feed RX from a WAV file (test/debug) |
-| `--record <wav>` | record **TX** audio to WAV (the file backend drains the TX ring; it does not capture RX) |
+| `--record <wav>` | record **TX** audio to WAV while replaying (the file backend drains the TX ring; it does not capture RX). Requires `--replay`: file mode has no control port, so without a replay there is nothing to run and `skywave` exits with an error |
 | `--log-level <0-4>` | 0=TRACE .. 4=ERROR |
 | `--log-file <path>` | log to file |
 | `--version` / `--help` | |
@@ -68,7 +68,7 @@ A CLI override differs from the loaded base, so it is persisted on exit
 
 | Key | Default | Meaning |
 |---|---|---|
-| `callsign` | `N0CALL` | placeholder blocks all TX |
+| `callsign` | `N0CALL` | 3–12 characters `[A-Z0-9/]`, stored uppercase. `N0CALL` (or empty) is the placeholder: every transmitting command — `CONNECT`, `CQ`, `BEACON`, `BCAST`, `TXTEST`, `VOICESTART`, `VOICEPTT ON` — is refused with `ERROR:STATE` and nothing is keyed, and incoming calls are not answered. An invalid value loads as the placeholder with a `WARN` |
 | `cw_id` | `false` | CW ID after disconnect / periodic in-session |
 | `cw_wpm` | `20` | CW ID speed |
 
@@ -89,7 +89,9 @@ depends on it.)
 | `data_port` | `9100` |
 | `ctrl_port` | `9101` |
 | `voice_port` | `9102` |
-| `bind_addr` | `127.0.0.1` |
+
+The ports always bind `127.0.0.1` (loopback only); there is no bind
+address setting.
 
 ### `[ptt]`
 
@@ -108,29 +110,28 @@ depends on it.)
 | `band` | `hf` | band profile: `hf` or `vhf-fm`. VHF-FM ships (176-carrier family through a 9 kHz FM channel, modes to M14 256QAM r5/6, measured 25.5 kbps net) and has its own conformance gate; it is a different radio, not a mode of the HF one. Set the rig's data-port level so bursts peak at its maximum deviation; M14 needs a port flat below 300 Hz. See [WAVEFORM.md](WAVEFORM.md). |
 | `family` | `wide` | `wide` / `mid` / `narrow` / `ultra` (`ultra` needs `ultra_enable`) |
 | `ultra_enable` | `false` | permit the opt-in 2.7 kHz ULTRA family (radio must pass ~100–2900 Hz) |
-| `family_fallback` | `true` | unanswered ULTRA calls retry at WIDE |
-| `mode` | `auto` | `auto` or `m4..m13` pin |
-| `max_mode` | `m13` | AMC promotion cap; `auto` = highest active mode (m14); values clamp to m4..m14 |
+| `family_fallback` | `true` | narrower-family fallback, for every family: a caller sends the second half of its `CALL` attempts one family narrower (ULTRA→WIDE→MID→NARROW), and a listener also decodes calls one family narrower than its own. `false` keeps calls and listening on the configured family only |
+| `css_tier` | `true` | CSS deep tier (`M0`–`M3`) and the deep handshake below the OFDM floor, advertised as `CAP_CSS_TIER`; HF only (ignored on `vhf-fm`). `false` keeps sessions on the OFDM ladder |
+| `mode` | `auto` | `auto` or a pinned OFDM mode: `m4..m13` on `hf`, `m4..m14` on `vhf-fm` (the range `MODE` accepts). Anything else — including the CSS rungs `m0..m3` — is refused with a `WARN` and stays `auto` |
+| `max_mode` | `m13` | AMC promotion cap, same range as `mode`; `auto` = the band's highest mode (`m13` HF, `m14` VHF-FM); values outside the range clamp into it with a `WARN` |
 | `cp_mode` | `auto` | `auto/short/medium/long` |
 | `listen` | `true` | start listening |
 | `max_retries` | `10` | ARQ retry cap per frame |
-| `harq` | `auto` | `auto/chase/ir` |
+| `harq` | `ir` | `ir`: offer incremental redundancy (`CAP_HARQ_IR`; a peer without it gets chase combining); `chase`: chase combining only. Older files' `auto` loads as `ir` (it behaved identically) with a `WARN` |
 | `channel_memory` | `true` | reconnect seeding; OFF disables both seeding and recording. Store: `~/.skywave/chanmem.bin`, overridden by `SKW_CHANMEM_PATH` (empty value = no persistence) |
 | `carrier_masking` | `true` | mask exchange |
-| `turn_taking` | `true` | scheduled ISS/IRS turn-taking (`CAP_TURN_SCHED`); `false` = legacy occupancy-gate scheduler, needed only to call a pre-`CAP_TURN_SCHED` build |
 | `resume` | `true` | session resume |
-| `impulse_blanker` | `false` | RX impulse blanker |
-| `multi_notch` | `false` | RX adaptive notch bank |
-| `freq_align` | `true` | TX frequency alignment to peer-reported CFO |
-| `invert_correct` | `true` | auto-correct sideband-inverted RX |
 | `tx_watchdog_s` | `120` | hard cap on continuous TX seconds |
+
+Scheduled turn-taking (`CAP_TURN_SCHED`), TX frequency alignment and
+sideband-inversion correction are always on and have no keys.
 
 ### `[crypto]` (crypto builds only)
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | request encryption on future connects |
-| `psk` | empty | 64 hex chars (32 bytes) |
+| `psk` | empty | 64 hex chars (32 bytes), either case. Anything else loads as **no key** with a `WARN` (the value is not logged) |
 
 ### `[voice]` (voice builds only)
 
@@ -144,9 +145,19 @@ depends on it.)
 | Key | Default |
 |---|---|
 | `enabled` | `false` |
-| `width` / `height` | `520` / `720` |
-| `waterfall` | `true` |
-| `constellation` | `true` |
+| `width` / `height` | `0` / `0` | window size in points; `0` = fit to the display (1400 x 880, or 92 % of a smaller display). A request is kept on the display and is never smaller than the layout minimum, 980 x 640 |
+
+The waterfall and constellation are always drawn (they have no keys).
+
+### Retired keys
+
+`tcp.bind_addr`, `modem.impulse_blanker`, `modem.multi_notch`,
+`modem.freq_align`, `modem.invert_correct`, `modem.turn_taking`,
+`modem.probe_promote`, `modem.pre_tx_cca`, `gui.waterfall` and
+`gui.constellation` were written by earlier builds and are no longer
+used (most never did anything; `turn_taking = false` selected a
+legacy scheduler that is no longer selectable). They load with a `WARN`, are dropped, and
+disappear from the file at the next save.
 
 ### `[log]`
 
@@ -214,66 +225,60 @@ variable that changes MAC behaviour is worse than a documented one.
 
 | Variable | Default | Selects when set |
 |---|---|---|
-| `SKW_NO_TURNSCHED` | (unset) | Drops the turn-scheduling capability from the handshake, so the session falls back to pure CCA/LBT |
 | `SKW_TURN_HOLD_RTTS` | `4.0` | Minimum turn hold in round-trip times |
 | `SKW_TURN_HOLD_MIN_SEC` | `6.0` | Absolute floor on the minimum turn hold, in seconds |
 | `SKW_DRAIN_CAP_MULT` | `2.0` | Cap on drain-before-grant, in handoff intervals |
 | `SKW_HF_WINDOW` | `16` | ARQ window for M10 and above |
-| `SKW_MID_WINDOW` | `4` | ARQ window for M7–M9 |
-| `SKW_RETX_FILL` | `1` | M7–M9 containers gather due retransmits and top up with new segments; `0` one retransmit per container (v1.2.2 behaviour), `2` at every rung (A/B) |
 | `SKW_CFO_ACK` | (unset = on) | `0` disables the standalone reverse-path CFO `ACK` (A/B) |
 | `SKW_ROBUST_FPB` | (per mode) | Frames per burst on the robust tier |
 | `SKW_ROBUST_AIR_CAP` | `10.0` | Airtime clamp, in seconds, on robust-tier codeword growth |
-| `SKW_DELIVER_TARGET_SEC` | `0.0` (off) | Mode-following coalesce bound; measured and left disabled |
 | `SKW_DATA_STARVE_X` | `3.0` | Data-starvation backstop, in ARQ timeouts |
 | `SKW_NO_NAK` | (unset) | Disables negative acknowledgements |
-| `SKW_NO_POLL` | (unset) | Under turn-taking the IRS answers every DATA burst instead of only the one whose PHY header carries POLL, and the ARQ open-loop timeout covers one burst instead of a window (the pre-1.2.4 behaviour; A/B) |
 | `SKW_NO_ACK_PIGGYBACK` | (unset) | Disables ACK piggybacking on data frames |
 | `SKW_NO_LOSSY_CAP` | (unset) | Removes the lossy-channel cap on the seal |
-| `SKW_NO_APPLY_AT_ANNOUNCE` | (unset) | Applies a mode change only on ACK, never at announce |
-| `SKW_PROMOTE_AT_ANNOUNCE` | (unset) | Promotes at announce; measured as anti-synergistic |
-| `SKW_DUP_RETRY` | (unset) | Restores the old duplicate-retry accounting rule |
 | `SKW_RXBAND_MARGIN_HZ` | `50` | RX band-edge margin |
 | `SKW_TXBAND_MARGIN_HZ` | `40` | TX band-edge margin |
 | `SKW_TX_IMPAIR` | (unset) | Injects transmit impairments for testing |
-| `SKW_MAX_PENDING_RX` | `8` | Capture backlog cap (oldest evicted first) |
 | `SKW_AMC_PROMOTE_MARGIN` / `SKW_AMC_DEMOTE_MARGIN` | `-1.5` / `-3.5` | AMC margins relative to the active floor table (measurement A/B) |
 | `SKW_AMC_PROMOTE_MARGIN_HIGH` | `0.5` | promote margin into M11-M13 (measurement A/B; LINK_ADAPTATION.md) |
-| `SKW_CSS_DRIFT_SEARCH` | (unset = on) | `0` disables the CSS drift handling after a failed decode: the pilot-estimated payload search and the header re-walk (ROADMAP 8.8; A/B) |
-| `SKW_CSS_HARD_HEADER` | (unset) | set: CSS header decoded hard per copy only - no soft ML decode or copy combining (pre-2026-10-13; A/B) |
 | `SKW_CSS_SYNC_FACTOR` | `3.0` | CSS sync acceptance, correlation peak over profile median (was 3.5; A/B) |
-| `SKW_CSS_PREAMBLE_<FAMILY>` | (unset) | CSS preamble slope pattern for a family as a U/D string (e.g. `SKW_CSS_PREAMBLE_NARROW=UDDU` restores the 4-rep signature); both ends must agree (A/B) |
-| `SKW_CSS_BRANCH_CHECK` | (unset = on) | `0`: no ±1-CFO-branch sync window / re-sync (A/B) |
 | `SKW_CSS_BRANCH_MIN_CHIPS` | `2` | branch check applies where a 6.25 Hz branch moves the SF8 sync peak by more than this many chips |
-| `SKW_CSS_BRANCH_RETRY` | (unset = on) | `0`: a CSS frame whose payload failed is not re-received on the neighbouring CFO branches (A/B) |
 | `SKW_CSS_TAP_SPAN_MS` | `3` | CSS RAKE tap search span either side of the anchor, at least this many ms (and >= 3 chips) |
 | `SKW_CSS_FAR_TAP_PEAK` / `SKW_CSS_FAR_TAP_NOISE` | `0.35` / `3.5` | a CSS tap beyond 3 chips must reach this fraction of the peak and this multiple of the noise median |
-| `SKW_LEFTOVER_COPIES` | (unset = on) | `0`: M5-M7 leave a spread group's remainder cells empty instead of filling them with extra copies; BOTH ends must agree (A/B) |
-| `SKW_CHIRP_ALT` | (unset = on) | `0`: a failed frame is not retried on the detector's runner-up signatures (A/B) |
-| `SKW_CSS_SEARCH_HDR_TAPS` | (unset) | set: drift-search passes start from the header walk's tap state instead of the sync profile (pre-2026-10-13; A/B) |
-| `SKW_CHANCLASS_SPREAD_EMA` | (unset) | set: the Severe gate reads the delay-spread EMA (pre-v1.2.2) instead of the 9-frame median (A/B) |
 
-Phase 8 receiver stages (v1.2.0, GAP_CLOSURE_PLAN.md). Each is ON by
-default; setting it to `0` restores the v1.1.0 behaviour for A/B
-measurement - never needed in operation:
+Receiver tuning (the in-frame FLL and its drift retry are always on;
+these only change their gains, for measurement):
 
-| Variable | Stage |
-|---|---|
-| `SKW_CFO_BRANCH` | CFO branch search over ±55 Hz, header-verified (R1) |
-| `SKW_MULTIPATH_MARGIN` | FFT window backoff + tracker taps ahead of the window (R4) |
-| `SKW_QNORM` | Kalman process noise from frame-mean channel power (R5) |
-| `SKW_RTS` | RTS smoothing over each buffered walk (R6) |
-| `SKW_FLL` | In-frame FLL; `SKW_FLL_GAIN_FAST` / `SKW_FLL_GAIN_ROBUST` override the 0.2 / 0.1 gains (R2) |
-| `SKW_FLL_DRIFT_RETRY` | Re-walk a failed OFDM frame at the drift FLL gain (0.3; `SKW_FLL_GAIN_DRIFT` overrides) - extreme in-frame drift (v1.2.2) |
-| `SKW_FLL_DRIFT_ESTIMATE` | The drift retry pre-derotates the drift rate fitted to the first walk's FLL trace |
+| Variable | Default | Meaning |
+|---|---|---|
+| `SKW_FLL_GAIN_FAST` / `SKW_FLL_GAIN_ROBUST` | `0.2` / `0.1` | in-frame FLL gain on the fast / robust tier |
+| `SKW_FLL_GAIN_DRIFT` | `0.3` | FLL gain of the re-walk of a failed OFDM frame (extreme in-frame drift) |
+
+Parsing rule for every variable read through `core/env.hpp` (all
+receiver/PHY knobs above and the PHY debug flags): read once and cached;
+unset or empty means the default; a flag set to `0`, `off` or `false`
+(any case) is off; a number that does not parse falls back to the
+default.
 
 Test-harness only: `SKW_ST2_AMBIENT` (ST2 ambient floor amplitude, `0` =
 digital silence), `SKW_ST3_LOGDIR` (ST3 log directory).
 
+### GUI debugging
+
+Read by `skywave --gui`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SKW_GUI_SCREENSHOT` | (unset) | save the window as BMP to this path after ~2 s |
+| `SKW_GUI_SCRIPT` | (unset) | drive the real widgets from a script file, one `<frame> <verb> [args]` per line: `move X Y`, `click X Y` (window points), `type TEXT`, `key enter\|backspace\|selectall`, `shot FILE.bmp`, `quit`. Frames are display refreshes (120/s on a ProMotion screen). End-to-end GUI checks without accessibility permissions |
+
 ### Debug logging
 
-Each of these enables one category of trace output on stderr when set
-to any value. They are read once and cost nothing when unset.
+Each of these enables one category of trace output on stderr. They are
+read once and cost nothing when unset. `SKW_RX_DEBUG`, `SKW_CFO_DEBUG`,
+`SKW_EQ_DEBUG` and `SKW_SOUNDER_DEBUG` (tools/onair sounder) follow the
+`core/env.hpp` rule above (`0`/`off`/`false` = off); the others are on
+when set to any value.
 
 `SKW_AMC_DEBUG`, `SKW_ARQ_DEBUG`, `SKW_CCA_DEBUG`, `SKW_CHANCLASS_DEBUG`,
 `SKW_CP_DEBUG`, `SKW_CSS_DEBUG`, `SKW_DELIV_DEBUG`, `SKW_EMIT_DEBUG`,
@@ -304,8 +309,6 @@ Read by the test and soak binaries, never by `skywave` itself.
 | `SKW_MONKEY_SIMSEC` | `900` | Phase-1 duration of the monkey soak |
 | `SKW_HARQ_TRIALS` | `12` / `10` | Trial counts in `test_harq` |
 | `SKW_GUI_WINDOW` | (unset) | Runs the real-window GUI test; headless path only when unset |
-| `SKW_GUI_SCREENSHOT` | (unset) | `skywave --gui`: save the window as BMP to this path after ~2 s |
-| `SKW_GUI_SCRIPT` | (unset) | `skywave --gui`: drive the real widgets from a script file, one `<frame> <verb> [args]` per line: `move X Y`, `click X Y` (window points), `type TEXT`, `key enter\|backspace\|selectall`, `shot FILE.bmp`, `quit`. Frames are display refreshes (120/s on a ProMotion screen). End-to-end GUI checks without accessibility permissions |
 | `SKW_NO_KEEPALIVE` | (unset) | A/B: disable session keepalives (PROTOCOL.md) |
 | `SKW_VOICE_ARTIFACTS` | (unset) | Directory for decoded voice artifacts from `test_voice` |
 | `SKW_ST3_SOAK` | `60` | ST3 hardware soak duration in seconds |
@@ -319,8 +322,12 @@ environment at ctest time. See RELEASE.md gate 4.
 
 ## Validation Rules
 
-- callsign: 3–12 chars `[A-Z0-9/]`; `N0CALL`/empty blocks TX paths
+- callsign: 3–12 chars `[A-Z0-9/]` (the rule the link layer applies to
+  every frame), stored uppercase; `N0CALL`/empty refuses every TX path
+- `mode` / `max_mode` / `MODE` / `MAXMODE`: the band's OFDM modes only
+- `crypto.psk`: 64 hex digits or nothing
 - `family` changes only in `IDLE`/`LISTENING`
 - crypto keys rejected while `CALLING`/`CONNECTING`/`CONNECTED`
 - unknown INI keys warn and are preserved on save (forward compatibility),
-  including through the exit-time merge
+  including through the exit-time merge; retired keys (above) warn and
+  are dropped

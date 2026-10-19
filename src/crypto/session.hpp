@@ -53,7 +53,6 @@ class CryptoSession {
   static bool available();
 
   bool setPsk(std::span<const uint8_t> psk);  // exactly 32 bytes
-  bool havePsk() const { return havePsk_; }
 
   // --- handshake ---------------------------------------------------------
   // Initiator: generate an ephemeral pair, return E_i||auth_i for START.

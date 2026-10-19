@@ -1,11 +1,10 @@
 #include "dsp/updown.hpp"
 
-#include <cstdlib>
-
 #include <algorithm>
 #include <cmath>
 
 #include "core/constants.hpp"
+#include "core/env.hpp"
 
 namespace skw {
 namespace {
@@ -36,12 +35,11 @@ std::vector<float> rxStage2Taps() {
   // filter's passband edge. A Kaiser response is not flat right up to
   // its edge, and ULTRA's outermost carrier sits AT `half` - so at the
   // shipped +50 Hz it rode the knee while WIDE's, 150 Hz further in,
-  // did not. Overridable for measurement.
-  double margin = 50.0;
-  if (const char* e = getenv("SKW_RXBAND_MARGIN_HZ")) {
-    const double v = std::atof(e);
-    if (v > 0.0) margin = v;
-  }
+  // did not. SKW_RXBAND_MARGIN_HZ overrides (measurement).
+  static const double margin = [] {
+    const double v = envDouble("SKW_RXBAND_MARGIN_HZ", 50.0);
+    return v > 0.0 ? v : 50.0;
+  }();
   return designKaiserLowpass(24000.0, half + margin, half + margin + 250.0,
                              70.0);
 }
@@ -73,20 +71,12 @@ cfloat Nco::next() {
   return v;
 }
 
-void Nco::reset() { phase_ = 0.0; }
-
 Downconverter::Downconverter()
     : nco_(-centerHz(), kFsAudio),
       stage1_(rxStage1Taps(), 2),
       stage2_(rxStage2Taps(), 2) {
   // Stage-1 delay (48k samples) /4 -> 12k samples; stage-2 delay (24k) /2.
   delay12k_ = stage1_.groupDelayInput() / 4.0 + stage2_.groupDelayInput() / 2.0;
-}
-
-void Downconverter::reset() {
-  nco_.reset();
-  stage1_.reset();
-  stage2_.reset();
 }
 
 void Downconverter::process(std::span<const float> in48k,
@@ -103,13 +93,6 @@ Upconverter::Upconverter()
     : stage1_(txStage1Taps(), 2),
       stage2_(txStage2Taps(), 2),
       nco_(centerHz(), kFsAudio) {
-  delay48k_ = stage1_.groupDelayOutput() * 2.0 + stage2_.groupDelayOutput() * 1.0;
-}
-
-void Upconverter::reset() {
-  nco_.reset();
-  stage1_.reset();
-  stage2_.reset();
 }
 
 void Upconverter::process(std::span<const cfloat> in12k,

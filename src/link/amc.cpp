@@ -124,13 +124,6 @@ uint8_t Amc::demoteTarget(int steps) const {
 
 bool Amc::modeEligible(uint8_t k, double effSnr,
                        bool assumeProbeClean) const {
-  // Optional operator caps (default off - the class tables decide).
-  if (chanClass_ == ChannelClass::Severe && k > cfg_.severeMaxMode) {
-    return false;
-  }
-  if (chanClass_ == ChannelClass::Moderate && k > cfg_.moderateMaxMode) {
-    return false;
-  }
   const bool probeOk = probeClean_ || assumeProbeClean;
   const double floor = operatingFloorDb(k);
   // On a MODERATE or SEVERE channel kFadingNA is a measurement - the mode
@@ -209,7 +202,6 @@ AmcDecision Amc::evaluate(double now) {
   advisorBias_ = 0;
   const double eff = effectiveSnrDb(now);
   const double retry = retryRatio();
-  degraded_ = false;
   // Adaptation cadence scales with the mode's AIRTIME class: at CSS
   // modes a single frame runs tens of seconds, so wall-clock dwells
   // tuned for OFDM (6 s / 15 s) re-decide every frame and the
@@ -227,8 +219,7 @@ AmcDecision Amc::evaluate(double now) {
       lastDemoteAt_ = now;
       return {AmcDecision::Kind::FastDemote, target};
     }
-    degraded_ = true;
-    return {};
+    return {};  // already at the bottom usable rung
   }
   if (pinned_) return {};
 
@@ -255,13 +246,12 @@ AmcDecision Amc::evaluate(double now) {
       if (!floorBreak) noteFailure(now, eff);
       return {AmcDecision::Kind::Demote, t};
     }
-    degraded_ = true;  // at the bottom usable rung and still failing
-    return {};
+    return {};  // at the bottom usable rung and still failing
   }
 
-  // Class caps (Severe -> M7, Moderate -> M8) act on ELIGIBILITY only:
-  // a verdict that arrives while the ladder sits above its cap leaves
-  // the failure rules to bring it down. A forced one-rung-per-dwell
+  // Channel classes act on ELIGIBILITY only (their floor tables): a
+  // verdict that arrives while the ladder sits above a rung its table
+  // rules out leaves the failure rules to bring it down. A forced one-rung-per-dwell
   // walk-down was tried (2026-09-06) and withdrawn: under ISI the
   // Severe verdict marched M10 -> M6 in 18 s, and at M6 the few decoded
   // frames left CPMODE AUTO 400 s to reach its Long-CP verdict (the
@@ -316,25 +306,7 @@ AmcDecision Amc::evaluate(double now) {
     return {};
   }
   promoteStreak_ = 0;
-  // Multi-rung step when the channel is plainly ahead of the ladder
-  // (AmcConfig::maxPromoteStep). Bounded, and only over rungs that are
-  // themselves eligible with headroom - never a leap past evidence.
-  uint8_t target = next;
-  if (retry <= 0.0) {
-    for (int step = 1; step < cfg_.maxPromoteStep; ++step) {
-      uint8_t hi = uint8_t(target + 1);
-      // Skip over kFadingNA rungs exactly as the single-step ladder does.
-      while (hi < topMode() && operatingFloorDb(hi) >= 90.0) ++hi;
-      if (hi > topMode() || operatingFloorDb(hi) >= 90.0) break;
-      if (!modeEligible(hi, eff)) break;
-      if (eff < operatingFloorDb(hi) + promoteMarginFor(hi) +
-                    cfg_.skipHeadroomDb) {
-        break;
-      }
-      target = hi;
-    }
-  }
-  return {AmcDecision::Kind::Promote, target};
+  return {AmcDecision::Kind::Promote, next};
 }
 
 }  // namespace skw

@@ -28,7 +28,6 @@ class FakeClock final : public Clock {
  public:
   explicit FakeClock(int64_t startUs = 0) : now_(startUs) {}
   int64_t nowUs() override { return now_; }
-  void advanceUs(int64_t us) { now_ += us; }
   void advanceSec(double s) { now_ += int64_t(s * 1e6); }
 
  private:

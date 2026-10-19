@@ -2,9 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <string>
 
 #include "dsp/window.hpp"
 
@@ -74,51 +71,39 @@ std::vector<float> familyBandTaps(Family family) {
 
 }  // namespace
 
-std::vector<bool> chirpPattern(ChirpSig sig) {
+const std::vector<bool>& chirpPattern(Family family, ChirpSig sig) {
+  constexpr bool U = true, D = false;
+  static const std::vector<bool> kFast{U, U};
+  static const std::vector<bool> kRobust{U, D, U, D};
+  static const std::vector<bool> kCalling{U, U, D, D};
+  static const std::vector<bool> kCss{U, D, D, U};
+  // LONG CSS PREAMBLE (NARROW, MID). The 4-rep 160 ms signature was the
+  // acquisition limit on a 500 Hz band: at -18 dB a third of frames went
+  // undetected and many more were misread as robust/calling. 12 reps
+  // (1.92 s, 1-2% of a NARROW CSS frame): balanced (unbiased start and
+  // slope-diverse coarse CFO), one embedded 4-rep signature (any
+  // balanced pattern has one), shifted self-match <= 6/12 - chosen by
+  // exhaustive search. With the sync branch check: M0 10% point
+  // ~-16 -> ~-18.3 dB, M1 ~-15.7 -> ~-17.5 dB (60 trials). 8 reps gave
+  // about half that. MID (1 kHz band) too, with the receiver's CSS
+  // branch retry: M0 at floor-1 33 -> 10%, floor-2 58 -> 37%; M1 and M2
+  // better. WIDE/ULTRA keep 4 reps (their CSS floors are met).
+  static const std::vector<bool> kCssLong{U, D, U, U, U, U, D, D, D, U, D, D};
   switch (sig) {
-    case ChirpSig::Fast: return {true, true};
-    case ChirpSig::Robust: return {true, false, true, false};
-    case ChirpSig::Calling: return {true, true, false, false};
-    case ChirpSig::Css: return {true, false, false, true};
+    case ChirpSig::Fast: return kFast;
+    case ChirpSig::Robust: return kRobust;
+    case ChirpSig::Calling: return kCalling;
+    case ChirpSig::Css:
+      return family == Family::Narrow || family == Family::Mid ? kCssLong
+                                                               : kCss;
   }
-  return {};
-}
-
-std::vector<bool> chirpPattern(Family family, ChirpSig sig) {
-  if (sig != ChirpSig::Css) return chirpPattern(sig);
-  static const char* kNames[kNumFamilies] = {"WIDE", "MID", "NARROW", "ULTRA"};
-  const char* e = std::getenv(
-      (std::string("SKW_CSS_PREAMBLE_") + kNames[size_t(family)]).c_str());
-  std::string pat = e ? std::string(e) : std::string();
-  if (pat.empty() && !e &&
-      (family == Family::Narrow || family == Family::Mid)) {
-    // LONG CSS PREAMBLE (NARROW). The 4-rep 160 ms signature was the
-    // acquisition limit on a 500 Hz band: at -18 dB a third of frames went
-    // undetected and many more were misread as robust/calling. 12 reps
-    // (1.92 s, 1-2% of a NARROW CSS frame): balanced (unbiased start and
-    // slope-diverse coarse CFO), one embedded 4-rep signature (any
-    // balanced pattern has one), shifted self-match <= 6/12 - chosen by
-    // exhaustive search. With the sync branch check: M0 10% point
-    // ~-16 -> ~-18.3 dB, M1 ~-15.7 -> ~-17.5 dB (60 trials). 8 reps gave
-    // about half that. MID (1 kHz band) too, with the receiver's CSS
-    // branch retry: M0 at floor-1 33 -> 10%, floor-2 58 -> 37%; M1 and M2
-    // better. WIDE/ULTRA keep 4 reps (their CSS floors are met).
-    pat = "UDUUUUDDDUDD";
-  }
-  if (pat.size() < 4) return chirpPattern(sig);
-  std::vector<bool> out;
-  for (char c : pat) out.push_back(c == 'U' || c == 'u');
-  return out;
+  return kFast;
 }
 
 double chirpCfoCaptureMaxHz() { return kCfoCaptureMaxHz; }
 
-double chirpCfoAmbiguityHz(ChirpSig sig) {
-  return chirpCfoAmbiguityHz(Family::Wide, sig);
-}
-
 double chirpCfoAmbiguityHz(Family family, ChirpSig sig) {
-  const auto pat = chirpPattern(family, sig);
+  const auto& pat = chirpPattern(family, sig);
   int bestGap = 0;
   for (size_t i = 0; i < pat.size(); ++i) {
     for (size_t j = i + 1; j < pat.size(); ++j) {
@@ -131,7 +116,7 @@ double chirpCfoAmbiguityHz(Family family, ChirpSig sig) {
 }
 
 double chirpStartCfoSensitivity(Family family, ChirpSig sig) {
-  const auto pat = chirpPattern(family, sig);
+  const auto& pat = chirpPattern(family, sig);
   int nUp = 0;
   for (bool u : pat) nUp += u ? 1 : 0;
   const int nDown = int(pat.size()) - nUp;
@@ -190,24 +175,6 @@ ChirpDetector::ChirpDetector(Family family)
   }
 }
 
-void ChirpDetector::reset() {
-  buf_.clear();
-  bufStart_ = 0;
-  consumed_ = 0;
-  grid_.clear();
-  gridStartIdx_ = 0;
-  fastScores_ = ScoreRing{};
-  best4Scores_ = ScoreRing{};
-  nextFast_ = 0;
-  next4_ = 0;
-  lastEmitStart_ = -1'000'000'000;
-  bandFilter_.reset();
-  emaNoiseNcc_ = 1.0 / chirpRepSamples();
-  bestLongScores_ = ScoreRing{};
-  decisionFloor_ = ScoreRing{};
-  nextFloor_ = 0;
-}
-
 const ChirpDetector::GridVal* ChirpDetector::gridAt(int64_t g) const {
   int64_t idx = g - gridStartIdx_;
   if (idx < 0 || idx >= int64_t(grid_.size())) return nullptr;
@@ -225,7 +192,6 @@ void ChirpDetector::process(std::span<const cfloat> in,
   filtered_.clear();
   bandFilter_.process(in, filtered_);
   buf_.insert(buf_.end(), filtered_.begin(), filtered_.end());
-  consumed_ += in.size();
 
   const int n = chirpRepSamples();
   while (true) {
@@ -349,21 +315,6 @@ ChirpDetector::PatternScore ChirpDetector::scorePattern(int64_t g0,
     ps.score += best;
   }
   return ps;
-}
-
-void ChirpDetector::debugScore(int64_t g0) const {
-  for (ChirpSig sig : {ChirpSig::Robust, ChirpSig::Calling, ChirpSig::Css}) {
-    for (bool inv : {false, true}) {
-      PatternScore ps = scorePattern(g0, sig, inv);
-      fprintf(stderr, "  g0=%lld sig=%d inv=%d score=%.4f slots:",
-              (long long)g0, int(sig), int(inv), double(ps.score));
-      for (auto& s : ps.slots) {
-        fprintf(stderr, " [%s g=%.0f ncc=%.4f]", s.up ? "U" : "D", s.gridF,
-                s.ncc);
-      }
-      fprintf(stderr, "\n");
-    }
-  }
 }
 
 namespace {

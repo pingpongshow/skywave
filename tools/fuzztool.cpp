@@ -10,15 +10,14 @@
 //   fuzztool parsers [--iters N] [--seed S]
 //       Random bytes, truncation sweeps, and valid-CRC random frames
 //       into parseFrame + every link body parser + parsePhyHeader +
-//       FileMeta + validateCallsign (+ VoiceDataBody when built).
+//       validateCallsign (+ VoiceDataBody when built).
 //   fuzztool proto [--iters N] [--seed S]
 //       ProtoTx segment streams mutated in flight (bitflip, truncate,
-//       drop, duplicate, flag-randomize, garbage zstd) into ProtoRx;
-//       random + mutated kSvcFile messages into FileRx.
+//       drop, duplicate, flag-randomize, garbage zstd) into ProtoRx.
 //   fuzztool engine [--iters N] [--seed S]
 //       Two live LinkEngines; adversarial burst delivery (bitflipped,
 //       truncated, replayed, noise) interleaved with random API calls
-//       (connect/disconnect/sendData/sendFile/pin/broadcast).
+//       (connect/disconnect/sendData/pin/broadcast).
 //   fuzztool rx [--iters N] [--seed S]
 //       receiveFrame on corrupted basebands: truncated, spliced,
 //       clipped, noise-swamped, zero-stretched, plus pure noise/tones.
@@ -36,7 +35,6 @@
 #include "link/frame.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
-#include "proto/filesvc.hpp"
 #include "proto/pipeline.hpp"
 #ifdef SKW_HAVE_VOICE
 #include "voice/codec.hpp"
@@ -125,7 +123,6 @@ void hitParsers(std::span<const uint8_t> b) {
   BcastDataBody::parse(b);
   VoiceOpenBody::parse(b);
   KeyUpdateBody::parse(b);
-  FileMeta::parse(b);
 #ifdef SKW_HAVE_VOICE
   VoiceDataBody::parse(b);
 #endif
@@ -164,23 +161,16 @@ int runProto(Rng& rng, long iters) {
   for (long i = 0; i < iters; ++i) {
     ProtoTx tx;
     ProtoRx rx;
-    FileRx frx;
     tx.setZstd(rng.u32(2));
     double now = 0.0;
     // Build a legitimate segment stream from random submissions...
     std::deque<ProtoSegment> segs;
     for (uint32_t m = 0, n = 1 + rng.u32(6); m < n; ++m) {
-      if (rng.u32(2)) {
-        auto msg = rng.bytes(1 + rng.u32(4000));
-        if (rng.u32(2)) {  // compressible payload exercises zstd deep
-          std::fill(msg.begin() + long(msg.size() / 2), msg.end(),
-                    uint8_t(0x55));
-        }
-        tx.submitMessage(rng.u32(2) ? kSvcFile : kSvcStream, msg);
-      } else {
-        auto b = rng.bytes(1 + rng.u32(900));
-        tx.submit(b, now);
+      auto b = rng.bytes(1 + rng.u32(rng.u32(2) ? 4000 : 900));
+      if (rng.u32(2)) {  // compressible payload exercises zstd deep
+        std::fill(b.begin() + long(b.size() / 2), b.end(), uint8_t(0x55));
       }
+      tx.submit(b, now);
       now += 3.0;  // past any coalesce deadline
       while (auto seg = tx.nextSegment(30 + rng.u32(400), now)) {
         segs.push_back(std::move(*seg));
@@ -214,19 +204,13 @@ int runProto(Rng& rng, long iters) {
       }
       rx.onSegment(seg.flags, seg.bytes);
       if (replayPool.size() < 32) replayPool.push_back(seg);
-      for (auto& m : rx.takeServiceMessages(kSvcFile)) frx.onMessage(m);
       rx.takeBytes();
-      frx.takeEvents();
-      frx.takeCompleted();
     }
-    // Raw garbage segments straight into a fresh ProtoRx / FileRx.
+    // Raw garbage segments straight into the ProtoRx.
     for (uint32_t g = 0, n = 4 + rng.u32(12); g < n; ++g) {
       rx.onSegment(uint8_t(rng.next()), rng.bytes(rng.u32(700)));
-      frx.onMessage(rng.bytes(rng.u32(200)));
     }
-    rx.takeServiceMessages(kSvcFile);
     rx.takeBytes();
-    frx.takeEvents();
   }
   return 0;
 }
@@ -331,7 +315,6 @@ int runEngine(Rng& rng, long iters) {
     // mismatch the PSKs - the sessions must refuse cleanly, never
     // fall back to cleartext, never crash.
     if (rng.u32(4) != 0) {
-      ca.encryptionRequested = cb.encryptionRequested = true;
       ca.psk.assign(32, uint8_t(0xA5));
       cb.psk.assign(32, uint8_t(0xA5));
       if (rng.u32(5) == 0) cb.psk[7] ^= 0x01;  // wrong-PSK attempts
@@ -388,8 +371,7 @@ int runEngine(Rng& rng, long iters) {
           break;
         }
         case 2:
-          a.sendFile("f.bin", rng.bytes(1 + rng.u32(5000)),
-                     uint64_t(rng.next()));
+          a.sendData(rng.bytes(1 + rng.u32(5000)));
           break;
         case 3:
           b.pinMode(int(rng.u32(16)), now);
@@ -428,8 +410,6 @@ int runEngine(Rng& rng, long iters) {
       b.takeReceivedData();
       a.takeEvents();
       b.takeEvents();
-      a.takeReceivedFile();
-      b.takeReceivedFile();
     }
   }
   return 0;

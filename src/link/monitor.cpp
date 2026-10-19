@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include "core/bytepack.hpp"
+#include "core/strutil.hpp"
 #include "link/frame.hpp"
 #include "tcp/control.hpp"
 
@@ -29,6 +30,23 @@ std::vector<uint8_t> makeMonitorRecord(uint8_t frameType, Family family,
   w.u16be(uint16_t(payload.size()));
   w.bytes(payload);
   return out;
+}
+
+double headerAirtimeSec(Family f, const RxFrameResult& r,
+                        const CarrierMask* mask) {
+  if (r.header.mode >= kNumModes) return 0.0;
+  const std::vector<uint8_t> shape(r.header.length);  // geometry: size only
+  TxFrameParams tp;
+  tp.family = f;
+  tp.sig = r.sig;
+  tp.mode = r.header.mode;
+  tp.cpMode = r.header.cpMode;
+  tp.frameType = r.header.frameType;
+  tp.seqLow = r.header.seqLow;
+  tp.cssHeaderCopies = r.header.cssHeaderCopies;
+  tp.payload = shape;
+  tp.mask = mask;
+  return frameAirtimeSec(tp);
 }
 
 std::optional<MonitorEvent> Monitor::rxBurst(
@@ -128,31 +146,13 @@ std::optional<MonitorEvent> Monitor::rxBurst(
   // longer frame unverifiable (the CRC-32 lives at the end) and made
   // broadcast reassembly impossible for clients, while saving nothing
   // that matters on a localhost socket.
-  std::string hex;
-  if (res->payloadOk) {
-    hex.reserve(res->payload.size() * 2);
-    char b[4];
-    for (uint8_t v : res->payload) {
-      snprintf(b, sizeof(b), "%02X", v);
-      hex += b;
-    }
-  }
+  const std::string hex = res->payloadOk ? hexEncode(res->payload) : std::string();
 
   MonitorEvent ev;
   ev.payloadOk = res->payloadOk;
-  {
-    // The header states the burst's exact span: a caller holding a
-    // capture shorter than this can wait for the rest of the frame.
-    std::vector<uint8_t> len(res->header.length);
-    TxFrameParams tp;
-    tp.family = family_;
-    tp.sig = res->sig;
-    tp.mode = res->header.mode;
-    tp.cpMode = res->header.cpMode;
-    tp.cssHeaderCopies = res->header.cssHeaderCopies;
-    tp.payload = len;
-    ev.airtimeSec = double(computeGeometry(tp).totalSamples) / kFsBaseband;
-  }
+  // The header states the burst's exact span: a caller holding a capture
+  // shorter than this can wait for the rest of the frame.
+  ev.airtimeSec = headerAirtimeSec(family_, *res);
   ev.monLine = monLine(lastSrc_, lastDst_ == "*" ? "" : lastDst_,
                        res->header.frameType, plan(family_).name,
                        res->header.mode, hex);

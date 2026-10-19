@@ -1,7 +1,7 @@
 // Physical PTT keying (INTERFACES.md "PTT").
 //
 // The modem owns burst-accurate keying only; frequency and rig CAT belong to
-// the companion app. Four methods:
+// the companion app. Five methods:
 //
 //   NONE  no keying at all (an external system keys the rig)
 //   RTS   assert/release the serial RTS control line

@@ -152,16 +152,10 @@ std::vector<uint8_t> StartBody::pack() const {
   ByteWriter w(out);
   w.u16le(caps);
   w.u8(initialMode);
-  w.u8(cpMode);
   w.u8(maxMode);
-  w.u8(macProfile);
-  uint8_t present = (hasResumeToken ? 1 : 0) | (kexPublic.empty() ? 0 : 2);
-  w.u8(present);
-  if (hasResumeToken) w.bytes(resumeToken);
-  if (!kexPublic.empty()) {
-    w.u8(uint8_t(kexPublic.size()));
-    w.bytes(kexPublic);
-  }
+  // KEX public key: u8 length (0 = absent) + bytes.
+  w.u8(uint8_t(kexPublic.size()));
+  w.bytes(kexPublic);
   return out;
 }
 
@@ -170,26 +164,13 @@ std::optional<StartBody> StartBody::parse(std::span<const uint8_t> b) {
   StartBody v;
   v.caps = r.u16le();
   v.initialMode = r.u8();
-  v.cpMode = r.u8();
   v.maxMode = r.u8();
-  v.macProfile = r.u8();
-  uint8_t present = r.u8();
-  if (!r.ok() || (present & ~3u)) return std::nullopt;
-  v.hasResumeToken = present & 1;
-  if (v.hasResumeToken && !r.bytes(v.resumeToken)) return std::nullopt;
-  if (present & 2) {
-    uint8_t len = r.u8();
-    if (!r.ok() || len == 0 || r.remaining() < len) return std::nullopt;
-    v.kexPublic.resize(len);
-    if (!r.bytes(v.kexPublic)) return std::nullopt;
-  }
-  if (!r.ok() || r.remaining() != 0) return std::nullopt;
+  const uint8_t len = r.u8();
+  if (!r.ok() || r.remaining() != len) return std::nullopt;
+  v.kexPublic.resize(len);
+  if (len && !r.bytes(v.kexPublic)) return std::nullopt;
   if (v.caps & kCapReservedMask) return std::nullopt;
-  // M0-M3 are valid on the wire as of 6.2 (CSS tier); inactive table
-  // rows are still rejected.
-  if (!kModes[v.initialMode % kNumModes].active) v.initialMode = kFirstMode;
-  if (!kModes[v.maxMode % kNumModes].active) v.maxMode = kFirstMode;
-  if (v.initialMode >= kNumModes || v.maxMode >= kNumModes || v.cpMode > 2) {
+  if (v.initialMode >= kNumModes || v.maxMode >= kNumModes) {
     return std::nullopt;
   }
   return v;
@@ -199,6 +180,7 @@ std::vector<uint8_t> StartAckBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.u8(finalMode);
+  w.u8(maxMode);
   const uint8_t present =
       uint8_t((kexResponse.empty() ? 0 : 1) | (hasResumeToken ? 2 : 0));
   w.u8(present);
@@ -214,6 +196,7 @@ std::optional<StartAckBody> StartAckBody::parse(std::span<const uint8_t> b) {
   ByteReader r(b);
   StartAckBody v;
   v.finalMode = r.u8();
+  v.maxMode = r.u8();
   uint8_t present = r.u8();
   if (!r.ok() || (present & ~3u)) return std::nullopt;
   if (present & 1) {
@@ -227,8 +210,7 @@ std::optional<StartAckBody> StartAckBody::parse(std::span<const uint8_t> b) {
     if (!r.bytes(v.resumeToken)) return std::nullopt;
   }
   if (!r.ok() || r.remaining() != 0) return std::nullopt;
-  if (!kModes[v.finalMode % kNumModes].active) v.finalMode = kFirstMode;
-  if (v.finalMode >= kNumModes) return std::nullopt;
+  if (v.finalMode >= kNumModes || v.maxMode >= kNumModes) return std::nullopt;
   return v;
 }
 
@@ -292,7 +274,6 @@ std::optional<ModeChangeBody> ModeChangeBody::parse(
     std::span<const uint8_t> b) {
   if (b.size() != 3) return std::nullopt;
   ModeChangeBody v{b[0], b[1], b[2]};
-  if (!kModes[v.targetMode % kNumModes].active) v.targetMode = kFirstMode;
   if (v.targetMode >= kNumModes || v.cpMode > 2) return std::nullopt;
   return v;
 }
@@ -309,37 +290,33 @@ std::vector<uint8_t> ProbeBody::pack() const { return {probeId, probeMode}; }
 std::optional<ProbeBody> ProbeBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 2) return std::nullopt;
   ProbeBody v{b[0], b[1]};
-  if (!kModes[v.probeMode % kNumModes].active) v.probeMode = kFirstMode;
   if (v.probeMode >= kNumModes) return std::nullopt;
   return v;
 }
 
 std::vector<uint8_t> ProbeAckBody::pack() const {
-  return {probeId, uint8_t(snrHalfDb), decodedOk};
+  return {probeId, decodedOk};
 }
 
 std::optional<ProbeAckBody> ProbeAckBody::parse(std::span<const uint8_t> b) {
-  if (b.size() != 3) return std::nullopt;
-  return ProbeAckBody{b[0], int8_t(b[1]), b[2]};
+  if (b.size() != 2) return std::nullopt;
+  return ProbeAckBody{b[0], b[1]};
 }
 
 std::vector<uint8_t> MaskUpdateBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.u8(epoch);
-  w.u8(family);
   w.bytes(mask);
   return out;
 }
 
 std::optional<MaskUpdateBody> MaskUpdateBody::parse(
     std::span<const uint8_t> b) {
-  if (b.size() != 2 + 9) return std::nullopt;
+  if (b.size() != 1 + 9) return std::nullopt;
   ByteReader r(b);
   MaskUpdateBody v;
   v.epoch = r.u8();
-  v.family = r.u8();
-  if (v.family >= kNumFamilies) return std::nullopt;
   if (!r.bytes(v.mask)) return std::nullopt;
   return v;
 }
@@ -351,50 +328,29 @@ std::optional<MaskAckBody> MaskAckBody::parse(std::span<const uint8_t> b) {
   return MaskAckBody{b[0]};
 }
 
-std::vector<uint8_t> KeepaliveBody::pack() const { return {remoteSnr}; }
+std::vector<uint8_t> KeepaliveBody::pack() const {
+  return {uint8_t(snrHalfDb)};
+}
 
 std::optional<KeepaliveBody> KeepaliveBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 1) return std::nullopt;
-  return KeepaliveBody{b[0]};
+  return KeepaliveBody{int8_t(b[0])};
 }
-
-namespace {
-void packFileCkpt(ByteWriter& w, bool has, uint32_t id, uint64_t off) {
-  w.u8(has ? 1 : 0);
-  if (has) {
-    w.u32le(id);
-    w.u64le(off);
-  }
-}
-bool parseFileCkpt(ByteReader& r, bool& has, uint32_t& id, uint64_t& off) {
-  const uint8_t flag = r.u8();
-  if (!r.ok() || flag > 1) return false;
-  has = flag == 1;
-  if (has) {
-    id = r.u32le();
-    off = r.u64le();
-  }
-  return r.ok() && r.remaining() == 0;
-}
-}  // namespace
 
 std::vector<uint8_t> ResumeReqBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.bytes(token);
   w.u16le(lastRxSeq);
-  packFileCkpt(w, hasFileCkpt, fileId, fileOffset);
   return out;
 }
 
 std::optional<ResumeReqBody> ResumeReqBody::parse(std::span<const uint8_t> b) {
+  if (b.size() != 10) return std::nullopt;
   ByteReader r(b);
   ResumeReqBody v;
   if (!r.bytes(v.token)) return std::nullopt;
   v.lastRxSeq = r.u16le();
-  if (!parseFileCkpt(r, v.hasFileCkpt, v.fileId, v.fileOffset)) {
-    return std::nullopt;
-  }
   return v;
 }
 
@@ -402,17 +358,14 @@ std::vector<uint8_t> ResumeAckBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   w.u16le(lastRxSeq);
-  packFileCkpt(w, hasFileCkpt, fileId, fileOffset);
   return out;
 }
 
 std::optional<ResumeAckBody> ResumeAckBody::parse(std::span<const uint8_t> b) {
+  if (b.size() != 2) return std::nullopt;
   ByteReader r(b);
   ResumeAckBody v;
   v.lastRxSeq = r.u16le();
-  if (!parseFileCkpt(r, v.hasFileCkpt, v.fileId, v.fileOffset)) {
-    return std::nullopt;
-  }
   return v;
 }
 
@@ -420,7 +373,7 @@ std::vector<uint8_t> DiscBody::pack() const { return {uint8_t(reason)}; }
 
 std::optional<DiscBody> DiscBody::parse(std::span<const uint8_t> b) {
   if (b.size() != 1) return std::nullopt;
-  if (b[0] > uint8_t(DiscReason::Fault)) return std::nullopt;
+  if (b[0] > uint8_t(DiscReason::RetryExhausted)) return std::nullopt;
   return DiscBody{DiscReason(b[0])};
 }
 
@@ -429,8 +382,6 @@ std::vector<uint8_t> BeaconBody::pack() const {
   ByteWriter w(out);
   putCall(w, callsign);
   w.u8(snrFloorPlus20);
-  w.u8(family);
-  w.u8(swVersion);
   return out;
 }
 
@@ -441,10 +392,7 @@ std::optional<BeaconBody> BeaconBody::parse(std::span<const uint8_t> b) {
   if (!call) return std::nullopt;
   v.callsign = *call;
   v.snrFloorPlus20 = r.u8();
-  v.family = r.u8();
-  v.swVersion = r.u8();
   if (!r.ok() || r.remaining() != 0) return std::nullopt;
-  if (v.family >= kNumFamilies) return std::nullopt;
   return v;
 }
 
@@ -452,7 +400,6 @@ std::vector<uint8_t> CqBody::pack() const {
   std::vector<uint8_t> out;
   ByteWriter w(out);
   putCall(w, callsign);
-  w.u16le(caps);
   return out;
 }
 
@@ -460,11 +407,8 @@ std::optional<CqBody> CqBody::parse(std::span<const uint8_t> b) {
   ByteReader r(b);
   CqBody v;
   auto call = getCall(r);
-  if (!call) return std::nullopt;
+  if (!call || r.remaining() != 0) return std::nullopt;
   v.callsign = *call;
-  v.caps = r.u16le();
-  if (!r.ok() || r.remaining() != 0) return std::nullopt;
-  if (v.caps & kCapReservedMask) return std::nullopt;
   return v;
 }
 

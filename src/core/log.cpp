@@ -24,7 +24,6 @@ const char* tag(LogLevel lvl) {
 }  // namespace
 
 void setLevel(LogLevel lvl) { g_level.store(int(lvl), std::memory_order_relaxed); }
-LogLevel level() { return LogLevel(g_level.load(std::memory_order_relaxed)); }
 
 bool setFile(const std::string& path) {
   std::lock_guard lock(g_mutex);

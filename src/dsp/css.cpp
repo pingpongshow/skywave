@@ -105,11 +105,6 @@ std::vector<cfloat> cssModulate(Family f, int sf,
   return out;
 }
 
-uint16_t cssDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
-                        float* peakRatio) {
-  return cssDemodSymbolTaps(f, sf, sym, {}, peakRatio);
-}
-
 std::vector<cfloat> cssBaseChirp(Family f, int sf) {
   return baseChirp(cssPlan(f), 1 << sf);
 }
@@ -347,9 +342,8 @@ std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
   return out;
 }
 
-std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
+std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr,
                                    size_t byteCount) {
-  (void)sf;  // bits are already in stream order, sf per symbol
   const size_t ncw = byteCount * 2;
   // De-interleave: stream position i*ncw + j is bit i of codeword j.
   std::vector<float> cwLlr(ncw * 7, 0.0f);

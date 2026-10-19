@@ -202,26 +202,6 @@ TEST_CASE(vhf_m7_throughput_gate) {
   CHECK(kbps >= 25.0);
 }
 
-TEST_CASE(vhf_file_transfer) {
-  VhfBand band;
-  Pair p(35.0, 51);
-  CHECK(p.connect());
-  if (p.a.state() != FsmState::Connected) return;
-  CHECK(p.a.pinMode(13, p.now));
-  auto data = noiseBlob(8000, 77);
-  CHECK(p.a.sendFile("vhf.bin", data, 12345));
-  std::optional<ReceivedFile> rf;
-  for (int i = 0; i < 600 && !rf; ++i) {
-    p.step();
-    rf = p.b.takeReceivedFile();
-  }
-  CHECK(rf.has_value());
-  if (rf) {
-    CHECK(rf->data == data);
-    CHECK(rf->crcOk);
-  }
-}
-
 // FM radio sweep 2026-10-17: the chirp detector's 4-sample correlation
 // grid was coarser than VHF's ~1.8-sample correlation peak, so a frame
 // whose start fell between grid points was never detected (3-5 of 8

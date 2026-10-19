@@ -41,14 +41,17 @@ enum class FsmDiscCause : uint8_t {
   PeerRequest,
   CallRetriesExhausted,
   StartRetriesExhausted,
-  DiscRetriesExhausted,
   IdleTimeout,
   StartNak,
+  LinkLost,  // the session failed underneath (ARQ exhausted, peer fault)
 };
 
 // Airtime-derived timeout inputs (seconds). PROTOCOL.md formula:
 // response timeout = own_airtime + expected_response_airtime + 6 s,
-// clamped to [12, 45]. DISC retry cadence = 2 * disc_airtime + 3 s.
+// clamped to [12, 600]. DISC retry cadence = 2 * disc_airtime + 3 s.
+// A disconnect whose DISC retries all go unanswered still ends with the
+// cause that started it (LocalRequest): the peer not answering does not
+// turn an operator's disconnect into a link failure.
 struct HandshakeTimings {
   double callSec = 4.0;      // CALL frame airtime
   double callAckSec = 4.0;
@@ -77,7 +80,7 @@ struct FsmConfig {
   uint32_t jitterSeed = 0;
 };
 
-double clampResponseTimeout(double raw);  // [12, 45]
+double clampResponseTimeout(double raw);  // [12, 600]
 
 class SessionFsm {
  public:
@@ -100,8 +103,10 @@ class SessionFsm {
 
   // --- operator/API commands -----------------------------------------
   void cmdConnect(double now);     // Idle -> Calling (emits SendCall)
-  void cmdDisconnect(double now);  // -> Disconnecting (emits SendDisc)
-  void cmdAbort(double now);       // -> Idle immediately, no DISC exchange
+  void cmdDisconnect(double now,  // -> Disconnecting (emits SendDisc)
+                     FsmDiscCause cause = FsmDiscCause::LocalRequest);
+  void cmdAbort(double now,  // -> Idle immediately, no DISC exchange
+                FsmDiscCause cause = FsmDiscCause::LocalRequest);
 
   // --- received frames (already CRC/type validated) -------------------
   void rxCall(double now);       // responder path
@@ -109,7 +114,7 @@ class SessionFsm {
   void rxStart(double now, bool acceptable);  // false -> SendStartNak
   void rxStartAck(double now);
   void rxStartNak(double now);
-  void rxDisc(double now);
+  void rxDisc(double now, bool fault = false);  // fault: peer DISC with a cause
   void rxDiscAck(double now);
   void rxTraffic(double now);  // any other valid in-session frame
   // Any session frame we transmit: a keepalive is due only after
@@ -118,14 +123,10 @@ class SessionFsm {
   void setKeepaliveSec(double s) { cfg_.keepaliveSec = s; }
   double keepaliveSec() const { return cfg_.keepaliveSec; }
   double lastTxTime() const { return lastTxTime_; }
-  double lastRxTime() const { return lastRxTime_; }
 
   // --- clock ----------------------------------------------------------
   // Call periodically; fires retries/timeouts/keepalive/idle-disconnect.
   void tick(double now);
-
-  // Timer the caller may schedule the next tick around (absolute time).
-  double nextDeadline() const { return deadline_; }
 
  private:
   void emit(FsmAction a) { queue_.push_back(a); }
@@ -141,7 +142,8 @@ class SessionFsm {
   double timeoutSec_ = 0.0;     // armed timeout length
   int attemptsLeft_ = 0;
   double lastRxTime_ = 0.0;     // idle-disconnect reference
-  double lastTxTime_ = 0.0;     // keepalive reference
+  double lastTxTime_ = 0.0;     // keepalive reference (real TX only)
+  double lastKeepaliveReqAt_ = 0.0;  // SendKeepalive rate limit
 };
 
 }  // namespace skw

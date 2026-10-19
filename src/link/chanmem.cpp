@@ -11,9 +11,10 @@ namespace skw {
 
 namespace {
 constexpr uint32_t kCacheMagic = 0x534B434Du;  // "SKCM"
-// v2: lastUpdate is wall-clock ms since the epoch (v1 stored the
-// boot-relative engine clock, which is why v1 files are now ignored).
-constexpr uint16_t kCacheVersion = 2;
+// v3: mode + retry ratio + wall-clock ms since the epoch per entry (v2
+// also stored SNR, decode-failure ratio and selectivity; v1 the
+// boot-relative engine clock). Other versions are ignored.
+constexpr uint16_t kCacheVersion = 3;
 // Clock skew tolerated before a timestamp in the future is distrusted.
 constexpr double kFutureSkewSec = 120.0;
 }  // namespace
@@ -55,12 +56,7 @@ void ChannelMemory::record(const ChanMemKey& key, const ChanMemStats& s,
   auto ema = [](double& acc, double v) { acc += kEmaAlpha * (v - acc); };
   // Mode is a discrete "last stable" value, not an average.
   e->stats.stableMode = s.stableMode;
-  ema(e->stats.snrDb, s.snrDb);
   ema(e->stats.retryRatio, s.retryRatio);
-  ema(e->stats.decodeFailRatio, s.decodeFailRatio);
-  e->stats.selectivity = uint8_t(
-      e->stats.selectivity + kEmaAlpha * (s.selectivity -
-                                          e->stats.selectivity));
   e->lastUpdate = now;
   e->wallUpdate = wallNow();
   e->fromDisk = false;
@@ -108,10 +104,7 @@ bool ChannelMemory::save(const std::string& path) const {
     w.u32le(uint32_t(e.key.freqBucketKhz));
     w.u8(e.key.family);
     w.u8(e.stats.stableMode);
-    w.u32le(uint32_t(int32_t(e.stats.snrDb * 100)));
     w.u16le(uint16_t(e.stats.retryRatio * 10000));
-    w.u16le(uint16_t(e.stats.decodeFailRatio * 10000));
-    w.u8(e.stats.selectivity);
     w.u64le(uint64_t(int64_t(e.wallUpdate * 1000)));
   }
   FILE* f = fopen(path.c_str(), "wb");
@@ -139,10 +132,7 @@ bool ChannelMemory::load(const std::string& path) {
     e.key.freqBucketKhz = int32_t(r.u32le());
     e.key.family = r.u8();
     e.stats.stableMode = r.u8();
-    e.stats.snrDb = int32_t(r.u32le()) / 100.0;
     e.stats.retryRatio = r.u16le() / 10000.0;
-    e.stats.decodeFailRatio = r.u16le() / 10000.0;
-    e.stats.selectivity = r.u8();
     e.wallUpdate = double(int64_t(r.u64le())) / 1000.0;
     e.fromDisk = true;
     e.lruStamp = ++lruCtr_;

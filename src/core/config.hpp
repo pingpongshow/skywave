@@ -13,7 +13,10 @@
 namespace skw {
 
 enum class PttMethod : uint8_t { None, Rts, Dtr, Vox, Tcp };
-enum class HarqMode : uint8_t { Auto, Chase, Ir };
+// HARQ combining offered to the peer: Chase (soft-combine identical
+// retransmissions) or Ir (incremental redundancy, CAP_HARQ_IR; falls back
+// to Chase when the peer does not advertise it).
+enum class HarqMode : uint8_t { Chase, Ir };
 // Upper bound for ptt.lead_ms / ptt.tail_ms (and PTTLEAD / PTTTAIL).
 inline constexpr int kPttPadMaxMs = 5000;
 // Band lives in core/constants.hpp (it selects the numerology profile).
@@ -41,7 +44,7 @@ struct Config {
   uint16_t dataPort = kPortData;
   uint16_t ctrlPort = kPortCtrl;
   uint16_t voicePort = kPortVoice;
-  std::string bindAddr = "127.0.0.1";
+  // (The ports always bind 127.0.0.1: there is no bind-address key.)
   // [ptt]
   PttMethod pttMethod = PttMethod::None;
   std::string pttTarget;
@@ -54,26 +57,19 @@ struct Config {
   bool ultraEnable = false;
   bool familyFallback = true;
   bool cssTier = true;           // CSS deep tier (M0-M3) + deep handshake
-  int mode = -1;                 // -1 = auto, else pinned 4..13
-  int maxMode = 13;
+  // OFDM modes only, kFirstMode..bandMaxMode(band) (see below).
+  int mode = -1;                 // -1 = auto, else the pinned mode
+  int maxMode = 13;              // AMC promotion cap
   int cpMode = -1;               // -1 = auto, else CpMode index
   bool listen = true;
   int maxRetries = 10;
-  HarqMode harq = HarqMode::Auto;
+  HarqMode harq = HarqMode::Ir;
   bool channelMemory = true;
   // (No probe_promote / pre_tx_cca keys: probe-before-promote and the
   // pre-TX CCA gate are always on in the engine. The switches were
-  // stored and never read; an old INI's keys are kept as unknown keys.)
+  // stored and never read; an old INI's keys are retired keys.)
   bool carrierMasking = true;
-  // Scheduled ISS/IRS turn-taking (PROTOCOL.md "Turn-Taking"), advertised
-  // as CAP_TURN_SCHED. Off = legacy occupancy-gate scheduler; needed only
-  // to call a pre-CAP_TURN_SCHED build, which rejects the bit.
-  bool turnTaking = true;
   bool resume = true;
-  bool impulseBlanker = false;
-  bool multiNotch = false;
-  bool freqAlign = true;
-  bool invertCorrect = true;
   double txWatchdogSec = kTxWatchdogDefaultSec;
   // [crypto]
   bool cryptoEnabled = false;
@@ -83,10 +79,10 @@ struct Config {
   int voiceBroadcastMode = 9;
   // [gui]
   bool guiEnabled = false;
-  int guiWidth = 520;
-  int guiHeight = 720;
-  bool guiWaterfall = true;
-  bool guiConstellation = true;
+  // Requested window size in points; 0 (default) = fit to the display.
+  // Clamped to the display either way.
+  int guiWidth = 0;
+  int guiHeight = 0;
   // [log]
   int logLevel = 2;
   std::string logFile;
@@ -107,18 +103,27 @@ struct Config {
   // gets the live config, as save(). Same atomic 0600 write as save().
   bool saveMerged(const std::string& path, const Config& base) const;
 
-  // Apply one "section.key" = value (unknown keys go to unknownKeys).
+  // Apply one "section.key" = value (unknown keys go to unknownKeys,
+  // retired keys are dropped with a WARN).
   void applyEntry(const std::string& fullKey, const std::string& value);
+  // Apply a whole file's entries: modem.band first (the valid mode range
+  // depends on it), then everything in order.
+  void applyEntries(const IniEntries& entries);
   // The full schema plus unknown keys, in save() order, canonical text.
   IniEntries toEntries() const;
-
-  // True when the callsign is usable over the air (CONFIGURATION.md rules).
-  bool callsignValid() const;
 };
 
 // Enum <-> text helpers (shared by config, TCP commands, GUI).
 std::string toString(PttMethod m);
 std::optional<PttMethod> pttMethodFromString(std::string s);
+// Placeholder (N0CALL) or empty callsign: every transmit path refuses.
+bool isPlaceholderCall(const std::string& call);
+// Highest OFDM mode the band carries (M14 exists on VHF-FM only). The
+// valid MODE / MAXMODE range is kFirstMode..bandMaxMode(band).
+int bandMaxMode(Band b);
+// Cyclic-prefix policy names (CPMODE, INI cp_mode, GUI).
+const char* toString(CpMode cp);  // "SHORT" / "MEDIUM" / "LONG"
+std::optional<CpMode> cpModeFromString(std::string s);  // any case
 std::string toString(HarqMode m);
 std::optional<HarqMode> harqModeFromString(std::string s);
 std::string toString(Family f);
@@ -129,7 +134,6 @@ std::optional<Family> familyFromString(std::string s);
 void parseAudioDevice(const std::string& v, int& index, std::string& name);
 std::string toString(Band b);
 std::optional<Band> bandFromString(std::string s);
-bool callsignValid(const std::string& call);
 
 // Read an INI file into ordered entries (comments/blank lines skipped,
 // section and key lowercased, values trimmed). False = cannot be opened.

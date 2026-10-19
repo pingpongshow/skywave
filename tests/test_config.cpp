@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/config.hpp"
+#include "link/frame.hpp"
 #include "skytest.hpp"
 
 using namespace skw;
@@ -27,7 +28,10 @@ TEST_CASE(config_defaults) {
   CHECK(!c.ultraEnable);
   CHECK(c.familyFallback);
   CHECK_EQ(c.mode, -1);
-  CHECK(!c.callsignValid());  // N0CALL blocks TX
+  CHECK(isPlaceholderCall(c.callsign));  // N0CALL blocks TX
+  CHECK(c.harq == HarqMode::Ir);
+  CHECK_EQ(c.guiWidth, 0);  // 0 = fit to the display
+  CHECK_EQ(c.guiHeight, 0);
 }
 
 TEST_CASE(config_roundtrip_all_keys) {
@@ -38,7 +42,6 @@ TEST_CASE(config_roundtrip_all_keys) {
   c.inputDevice = 3;
   c.outputGainDb = -2.5;
   c.dataPort = 9200;
-  c.bindAddr = "0.0.0.0";
   c.pttMethod = PttMethod::Tcp;
   c.pttTarget = "127.0.0.1:4533";
   c.pttLeadMs = 80;
@@ -48,11 +51,11 @@ TEST_CASE(config_roundtrip_all_keys) {
   c.maxMode = 11;
   c.cpMode = 2;
   c.listen = false;
-  c.harq = HarqMode::Ir;
+  c.harq = HarqMode::Chase;
   c.carrierMasking = false;
   c.txWatchdogSec = 90;
   c.cryptoEnabled = true;
-  c.cryptoPsk = "aabbcc";
+  c.cryptoPsk = "00112233445566778899AABBCCDDEEFF00112233445566778899aabbccddeeff";
   c.voiceCodec = "1300";
   c.guiEnabled = true;
   c.logLevel = 0;
@@ -67,7 +70,6 @@ TEST_CASE(config_roundtrip_all_keys) {
   CHECK_EQ(d.inputDevice, 3);
   CHECK_NEAR(d.outputGainDb, -2.5, 1e-12);
   CHECK_EQ(d.dataPort, 9200);
-  CHECK_EQ(d.bindAddr, "0.0.0.0");
   CHECK(d.pttMethod == PttMethod::Tcp);
   CHECK_EQ(d.pttTarget, "127.0.0.1:4533");
   CHECK_EQ(d.pttLeadMs, 80);
@@ -77,11 +79,11 @@ TEST_CASE(config_roundtrip_all_keys) {
   CHECK_EQ(d.maxMode, 11);
   CHECK_EQ(d.cpMode, 2);
   CHECK(!d.listen);
-  CHECK(d.harq == HarqMode::Ir);
+  CHECK(d.harq == HarqMode::Chase);
   CHECK(!d.carrierMasking);
   CHECK_NEAR(d.txWatchdogSec, 90.0, 1e-12);
   CHECK(d.cryptoEnabled);
-  CHECK_EQ(d.cryptoPsk, "aabbcc");
+  CHECK_EQ(d.cryptoPsk, c.cryptoPsk);
   CHECK_EQ(d.voiceCodec, "1300");
   CHECK(d.guiEnabled);
   CHECK_EQ(d.logLevel, 0);
@@ -149,7 +151,7 @@ TEST_CASE(config_bad_values_keep_defaults) {
   Config c;
   CHECK(c.load(path));
   CHECK_EQ(c.mode, -1);
-  CHECK(c.harq == HarqMode::Auto);
+  CHECK(c.harq == HarqMode::Ir);
   CHECK_EQ(c.maxRetries, 10);
   CHECK_EQ(c.dataPort, kPortData);
   std::remove(path.c_str());
@@ -171,7 +173,7 @@ TEST_CASE(config_mode_selectors) {
 
 TEST_CASE(config_max_mode_validated) {
   // C2: "auto" used to become -1 -> uint8_t 255 in the engine. It now
-  // means the highest active mode; numbers clamp into the active range.
+  // means the band's highest mode; numbers clamp into the band's range.
   auto path = tmpPath("maxmode");
   {
     std::ofstream f(path);
@@ -179,7 +181,24 @@ TEST_CASE(config_max_mode_validated) {
   }
   Config c;
   CHECK(c.load(path));
-  CHECK_EQ(c.maxMode, kNumModes - 1);
+  CHECK_EQ(c.maxMode, 13);  // HF: M14 is VHF-FM only
+  {
+    // The band decides the range wherever it appears in the file.
+    std::ofstream f(path);
+    f << "[modem]\nmax_mode = auto\nmode = m14\nband = vhf-fm\n";
+  }
+  Config v;
+  CHECK(v.load(path));
+  CHECK_EQ(v.maxMode, 14);
+  CHECK_EQ(v.mode, 14);
+  {
+    std::ofstream f(path);
+    f << "[modem]\nmax_mode = m14\nmode = m14\n";
+  }
+  Config h;
+  CHECK(h.load(path));
+  CHECK_EQ(h.maxMode, 13);  // clamped (WARN)
+  CHECK_EQ(h.mode, -1);     // refused (WARN): not an HF mode
   {
     std::ofstream f(path);
     f << "[modem]\nmax_mode = m2\n";
@@ -234,14 +253,110 @@ TEST_CASE(config_save_is_private_and_atomic) {
 }
 
 TEST_CASE(callsign_rules) {
-  CHECK(callsignValid("W1AW"));
-  CHECK(callsignValid("VE3ABC/P"));
-  CHECK(!callsignValid("N0CALL"));
-  CHECK(!callsignValid("n0call"));
-  CHECK(!callsignValid(""));
-  CHECK(!callsignValid("AB"));                 // too short
-  CHECK(!callsignValid("ABCDEFGHIJKLM"));      // too long
-  CHECK(!callsignValid("W1 AW"));              // space
+  // One rule: the wire's (validateCallsign), plus the placeholder check.
+  CHECK(validateCallsign("W1AW").has_value());
+  CHECK(validateCallsign("VE3ABC/P").has_value());
+  CHECK(!validateCallsign("").has_value());
+  CHECK(!validateCallsign("AB").has_value());             // too short
+  CHECK(!validateCallsign("ABCDEFGHIJKLM").has_value());  // too long
+  CHECK(!validateCallsign("W1 AW").has_value());          // space
+  CHECK(isPlaceholderCall("N0CALL"));
+  CHECK(isPlaceholderCall("n0call"));
+  CHECK(isPlaceholderCall(""));
+  CHECK(!isPlaceholderCall("W1AW"));
+}
+
+// A2: the INI callsign goes through the same rule as MYCALL - stored
+// uppercase, and an invalid one leaves the placeholder (TX blocked).
+TEST_CASE(config_callsign_validated_on_load) {
+  auto path = tmpPath("callsign");
+  {
+    std::ofstream f(path);
+    f << "[station]\ncallsign = k1aaa/p\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK_EQ(c.callsign, "K1AAA/P");
+  {
+    std::ofstream f(path);
+    f << "[station]\ncallsign = K1 AAA\n";
+  }
+  Config d;
+  d.callsign = "K2BBB";
+  CHECK(d.load(path));
+  CHECK_EQ(d.callsign, std::string(kPlaceholderCall));
+  // The CLI path (--callsign) applies the same entry.
+  Config e;
+  e.applyEntry("station.callsign", "w3ccc");
+  CHECK_EQ(e.callsign, "W3CCC");
+  e.applyEntry("station.callsign", "!!");
+  CHECK(isPlaceholderCall(e.callsign));
+  std::remove(path.c_str());
+}
+
+// A3: crypto.psk must be 64 hex digits; anything else loads as no key
+// (it used to decode leniently into a garbage key).
+TEST_CASE(config_psk_validated_on_load) {
+  auto path = tmpPath("psk");
+  const std::string good(64, 'a');
+  {
+    std::ofstream f(path);
+    f << "[crypto]\npsk = " << good << "\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK_EQ(c.cryptoPsk, good);
+  for (const std::string& bad : {std::string(64, 'g'), std::string(62, 'a'),
+                                std::string(63, 'a') + "z"}) {
+    {
+      std::ofstream f(path);
+      f << "[crypto]\npsk = " << bad << "\n";
+    }
+    Config d;
+    CHECK(d.load(path));
+    CHECK(d.cryptoPsk.empty());
+  }
+  std::remove(path.c_str());
+}
+
+// A9 / A5-A7: HARQ "auto" from an older file is IR; retired keys are
+// dropped (not preserved as unknown keys) and vanish on the next save.
+TEST_CASE(config_old_keys) {
+  auto path = tmpPath("oldkeys");
+  {
+    std::ofstream f(path);
+    f << "[tcp]\nbind_addr = 0.0.0.0\n[modem]\nharq = auto\n"
+      << "impulse_blanker = true\nmulti_notch = false\nfreq_align = true\n"
+      << "invert_correct = true\nturn_taking = true\n"
+      << "[gui]\nwaterfall = true\nconstellation = false\nwidth = 1200\n";
+  }
+  Config c;
+  CHECK(c.load(path));
+  CHECK(c.harq == HarqMode::Ir);
+  CHECK(c.unknownKeys.empty());
+  CHECK_EQ(c.guiWidth, 1200);
+  CHECK(c.save(path));
+  IniEntries e;
+  CHECK(parseIniFile(path, e));
+  for (const auto& [k, v] : e) {
+    CHECK(k != "tcp.bind_addr" && k != "modem.impulse_blanker" &&
+          k != "modem.turn_taking" && k != "gui.waterfall");
+  }
+  // The exit-time merge does not resurrect them from the disk file.
+  {
+    std::ofstream f(path);
+    f << "[tcp]\nbind_addr = 0.0.0.0\n[modem]\nmulti_notch = true\n";
+  }
+  Config base;
+  CHECK(base.load(path));
+  Config live = base;
+  live.family = Family::Mid;
+  CHECK(live.saveMerged(path, base));
+  CHECK(parseIniFile(path, e));
+  for (const auto& [k, v] : e) {
+    CHECK(k != "tcp.bind_addr" && k != "modem.multi_notch");
+  }
+  std::remove(path.c_str());
 }
 
 // --- Exit-time three-way merge (Config::saveMerged) ----------------------
@@ -275,21 +390,22 @@ TEST_CASE(config_merge_runtime_change_saved) {
 
 TEST_CASE(config_merge_disk_edit_survives) {
   auto path = tmpPath("merge_disk");
+  const std::string psk1(64, '1'), psk2(64, 'b');
   writeFile(path, "[station]\ncallsign = W1AW\n[ptt]\nlead_ms = 50\n"
-                  "[crypto]\npsk = 0011\n");
+                  "[crypto]\npsk = " + psk1 + "\n");
   Config base;
   CHECK(base.load(path));
   Config live = base;
   live.callsign = "K1ABC";  // runtime change to one key...
   // ...while the operator edits OTHER keys in the file.
   writeFile(path, "[station]\ncallsign = W1AW\n[ptt]\nlead_ms = 120\n"
-                  "[crypto]\npsk = aabbccdd\n[modem]\nlisten = no\n");
+                  "[crypto]\npsk = " + psk2 + "\n[modem]\nlisten = no\n");
   CHECK(live.saveMerged(path, base));
   Config d;
   CHECK(d.load(path));
   CHECK_EQ(d.callsign, "K1ABC");
   CHECK_EQ(d.pttLeadMs, 120);
-  CHECK_EQ(d.cryptoPsk, "aabbccdd");
+  CHECK_EQ(d.cryptoPsk, psk2);
   CHECK(!d.listen);
   std::remove(path.c_str());
 }

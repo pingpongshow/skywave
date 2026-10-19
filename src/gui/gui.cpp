@@ -17,6 +17,7 @@
 #include "backends/imgui_impl_sdlrenderer2.h"
 #include "core/constants.hpp"
 #include "core/log.hpp"
+#include "core/strutil.hpp"
 #include "link/frame.hpp"
 #include "imgui.h"
 
@@ -31,24 +32,29 @@ extern const size_t kFontMonoSize;
 
 namespace {
 
-const char* kFamilyNames[] = {"WIDE", "MID", "NARROW", "ULTRA"};
-const char* kCpNames[] = {"AUTO", "SHORT", "MEDIUM", "LONG"};
 const char* kPttMethods[] = {"NONE", "VOX", "RTS", "DTR", "TCP"};
 
-std::string upperAscii(std::string s) {
-  for (char& ch : s) ch = char(std::toupper(static_cast<unsigned char>(ch)));
-  return s;
-}
+// Family names come from the family table (kFamilies: the identity names
+// FAMILY and STATUS use); the combo index is the Family value.
+const char* familyName(int idx) { return kFamilies[size_t(std::clamp(idx, 0, kNumFamilies - 1))].name; }
 
 int familyIndex(const std::string& name) {
-  for (int i = 0; i < 4; ++i) {
-    if (name == kFamilyNames[i]) return i;
-  }
-  return 0;
+  const auto f = familyFromString(name);
+  return f ? int(*f) : 0;
+}
+
+// CP combo: index 0 = AUTO, then CpMode order.
+std::string cpArg(int idx) { return idx == 0 ? "AUTO" : toString(CpMode(idx - 1)); }
+
+// ImGui combo item list ("a\0b\0...\0").
+std::string comboItems(const std::vector<std::string>& items) {
+  std::string out;
+  for (const auto& s : items) out += s + '\0';
+  return out;
 }
 
 int pttMethodIndex(const std::string& name) {
-  const std::string n = upperAscii(name);
+  const std::string n = toUpper(name);
   for (int i = 0; i < 5; ++i) {
     if (n == kPttMethods[i]) return i;
   }
@@ -105,8 +111,9 @@ const ImVec4 bad{0.973f, 0.318f, 0.286f, 1.0f};       // #F85149
 
 ImVec4 withAlpha(ImVec4 c, float a) { return ImVec4(c.x, c.y, c.z, a); }
 
+// Mode combo: index 0 = AUTO, then kFirstMode upward.
 std::string modeArg(int idx) {
-  return idx == 0 ? "AUTO" : "M" + std::to_string(idx + 3);
+  return idx == 0 ? "AUTO" : "M" + std::to_string(idx + kFirstMode - 1);
 }
 
 std::string clockNow() {
@@ -191,7 +198,7 @@ void endCard() {
   ImGui::PopStyleColor();
 }
 
-// Horizontal level bar, -120..0 dBFS, with the value at the right.
+// Horizontal level bar, -100..0 dBFS, with the value at the right.
 void levelBar(const char* label, float db, ImVec4 c) {
   const float frac = std::clamp((db + 100.0f) / 100.0f, 0.0f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
@@ -241,11 +248,9 @@ void GuiInstruments::push(const Telemetry& t) {
     while (q.size() > kHistory) q.pop_front();
   };
   rxLevel.push_back(t.rxLevelDbfs);
-  txLevel.push_back(t.txLevelDbfs);
   noiseFloor.push_back(t.noiseFloorDbfs);
   modeHistory.push_back(t.mode);
   trim(rxLevel);
-  trim(txLevel);
   trim(noiseFloor);
   trim(modeHistory);
 }
@@ -256,8 +261,7 @@ std::string Gui::redactForLog(const std::string& cmd) {
   const size_t a = cmd.find_first_not_of(" \t");
   if (a == std::string::npos) return cmd;
   const size_t b = cmd.find_first_of(" \t", a);
-  std::string verb = cmd.substr(a, b == std::string::npos ? b : b - a);
-  for (char& ch : verb) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  const std::string verb = toUpper(cmd.substr(a, b == std::string::npos ? b : b - a));
   if (verb != "ENCRYPTKEY" || b == std::string::npos) return cmd;
   return cmd.substr(0, b) + " ********";
 }
@@ -404,13 +408,15 @@ void Gui::fitWindowToDisplay(int reqW, int reqH) {
   auto* win = static_cast<SDL_Window*>(window_);
   SDL_Rect r{0, 0, 1440, 900};
   SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(win), &r);
-  // The INI default (520x720) predates this layout; anything smaller
-  // than a usable size is treated as "pick for me".
-  int w = reqW >= 1000 ? reqW : 1400;
-  int h = reqH >= 660 ? reqH : 880;
+  // gui.width / gui.height: 0 (the default) = pick for this display. A
+  // request is honoured but kept on the display and no smaller than the
+  // layout's minimum (980 x 640).
+  const int minW = std::min(980, r.w), minH = std::min(640, r.h);
+  int w = reqW > 0 ? std::max(reqW, minW) : 1400;
+  int h = reqH > 0 ? std::max(reqH, minH) : 880;
   w = std::min(w, int(r.w * 0.92));
   h = std::min(h, int(r.h * 0.92));
-  SDL_SetWindowMinimumSize(win, std::min(980, r.w), std::min(640, r.h));
+  SDL_SetWindowMinimumSize(win, minW, minH);
   SDL_SetWindowSize(win, w, h);
   SDL_SetWindowPosition(win, r.x + (r.w - w) / 2, r.y + (r.h - h) / 2);
 }
@@ -618,8 +624,8 @@ void Gui::drawTopBar() {
     ImGui::SameLine();
     pill("BUSY", col::warn);
   }
-  // The placeholder callsign transmits, but no station answers it.
-  if (status_.call.empty() || status_.call == kPlaceholderCall) {
+  // The placeholder callsign cannot transmit (the modem refuses).
+  if (isPlaceholderCall(status_.call)) {
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, withAlpha(col::warn, 0.22f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, withAlpha(col::warn, 0.35f));
@@ -720,13 +726,13 @@ void Gui::drawLinkCard() {
       ImGui::TableNextColumn();
       ImGui::SetNextItemWidth(-1);
       const int prevMode = ctl_.mode;
-      if (ImGui::Combo("##mode", &ctl_.mode, "AUTO\0M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
-        actMode(prevMode);
-      }
+      if (ImGui::Combo("##mode", &ctl_.mode, modeItems_.c_str())) actMode(prevMode);
       ImGui::TableNextColumn();
       ImGui::SetNextItemWidth(-1);
       const int prevCp = ctl_.cp;
-      if (ImGui::Combo("##cp", &ctl_.cp, "AUTO\0SHORT\0MEDIUM\0LONG\0")) actCp(prevCp);
+      static const std::string cpItems =
+          comboItems({cpArg(0), cpArg(1), cpArg(2), cpArg(3)});
+      if (ImGui::Combo("##cp", &ctl_.cp, cpItems.c_str())) actCp(prevCp);
       ImGui::EndTable();
     }
     ImGui::Spacing();
@@ -770,9 +776,27 @@ void Gui::drawLevelsCard() {
     if (!h.empty() && ImGui::GetContentRegionAvail().y > 30.0f) {
       std::vector<float> v(h.begin(), h.end());
       ImGui::PushStyleColor(ImGuiCol_FrameBg, col::panel);
-      ImGui::PlotLines("##rxhist", v.data(), int(v.size()), 0, "rx level", -100.0f, 0.0f,
-                       ImVec2(-1, ImGui::GetContentRegionAvail().y));
+      ImGui::PlotLines("##rxhist", v.data(), int(v.size()), 0, "rx level / floor", -100.0f,
+                       0.0f, ImVec2(-1, ImGui::GetContentRegionAvail().y));
       ImGui::PopStyleColor();
+      // The modem's noise floor over the same span, drawn into the plot.
+      const auto& fl = inst_.noiseFloor;
+      if (fl.size() >= 2) {
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const float pad = ImGui::GetStyle().FramePadding.y;
+        auto yOf = [&](float db) {
+          const float t = std::clamp((db + 100.0f) / 100.0f, 0.0f, 1.0f);
+          return b.y - pad - t * (b.y - a.y - 2.0f * pad);
+        };
+        std::vector<ImVec2> pts;
+        pts.reserve(fl.size());
+        for (size_t i = 0; i < fl.size(); ++i) {
+          pts.emplace_back(a.x + (b.x - a.x) * float(i) / float(fl.size() - 1), yOf(fl[i]));
+        }
+        ImGui::GetWindowDrawList()->AddPolyline(pts.data(), int(pts.size()),
+                                                ImGui::GetColorU32(withAlpha(col::dim, 0.9f)),
+                                                ImDrawFlags_None, 1.0f);
+      }
     }
   }
   endCard();
@@ -805,8 +829,8 @@ void Gui::drawWaterfallCard(float height) {
                           IM_COL32_WHITE, 6.0f);
     }
     // Occupied band of the active family.
-    for (int i = 0; i < 4; ++i) {
-      if (status_.family != kFamilyNames[i]) continue;
+    for (int i = 0; i < kNumFamilies; ++i) {
+      if (status_.family != familyName(i)) continue;
       const FamilyPlan& p = plan(Family(i));
       const float lo = float(p.firstBin * kSubcarrierHz), hi = float(p.lastBin * kSubcarrierHz);
       const float x0 = origin.x + w * lo / wfMaxHz_, x1 = origin.x + w * hi / wfMaxHz_;
@@ -817,8 +841,8 @@ void Gui::drawWaterfallCard(float height) {
     }
     // Carrier mask overlay (excised carriers).
     if (snap_.maskCarriers > 0) {
-      for (int i = 0; i < 4; ++i) {
-        if (status_.family != kFamilyNames[i]) continue;
+      for (int i = 0; i < kNumFamilies; ++i) {
+        if (status_.family != familyName(i)) continue;
         const FamilyPlan& p = plan(Family(i));
         for (int c = 0; c < snap_.maskCarriers; ++c) {
           if ((snap_.maskBits[size_t(c >> 3)] >> (c & 7)) & 1) continue;
@@ -927,11 +951,20 @@ void Gui::drawLogCard() {
 
 void Gui::syncFromModem() {
   const Config c = worker_.config();
+  // The mode lists are the band's OFDM modes - exactly what MODE and
+  // MAXMODE accept - so a combo never offers or shows a mode the modem
+  // is not running. (The band is fixed for the life of the process.)
+  bandMaxMode_ = bandMaxMode(c.band);
+  std::vector<std::string> modes;
+  for (int m = kFirstMode; m <= bandMaxMode_; ++m) modes.push_back("M" + std::to_string(m));
+  maxModeItems_ = comboItems(modes);
+  modes.insert(modes.begin(), "AUTO");
+  modeItems_ = comboItems(modes);
   snprintf(ctl_.call, sizeof(ctl_.call), "%s", c.callsign.c_str());
-  ctl_.family = familyIndex(upperAscii(toString(c.family)));
-  ctl_.mode = c.mode >= 4 && c.mode <= 13 ? c.mode - 3 : 0;
+  ctl_.family = int(c.family);
+  ctl_.mode = modeIndex(c.mode);
   ctl_.cp = c.cpMode >= 0 && c.cpMode <= 2 ? c.cpMode + 1 : 0;
-  ctl_.maxMode = std::clamp(c.maxMode - 4, 0, 9);
+  ctl_.maxMode = std::clamp(c.maxMode - kFirstMode, 0, bandMaxMode_ - kFirstMode);
   ctl_.listen = worker_.listening();
   ctl_.monitor = worker_.monitoring();
   ctl_.cwid = c.cwId;
@@ -963,12 +996,11 @@ void Gui::refreshStatus() {
   if (!status_.family.empty() && status_.family != seenFamily_) {
     seenFamily_ = status_.family;
     ctl_.family = familyIndex(status_.family);
-    if (ctl_.family == 3) ctl_.ultra = true;
+    if (ctl_.family == int(Family::Ultra)) ctl_.ultra = true;
   }
   if (!status_.mode.empty() && status_.mode != seenMode_) {
     seenMode_ = status_.mode;
-    const int m = status_.mode[0] == 'M' ? std::atoi(status_.mode.c_str() + 1) : 0;
-    ctl_.mode = m >= 4 && m <= 13 ? m - 3 : 0;
+    ctl_.mode = modeIndex(status_.mode[0] == 'M' ? std::atoi(status_.mode.c_str() + 1) : -1);
   }
   if (!status_.call.empty() && status_.call != seenCall_) {
     seenCall_ = status_.call;
@@ -979,6 +1011,10 @@ void Gui::refreshStatus() {
     seenListen_ = listen;
     ctl_.listen = listen == "1";
   }
+}
+
+int Gui::modeIndex(int mode) const {
+  return mode >= kFirstMode && mode <= bandMaxMode_ ? mode - kFirstMode + 1 : 0;
 }
 
 bool Gui::waitIdle(int timeoutMs) {
@@ -997,7 +1033,6 @@ bool Gui::waitIdle(int timeoutMs) {
 void Gui::setNotice(std::string text, bool error) {
   notice_.text = std::move(text);
   notice_.error = error;
-  ++notice_.seq;
   noticeAt_ = double(SDL_GetTicks64()) / 1000.0;
 }
 
@@ -1014,8 +1049,9 @@ void Gui::apply(const std::string& cmd, std::function<void()> revert,
 }
 
 bool Gui::needsCallsign() {
-  if (!status_.call.empty() && status_.call != kPlaceholderCall) return false;
-  setNotice(std::string("Set your callsign first (Settings > Station): no station answers ") +
+  if (!isPlaceholderCall(status_.call)) return false;
+  setNotice(std::string("Set your callsign first (Settings > Station): the modem does not "
+                        "transmit as ") +
                 kPlaceholderCall + ".",
             true);
   return true;
@@ -1058,9 +1094,9 @@ void Gui::actMode(int prev) {
         });
 }
 void Gui::actCp(int prev) {
-  apply(std::string("CPMODE ") + kCpNames[ctl_.cp], [this, prev] { ctl_.cp = prev; },
+  apply("CPMODE " + cpArg(ctl_.cp), [this, prev] { ctl_.cp = prev; },
         [this](const std::string&) {
-          setNotice(std::string("Cyclic prefix: ") + kCpNames[ctl_.cp] + ".", false);
+          setNotice("Cyclic prefix: " + cpArg(ctl_.cp) + ".", false);
         });
 }
 
@@ -1076,10 +1112,10 @@ void Gui::actCall() {
 }
 
 void Gui::actFamily(int prev) {
-  const std::string fam = kFamilyNames[ctl_.family];
+  const std::string fam = familyName(ctl_.family);
   // Choosing ULTRA in the list is the operator's opt-in: allow it first
   // (the modem refuses FAMILY ULTRA while ultra_enable is off).
-  if (ctl_.family == 3 && !ctl_.ultra) {
+  if (ctl_.family == int(Family::Ultra) && !ctl_.ultra) {
     apply("ULTRA ON", nullptr, [this](const std::string&) { ctl_.ultra = true; });
   }
   apply("FAMILY " + fam, [this, prev] { ctl_.family = prev; },
@@ -1090,7 +1126,7 @@ void Gui::actFamily(int prev) {
         });
 }
 void Gui::actMaxMode(int prev) {
-  const std::string m = "M" + std::to_string(ctl_.maxMode + 4);
+  const std::string m = "M" + std::to_string(ctl_.maxMode + kFirstMode);
   apply("MAXMODE " + m, [this, prev] { ctl_.maxMode = prev; },
         [this, m](const std::string&) { setNotice("Highest mode: " + m + ".", false); });
 }
@@ -1123,6 +1159,7 @@ void Gui::actUltra() {
         });
 }
 void Gui::actTxTest(bool on) {
+  if (on && needsCallsign()) return;
   apply(on ? "TXTEST 5" : "TXTEST OFF", nullptr, [this, on](const std::string&) {
     setNotice(on ? "Transmitting a 5 s test burst." : "Test burst stopped.", false);
   });
@@ -1244,9 +1281,11 @@ void Gui::drawStationTab() {
   ImGui::SetNextItemWidth(160);
   {
     const int prev = ctl_.family;
-    if (ImGui::Combo("##family", &ctl_.family, "WIDE\0MID\0NARROW\0ULTRA\0")) actFamily(prev);
+    static const std::string famItems =
+        comboItems({familyName(0), familyName(1), familyName(2), familyName(3)});
+    if (ImGui::Combo("##family", &ctl_.family, famItems.c_str())) actFamily(prev);
   }
-  if (ctl_.family == 3) {
+  if (ctl_.family == int(Family::Ultra)) {
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, col::dim);
     ImGui::TextUnformatted("radio must pass ~100-2900 Hz");
@@ -1256,19 +1295,17 @@ void Gui::drawStationTab() {
   ImGui::SetNextItemWidth(160);
   {
     const int prev = ctl_.maxMode;
-    if (ImGui::Combo("##maxmode", &ctl_.maxMode, "M4\0M5\0M6\0M7\0M8\0M9\0M10\0M11\0M12\0M13\0")) {
-      actMaxMode(prev);
-    }
+    if (ImGui::Combo("##maxmode", &ctl_.maxMode, maxModeItems_.c_str())) actMaxMode(prev);
   }
   ImGui::Spacing();
   if (ImGui::Checkbox("Answer calls (listen)", &ctl_.listen)) actListen();
   if (ImGui::Checkbox("Monitor other stations", &ctl_.monitor)) actMonitor();
   if (ImGui::Checkbox("CW identification", &ctl_.cwid)) actCwid();
   // ULTRA cannot be disallowed while it is the family in use.
-  ImGui::BeginDisabled(ctl_.family == 3);
+  ImGui::BeginDisabled(ctl_.family == int(Family::Ultra));
   if (ImGui::Checkbox("Allow ULTRA family", &ctl_.ultra)) actUltra();
   ImGui::EndDisabled();
-  if (ctl_.family == 3 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+  if (ctl_.family == int(Family::Ultra) && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
     ImGui::SetTooltip("Choose another family first");
   }
   ImGui::Spacing();

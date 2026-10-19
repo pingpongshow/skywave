@@ -209,7 +209,7 @@ TEST_CASE(st2_oneway_throughput_floor) {
 // reconnect path. It does NOT reproduce either of the two real-device
 // defects that the ST3 kill/resume gate found, and it was CHECKED
 // against both: it still passes with the capture-backlog cap disabled
-// (SKW_MAX_PENDING_RX=100000) and with the ResumeInvalid fallback
+// (a large pending-capture cap) and with the ResumeInvalid fallback
 // restored to its old buggy guard. Both bugs need the real device
 // path's decode latency - a control frame sitting 10-20 s in the
 // capture ladder - which this world is far too fast to produce. Nothing

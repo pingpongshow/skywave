@@ -48,7 +48,8 @@ struct AudioConfig {
   std::string inputName;
   std::string outputName;
   double inputGainDb = 0.0;
-  double outputGainDb = 0.0;  // informational: the worker applies it (once)
+  // (No output gain here: the worker applies output_gain_db, once, so
+  // --record WAVs carry the level the radio gets.)
   // Optional second copy of the (gain-scaled) input for the GUI's
   // waterfall and level meter, so they keep moving while the worker is
   // busy decoding. Written from the audio callback; excess is dropped.
@@ -65,13 +66,12 @@ std::unique_ptr<AudioBackend> makeDeviceBackend(const AudioConfig& cfg,
                                                 SampleRing& rxRing,
                                                 SampleRing& txRing);
 
-// File-driven backend: replayPath (may be empty -> silence source of
-// `silenceSec`) feeds rxRing in real-time-sized chunks without sleeping;
-// txRing drains to recordPath (may be empty -> discard).
+// File-driven backend: the replayPath WAV (required; start() fails
+// without a readable 48 kHz file) feeds rxRing in real-time-sized chunks
+// without sleeping; txRing drains to recordPath (may be empty -> discard).
 std::unique_ptr<AudioBackend> makeFileBackend(const std::string& replayPath,
                                               const std::string& recordPath,
                                               SampleRing& rxRing,
-                                              SampleRing& txRing,
-                                              double silenceSec = 0.0);
+                                              SampleRing& txRing);
 
 }  // namespace skw

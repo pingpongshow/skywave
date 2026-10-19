@@ -1,10 +1,12 @@
 // One-shot frame receiver (ROADMAP 1.10-1.12): chirp acquisition -> ZC
-// refinement -> header decode -> payload decode.
+// refinement -> header decode -> payload decode (or, for a CSS signature,
+// CSS sync -> header -> payload).
 //
 // The DSP.md sync states map onto: ChirpDetector (SEARCH/COARSE),
 // zcRefine (FINE), ChannelTracker (TRACK + FLYWHEEL). Spectrum inversion
-// is auto-corrected from the chirp signature. The streaming worker
-// integration (continuous state machine) arrives in Phase 2.
+// is auto-corrected from the chirp signature. Streaming is the caller's:
+// the worker detects preambles continuously and hands receiveFrame
+// growing captures (DetectCache keeps the scan incremental).
 #pragma once
 
 #include <array>
@@ -81,7 +83,7 @@ struct RxFrameResult {
   bool payloadOk = false;          // all payload codewords decoded
   std::vector<uint8_t> payload;    // dewhitened link payload (header.length)
   ChirpSig sig = ChirpSig::Fast;
-  bool inverted = false;
+  bool inverted = false;  // spectrum inversion detected (and corrected)
   double cfoHz = 0.0;
   // Sync point the receiver locked to (ZC block / CSS sync), in samples
   // from the start of the span it was given: two captures of the same
@@ -116,31 +118,6 @@ struct RxFrameResult {
   std::vector<cfloat> constellation;
 };
 
-// Detect and decode the first frame of the given family in rx.
-// Returns nullopt when no preamble is detected or the header fails;
-// stageOut (optional) reports how far the receiver got. When harq is
-// provided, failed payload codewords are chase-combined with earlier
-// receptions of the same frame identity before the retry decode.
-// payloadMask: session carrier mask applied to PAYLOAD symbols only
-// (header symbols always use the full carrier set).
-// wantConstellation: fill RxFrameResult::constellation with equalized
-// payload symbols for the GUI instrument. Off by default - it costs a
-// divide per symbol and an allocation, neither of which the modem path
-// should pay.
-// CFO branch candidates between the chirp and ZC stages (see
-// receiver.cpp): each a CFO hypothesis, its delay-Doppler-corrected ZC
-// block start, and the residual fit range for the full ZC refinement,
-// in the order receiveFrame tries them against the header decode.
-struct CfoBranch {
-  double cfoHz;
-  double start;
-  double fitRangeHz;
-};
-std::vector<CfoBranch> resolveCfoBranches(Family family,
-                                          std::span<const cfloat> sig,
-                                          ChirpSig chirpSig, double cfoHz,
-                                          double zcCoarse, int zcCount);
-
 // INCREMENTAL PREAMBLE SEARCH over one growing capture. The worker's
 // retry ladder decodes the same capture again and again with longer
 // windows (2.5 -> 90 s), all starting at the same sample, and each
@@ -163,6 +140,17 @@ struct DetectCache {
   void bind(uint64_t key, Family family);
 };
 
+// Detect and decode the first frame of the given family in rx.
+// Returns nullopt when no preamble is detected or the header fails;
+// stageOut (optional) reports how far the receiver got. When harq is
+// provided, failed payload codewords are chase-combined with earlier
+// receptions of the same frame identity before the retry decode.
+// payloadMask: session carrier mask applied to PAYLOAD symbols only
+// (header symbols always use the full carrier set).
+// wantConstellation: fill RxFrameResult::constellation with equalized
+// payload symbols for the GUI instrument. Off by default - it costs an
+// allocation the modem path should not pay.
+// detCache: incremental preamble search over a growing capture (above).
 std::optional<RxFrameResult> receiveFrame(Family family,
                                           std::span<const cfloat> rx,
                                           RxStage* stageOut = nullptr,

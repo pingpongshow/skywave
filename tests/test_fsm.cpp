@@ -194,7 +194,8 @@ TEST_CASE(disconnect_paths) {
     }
     a.tick(t);
     CHECK(a.state() == FsmState::Idle);
-    CHECK(a.lastDiscCause() == FsmDiscCause::DiscRetriesExhausted);
+    // Unanswered teardown keeps the cause that started it.
+    CHECK(a.lastDiscCause() == FsmDiscCause::LocalRequest);
   }
   // Peer-initiated DISC.
   {

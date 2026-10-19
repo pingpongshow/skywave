@@ -43,7 +43,7 @@ void printHelp() {
       "  --audio-out <index|name> PortAudio output device (name preferred)\n"
       "  --list-audio             list audio devices and exit\n"
       "  --replay <wav>           feed RX from WAV file (test mode)\n"
-      "  --record <wav>           record TX audio to WAV file\n"
+      "  --record <wav>           record TX audio to WAV (with --replay)\n"
       "  --log-level <0-4>        0=TRACE .. 4=ERROR\n"
       "  --log-file <path>        log to file\n"
       "  --version                print version\n"
@@ -77,7 +77,8 @@ CliArgs parseCli(int argc, char** argv, skw::Config& cfg) {
     else if (!std::strcmp(s, "--version")) a.showVersion = true;
     else if (!std::strcmp(s, "--list-audio")) a.listAudio = true;
     else if (!std::strcmp(s, "--gui")) cfg.guiEnabled = true;
-    else if (!std::strcmp(s, "--callsign")) { if (auto* v = need(i, s)) cfg.callsign = v; }
+    // Same rule as the INI key: invalid -> placeholder (TX blocked) + WARN.
+    else if (!std::strcmp(s, "--callsign")) { if (auto* v = need(i, s)) cfg.applyEntry("station.callsign", v); }
     else if (!std::strcmp(s, "--config")) { if (auto* v = need(i, s)) a.configPath = v; }
     else if (!std::strcmp(s, "--replay")) { if (auto* v = need(i, s)) a.replayPath = v; }
     else if (!std::strcmp(s, "--record")) { if (auto* v = need(i, s)) a.recordPath = v; }
@@ -102,6 +103,7 @@ CliArgs parseCli(int argc, char** argv, skw::Config& cfg) {
   return a;
 }
 
+#ifdef SKW_HAVE_GUI
 // Name of the device at a PortAudio index ("" if none): the GUI picks by
 // index, the config stores by name.
 std::string deviceNameAt(int index) {
@@ -115,6 +117,7 @@ std::string deviceNameAt(int index) {
 int selectedDevice(const std::string& name, int index, bool input) {
   return name.empty() ? index : skw::findAudioDevice(name, input);
 }
+#endif  // SKW_HAVE_GUI
 
 }  // namespace
 
@@ -129,6 +132,13 @@ int main(int argc, char** argv) {
   if (!pre.parseOk) return 2;
   if (pre.showHelp) { printHelp(); return 0; }
   if (pre.showVersion) { std::printf("skywave %s\n", SKW_VERSION); return 0; }
+  // File mode is driven by the replay: without one there is no input, no
+  // control port and nothing to transmit, so a recording would be empty.
+  if (!pre.recordPath.empty() && pre.replayPath.empty()) {
+    std::fprintf(stderr, "--record needs --replay (file mode records the "
+                         "TX produced while replaying a WAV)\n");
+    return 2;
+  }
   if (!pre.configPath.empty()) {
     cfg = skw::Config{};
     if (!cfg.load(pre.configPath)) {
@@ -161,12 +171,12 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // Rings sized for ~1 s of audio: deep enough for scheduling hiccups.
-  // RX ring: 8 s (as the ST2 world uses). At 1 s, one long-window decode
-  // under load overran it and the audio callback dropped samples silently.
   // Band profile before anything band-dependent is built (the worker
   // re-selects it too, and rebuilds its own converters).
   skw::setActiveBand(cfg.band);
+  // RX ring: 8 s (as the ST2 world uses). At 1 s, one long-window decode
+  // under load overran it and the audio callback dropped samples silently.
+  // TX ring: 1 s; the worker stages each burst and feeds it as it drains.
   skw::SampleRing rxRing(skw::kFsAudio * 8);
   // GUI copy of the input (waterfall, level meter): written by the audio
   // callback alongside rxRing, read by the GUI on the main thread.
@@ -181,7 +191,7 @@ int main(int argc, char** argv) {
                    : skw::makeDeviceBackend(
                          {cfg.inputDevice, cfg.outputDevice,
                           cfg.inputDeviceName, cfg.outputDeviceName,
-                          cfg.inputGainDb, cfg.outputGainDb, guiTapPtr},
+                          cfg.inputGainDb, guiTapPtr},
                          rxRing, txRing);
   if (!audio->start()) return 1;
 
@@ -202,9 +212,9 @@ int main(int argc, char** argv) {
     }
     audio->finished();  // final TX drain
   } else {
-    // TCP surface (INTERFACES.md): data + control ports polled from this
-    // thread; the worker owns the modem and is bridged through its
-    // thread-safe queues. Voice port lands in Phase 5.
+    // TCP surface (INTERFACES.md): data, control and (voice builds) voice
+    // ports polled from this thread; the worker owns the modem and is
+    // bridged through its thread-safe queues.
     skw::TcpServer dataSrv, ctrlSrv, voiceSrv;
     if (!dataSrv.open(cfg.dataPort) || !ctrlSrv.open(cfg.ctrlPort)) {
       SKW_ERROR("cannot bind TCP ports %u/%u", cfg.dataPort, cfg.ctrlPort);
@@ -217,6 +227,7 @@ int main(int argc, char** argv) {
                cfg.voicePort);
     }
     skw::VoiceRecordParser voiceParse;
+    uint32_t voiceBadSeen = 0;  // malformed uplink records already logged
     uint32_t voiceTxSeq = 0;
     uint64_t voiceSamples = 0;
     uint32_t voiceGen = voiceSrv.clientGeneration();
@@ -295,6 +306,11 @@ int main(int argc, char** argv) {
           voiceParse.reset();  // a new client starts on a record boundary
         }
         voiceParse.feed(vin);
+        if (voiceParse.badRecords() != voiceBadSeen) {
+          SKW_WARN("voice port: %u malformed record(s) discarded",
+                   unsigned(voiceParse.badRecords() - voiceBadSeen));
+          voiceBadSeen = voiceParse.badRecords();
+        }
       }
       for (auto& rec : voiceParse.take()) {
         if (rec.type == skw::kVoiceRecUplink) worker.submitVoicePcm(rec.pcm);
@@ -343,7 +359,7 @@ int main(int argc, char** argv) {
         if (auto req = gui->takeAudioRequest(); req && !fileMode) {
           audio->stop();
           audio = skw::makeDeviceBackend({req->first, req->second, "", "",
-                                          cfg.inputGainDb, cfg.outputGainDb, guiTapPtr},
+                                          cfg.inputGainDb, guiTapPtr},
                                          rxRing, txRing);
           if (audio->start()) {
             worker.setOutputLatencySec(audio->outputLatencySec());
@@ -362,8 +378,7 @@ int main(int argc, char** argv) {
                                             cfg.outputDevice,
                                             cfg.inputDeviceName,
                                             cfg.outputDeviceName,
-                                            cfg.inputGainDb,
-                                            cfg.outputGainDb, guiTapPtr},
+                                            cfg.inputGainDb, guiTapPtr},
                                            rxRing, txRing);
             const bool back = audio->start();
             if (back) worker.setOutputLatencySec(audio->outputLatencySec());
@@ -398,6 +413,9 @@ int main(int argc, char** argv) {
            t.rxDecodeCalls ? double(t.rxDecodeUsTotal) / double(t.rxDecodeCalls) * 1e-3
                            : 0.0,
            double(t.rxDecodeUsMax) * 1e-3);
+  SKW_INFO("shutdown: rx captures %llu opened, %llu dropped by the backlog cap",
+           (unsigned long long)t.rxCapturesOpened,
+           (unsigned long long)t.rxCapturesDropped);
 
   // Save what the modem is running NOW: the worker's copy carries every
   // control-port change (MYCALL, FAMILY, PTT*, ENCRYPTKEY...), while

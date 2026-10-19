@@ -32,7 +32,7 @@ std::vector<uint8_t> randomBytes(size_t n) {
 TEST_CASE(envelope_round_trip) {
   LinkEnvelope e;
   e.type = LinkType::Data;
-  e.flags = kFlagCompressed | kFlagMoreFragments;
+  e.flags = kFlagEncrypted | kFlagMoreFragments;
   e.sessionId = 0xBEEF;
   e.sequence = 0x1234;
   e.ackBase = 0x00FF;
@@ -117,32 +117,36 @@ TEST_CASE(body_round_trips) {
     StartBody b;
     b.caps = kCapZstd;
     b.initialMode = 7;
-    b.cpMode = 2;
     b.maxMode = 11;
-    b.macProfile = 1;
-    b.hasResumeToken = true;
-    for (int i = 0; i < 8; ++i) b.resumeToken[size_t(i)] = uint8_t(i * 3);
     b.kexPublic = randomBytes(32);
     auto p = StartBody::parse(b.pack());
-    CHECK(p && p->initialMode == 7 && p->hasResumeToken &&
-          p->resumeToken == b.resumeToken && p->kexPublic == b.kexPublic);
+    CHECK(p && p->caps == kCapZstd && p->initialMode == 7 &&
+          p->maxMode == 11 && p->kexPublic == b.kexPublic);
   }
   {
-    StartBody b;  // no optionals
+    StartBody b;  // no KEX
     auto p = StartBody::parse(b.pack());
-    CHECK(p && !p->hasResumeToken && p->kexPublic.empty());
+    CHECK(p && p->kexPublic.empty());
+    auto raw = b.pack();
+    raw.push_back(0);  // trailing junk
+    CHECK(!StartBody::parse(raw).has_value());
   }
   {
     StartAckBody b;
     b.finalMode = 6;
+    b.maxMode = 9;
     b.kexResponse = randomBytes(32);
+    b.hasResumeToken = true;
+    for (int i = 0; i < 8; ++i) b.resumeToken[size_t(i)] = uint8_t(i * 3);
     auto p = StartAckBody::parse(b.pack());
-    CHECK(p && p->finalMode == 6 && p->kexResponse == b.kexResponse);
+    CHECK(p && p->finalMode == 6 && p->maxMode == 9 &&
+          p->kexResponse == b.kexResponse && p->hasResumeToken &&
+          p->resumeToken == b.resumeToken);
   }
-  {
-    StartNakBody b{StartNakReason::Busy};
-    auto p = StartNakBody::parse(b.pack());
-    CHECK(p && p->reason == StartNakReason::Busy);
+  for (auto r : {StartNakReason::FamilyMismatch, StartNakReason::AuthFailed,
+                 StartNakReason::ResumeInvalid}) {
+    auto p = StartNakBody::parse(StartNakBody{r}.pack());
+    CHECK(p && p->reason == r);
   }
   {
     DataBody b;
@@ -171,21 +175,20 @@ TEST_CASE(body_round_trips) {
     ProbeBody b{7, 10};
     auto p = ProbeBody::parse(b.pack());
     CHECK(p && p->probeId == 7 && p->probeMode == 10);
-    ProbeAckBody a{7, 21, 1};
+    ProbeAckBody a{7, 1};
     auto pa = ProbeAckBody::parse(a.pack());
-    CHECK(pa && pa->probeId == 7 && pa->snrHalfDb == 21 && pa->decodedOk);
+    CHECK(pa && pa->probeId == 7 && pa->decodedOk == 1);
   }
   {
     MaskUpdateBody b;
     b.epoch = 5;
-    b.family = 0;
     for (int i = 0; i < 9; ++i) b.mask[size_t(i)] = uint8_t(0xFF >> (i % 3));
     auto p = MaskUpdateBody::parse(b.pack());
     CHECK(p && p->epoch == 5 && p->mask == b.mask);
     CHECK(MaskAckBody::parse(MaskAckBody{5}.pack())->epoch == 5);
   }
   {
-    CHECK(KeepaliveBody::parse(KeepaliveBody{33}.pack())->remoteSnr == 33);
+    CHECK(KeepaliveBody::parse(KeepaliveBody{-33}.pack())->snrHalfDb == -33);
   }
   {
     ResumeReqBody b;
@@ -203,17 +206,14 @@ TEST_CASE(body_round_trips) {
     BeaconBody b;
     b.callsign = "K6XYZ";
     b.snrFloorPlus20 = 12;
-    b.family = 1;
-    b.swVersion = 1;
     auto p = BeaconBody::parse(b.pack());
     CHECK(p && p->callsign == "K6XYZ" && p->snrFloorPlus20 == 12);
   }
   {
     CqBody b;
     b.callsign = "W1AW";
-    b.caps = kCapVoice;
     auto p = CqBody::parse(b.pack());
-    CHECK(p && p->callsign == "W1AW" && p->caps == kCapVoice);
+    CHECK(p && p->callsign == "W1AW");
   }
   {
     BcastDataBody b;
@@ -250,22 +250,31 @@ TEST_CASE(body_malformed_rejects) {
   CHECK(!StartNakBody::parse(std::vector<uint8_t>{0}).has_value());
   CHECK(!StartNakBody::parse(std::vector<uint8_t>{9}).has_value());
   CHECK(!DiscBody::parse(std::vector<uint8_t>{200}).has_value());
+  CHECK(!DiscBody::parse(std::vector<uint8_t>{3}).has_value());
+  CHECK(!StartNakBody::parse(std::vector<uint8_t>{6}).has_value());
   CHECK(!VoiceOpenBody::parse(std::vector<uint8_t>{7}).has_value());
   {
     ModeChangeBody b{13, 3, 0};  // cpMode 3 invalid
     CHECK(!ModeChangeBody::parse(b.pack()).has_value());
   }
   {
-    CallBody b;  // reserved caps bit (bit 8 is kCapTurnSched now)
+    CallBody b;  // reserved caps bit (9-15)
     b.srcCall = "W1AW";
     b.dstCall = "K6XYZ";
     b.caps = 0x0200;
     CHECK(!CallBody::parse(b.pack()).has_value());
   }
   {
-    MaskUpdateBody b;
-    b.family = 7;
-    CHECK(!MaskUpdateBody::parse(b.pack()).has_value());
+    auto raw = MaskUpdateBody{}.pack();
+    raw.push_back(0);  // the former family byte
+    CHECK(!MaskUpdateBody::parse(raw).has_value());
+  }
+  {
+    // Envelope flag bit 0 (the former "compressed") is reserved now.
+    LinkEnvelope e;
+    e.type = LinkType::Data;
+    e.flags = 0x01;
+    CHECK(!parseFrame(packFrame(e, std::vector<uint8_t>{0})).has_value());
   }
   {
     BcastDataBody b;

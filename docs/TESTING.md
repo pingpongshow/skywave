@@ -16,7 +16,7 @@
 
 | Suite | Covers |
 |---|---|
-| `test_dsp` | FFT known answers, resampler flatness, Hilbert chain SNR, AGC dynamics, window properties |
+| `test_dsp` | FFT known answers, converter chain SNR, edge-ramp shape |
 | `test_chirp` | detection probability vs SNR, false-alarm rate in noise, timing/CFO accuracy |
 | `test_zc` | ZC autocorrelation properties, Schmidl–Cox metric accuracy |
 | `test_ldpc` | bit-exact encode vectors, decode thresholds per rate, shortening/puncturing |
@@ -147,9 +147,9 @@ the mislabeled axis.
 Diagnostic A/B knobs kept from the same round: `SKW_CHANCLASS_DEBUG`
 (per-frame classifier input — pilot excess, EVM, spread, verdict, by
 mode), `SKW_DRAIN_CAP_MULT` (turn-taking drain cap in handoff intervals,
-default 2; 3 halved the coupled churn), `SKW_DUP_RETRY` (count
-duplicate arrivals as retries, the pre-2026-09-06 rule; pinned seed 11
-at M6). `SKW_TURN_DEBUG` also prints `TURNSTAT` at every handover — turn
+default 2; 3 halved the coupled churn). (`SKW_DUP_RETRY`, which
+restored the pre-2026-09-06 duplicate-retry rule, was removed in the
+2026-10 code review.) `SKW_TURN_DEBUG` also prints `TURNSTAT` at every handover — turn
 duration, DATA frames, bytes and bursts sent while ISS, mode, srtt — the
 per-turn utilisation that sized the minimum hold and the HF window
 (`SKW_TURN_HOLD_RTTS`, `SKW_TURN_HOLD_MIN_SEC`, `SKW_HF_WINDOW`,

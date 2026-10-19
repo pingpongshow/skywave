@@ -60,9 +60,9 @@ TEST_CASE(css_symbol_roundtrip_all_sf_families) {
       CHECK_EQ(bb.size(), syms.size() * symLen);
       for (size_t s = 0; s < syms.size(); ++s) {
         float ratio = 0.0f;
-        const uint16_t got = cssDemodSymbol(
+        const uint16_t got = cssDemodSymbolTaps(
             f, sf, std::span<const cfloat>(bb).subspan(s * symLen, symLen),
-            &ratio);
+            {}, &ratio);
         CHECK_EQ(got, syms[s]);
         // Clean channel: one decisive matched-filter lag. The mean picks
         // up leakage from the N-1 near-zero lags, so the ratio scales

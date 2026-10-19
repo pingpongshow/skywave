@@ -15,10 +15,6 @@ namespace skw {
 
 inline constexpr uint8_t kProtocolVersion = 1;
 
-// Selectivity gate for proposing M12+ at handshake (CALL_ACK selectivity
-// index units, 0..255; deep notches make 64QAM pointless at any SNR).
-inline constexpr uint8_t kSelectivityGateM12 = 96;
-
 // Initial proposals cap at M10: the M11+ high-mode gates (retry ratio,
 // pilot stability, probes) need live traffic that does not exist yet.
 inline constexpr uint8_t kInitialModeCap = 10;
@@ -27,11 +23,9 @@ struct HandshakePolicy {
   std::string ownCall;       // canonical
   Family family = Family::Wide;
   bool ultraEnable = false;
-  bool familyFallback = true;  // unanswered ULTRA calls retry at WIDE
+  bool familyFallback = true;  // CALL retries / listening one family narrower
   uint16_t caps = 0;           // own advertised capability bitmap
   uint8_t maxMode = 13;        // config cap (AMC + proposal clamp)
-  bool busy = false;           // session already active
-  bool policyRefuse = false;   // operator/policy block hook
   // CSS deep tier (6.2): advertise CAP_CSS_TIER and alternate CALL
   // attempts onto CSS M0 so a connect can land below the OFDM robust
   // handshake floor.
@@ -59,8 +53,8 @@ struct QualityMeasurement {
 };
 
 // Highest mode justified by a quality measurement: fading floor + the AMC
-// promote margin (AmcConfig::promoteMarginDb), M12+ selectivity gate,
-// kInitialModeCap, then
+// promote margin (AmcConfig::promoteMarginDb), the AMC's M12+ selectivity
+// gate (AmcConfig::selectivityMax), kInitialModeCap, then
 // clamped to [M4, maxMode] - or [M0, maxMode] when the session committed
 // CAP_CSS_TIER (the deep tier both extends the ladder downward and is
 // the only floor that exists below the OFDM handshake threshold).
@@ -99,9 +93,6 @@ inline bool callOnCssForAttempt(const HandshakePolicy& p, int attempt) {
   return p.cssEnable && (attempt % 2) != 0;
 }
 
-// MAC burst profile id for a mode (PROTOCOL.md table rows 0/1/2).
-uint8_t macProfileForMode(uint8_t mode);
-
 // ---------------------------------------------------------------- initiator
 
 CallBody makeCall(const HandshakePolicy& p, const std::string& dstCall);
@@ -126,8 +117,8 @@ std::optional<CallAckBody> respondToCall(const HandshakePolicy& p,
                                          const CallBody& call,
                                          const QualityMeasurement& meas);
 
-// START received: accept (START_ACK, final mode = min(proposal, own view))
-// or reject with a reason. ownMeas is the responder's freshest quality
+// START received: accept (START_ACK, final mode = min(proposal, own view),
+// session max mode = min(both caps)) or reject with a reason. ownMeas is the responder's freshest quality
 // view (its measurement of the START/CALL exchange).
 std::variant<StartAckBody, StartNakBody> evaluateStart(
     const HandshakePolicy& p, const CallBody& call, const StartBody& start,

@@ -192,19 +192,18 @@ int main(int argc, char** argv) {
     for (int mode : a.modes) {
       const ModeDef& md = kModes[size_t(mode)];
       const bool cssMode = md.waveform == Waveform::Css;
-      if (!md.active) continue;
       if (cssMode ? !a.cssFrames : a.cssFrames) continue;
       // Offsets are relative to the floor that matches the channel: the
       // AWGN reference for --preset awgn, the measured fading floor for
       // the fading presets (WAVEFORM.md fading conformance annex).
       const double floor =
           a.preset == "awgn" || a.baseAwgn
-              ? (cssMode ? cssFloorDb(fam, mode) : floorDb(fam, mode))
+              ? floorDb(fam, mode)
               : tableFloorDb(a.table, fam, mode);
       if (floor >= 90.0) continue;  // kFadingNA: no fading conformance
       const bool robust = mode <= 7;
       const size_t payloadLen =
-          a.payloadLen > 0 ? size_t(std::min(a.payloadLen, 4095))
+          a.payloadLen > 0 ? std::min(size_t(a.payloadLen), kMaxPhyPayloadBytes)
                            : (robust ? 60 : 300);
 
       // Build the frame once per config; the channel varies per trial.
@@ -340,10 +339,9 @@ int main(int argc, char** argv) {
   // +3 given trial count) against the same floor family as the offsets.
   int fail = 0;
   for (const auto& r : all) {
-    const bool cssR = kModes[size_t(r.mode)].waveform == Waveform::Css;
     const double base =
         a.preset == "awgn"
-            ? (cssR ? cssFloorDb(r.fam, r.mode) : floorDb(r.fam, r.mode))
+            ? floorDb(r.fam, r.mode)
             : tableFloorDb(a.table, r.fam, r.mode);
     double off = r.snrDb - base;
     // AWGN decays as a coding waterfall (steep); fading FER is outage-

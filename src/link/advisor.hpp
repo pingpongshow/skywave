@@ -33,7 +33,6 @@ class Advisor {
   explicit Advisor(AdvisorConfig cfg) : cfg_(cfg) {}
 
   AdvisorMode mode() const { return cfg_.mode; }
-  const AdvisorConfig& config() const { return cfg_; }
 
   // --- AMC domain: SNR-trend step bias -----------------------------------
   // Feed the effective SNR once per NEW link measurement (a decoded
@@ -80,6 +79,7 @@ class Advisor {
            a.confidence >= cfg_.maskConf;
   }
 
+  // Per-session state: the engine clears it when a session connects.
   void reset();
 
   // Time span (s) of the SNR history the AMC trend is fitted over.

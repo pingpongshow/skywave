@@ -24,20 +24,12 @@ namespace {
 // the EMA runs fast for the first 8 symbols, then settles).
 constexpr int kSnrConvergedSymbols = 8;
 
-// Phase 8 receiver knobs (GAP_CLOSURE_PLAN.md): on by default; "=0"
-// restores the v1.1.0 behaviour for A/B measurement.
-bool envKnobOn(const char* name) {
-  const char* e = std::getenv(name);
-  return !(e && std::atoi(e) == 0);
-}
-bool rtsSmoothingEnabled() {  // R6
-  static const bool on = envKnobOn("SKW_RTS");
+// SKW_RX_DEBUG: per-frame receive trace on stderr.
+bool rxDebug() {
+  static const bool on = envFlag("SKW_RX_DEBUG");
   return on;
 }
-bool qNormEnabled() {  // R5
-  static const bool on = envKnobOn("SKW_QNORM");
-  return on;
-}
+
 // In-frame FLL loop gain (R2), per tracker class. Robust gain measured
 // on the full 8.2-8.5 stack (100 trials; ladders on CCIR Poor and
 // Moderate, AWGN floor+6 at 1 Hz/s drift), gains 0/0.05/0.1/0.2:
@@ -47,19 +39,12 @@ bool qNormEnabled() {  // R5
 //          loop off on Moderate; drift: all robust modes 0% except
 //          NARROW M4 10% (a 40 s frame - 40 Hz of in-frame drift)
 //   0.2  - feeds Poor's 1 Hz Doppler back: Poor NARROW M4 -7.7 -> -3.2 dB
-// Fast class 0.2 (short frames, high SNR). SKW_FLL=0 disables;
-// SKW_FLL_GAIN_FAST / _ROBUST override.
+// Fast class 0.2 (short frames, high SNR). SKW_FLL_GAIN_FAST / _ROBUST
+// override (measurement).
 double fllGain(bool robustClass) {
-  static const bool on = envKnobOn("SKW_FLL");
-  static const double fast = [] {
-    const char* e = std::getenv("SKW_FLL_GAIN_FAST");
-    return e ? std::atof(e) : 0.2;
-  }();
-  static const double robust = [] {
-    const char* e = std::getenv("SKW_FLL_GAIN_ROBUST");
-    return e ? std::atof(e) : 0.1;
-  }();
-  return on ? (robustClass ? robust : fast) : 0.0;
+  static const double fast = envDouble("SKW_FLL_GAIN_FAST", 0.2);
+  static const double robust = envDouble("SKW_FLL_GAIN_ROBUST", 0.1);
+  return robustClass ? robust : fast;
 }
 
 // Drift retry (the OFDM counterpart of the CSS drift search, 8.8): the
@@ -70,14 +55,9 @@ double fllGain(bool robustClass) {
 // both (2.5%), but a gain that high everywhere feeds CCIR Poor's Doppler
 // back (fllGain above). So a frame that fails at the class gain is
 // walked once more at this gain - frames that decode are untouched.
-// SKW_FLL_DRIFT_RETRY=0 disables; SKW_FLL_GAIN_DRIFT overrides 0.3.
-bool fllDriftRetryEnabled() { return envKnobOn("SKW_FLL_DRIFT_RETRY"); }
-bool fllDriftEstimateEnabled() { return envKnobOn("SKW_FLL_DRIFT_ESTIMATE"); }
+// SKW_FLL_GAIN_DRIFT overrides 0.3 (measurement).
 double fllDriftGain() {
-  static const double g = [] {
-    const char* e = std::getenv("SKW_FLL_GAIN_DRIFT");
-    return e ? std::atof(e) : 0.3;
-  }();
+  static const double g = envDouble("SKW_FLL_GAIN_DRIFT", 0.3);
   return g;
 }
 
@@ -94,8 +74,7 @@ double frameMeanChannelPower(Family family, std::span<const cfloat> sig,
   const float invTs = 1.0f / ofdmTimeScale(family);
   std::vector<char> cls(size_t(kFftBaseband), 0);  // 0 noise, 1 in, 2 guard
   for (int c = -6; c < n + 6; ++c) {
-    const int b = plan(family).firstBin + c - centerBin();
-    cls[size_t(b >= 0 ? b : kFftBaseband + b)] = (c >= 0 && c < n) ? 1 : 2;
+    cls[size_t(carrierToBasebandBin(family, c))] = (c >= 0 && c < n) ? 1 : 2;
   }
   Fft f(kFftBaseband);
   std::vector<cfloat> in(static_cast<size_t>(kFftBaseband)),
@@ -201,12 +180,11 @@ struct SymbolWalker {
   // Collect exactly `bits` LLRs coded at the given parameters. Returns
   // false on running out of samples.
   //
-  // With smoothing on (default; SKW_RTS=0 disables) the whole span is
-  // FFT'd and run through the tracker FIRST, then RTS-smoothed, and every
-  // group is demapped with the smoothed H of its last symbol: the frame
-  // is fully buffered, so each symbol's estimate can use the pilots
-  // AFTER it as well as before (GAP_CLOSURE_PLAN.md R6). Without it the
-  // tracker runs causally, interleaved with demapping (v1.1.0).
+  // The whole span is FFT'd and run through the tracker FIRST, then
+  // RTS-smoothed, and every group is demapped with the smoothed H of its
+  // last symbol: the frame is fully buffered, so each symbol's estimate
+  // can use the pilots AFTER it as well as before (GAP_CLOSURE_PLAN.md
+  // R6).
   bool collect(Constellation cst, int spread, CpMode cp, int bits,
                std::vector<float>& llr) {
     const int cpLen = cpSamplesAudio(cp) / kDecimation;
@@ -226,23 +204,18 @@ struct SymbolWalker {
     std::vector<std::vector<cfloat>> bins(static_cast<size_t>(nSym));
     std::vector<std::vector<cfloat>> hS(static_cast<size_t>(nSym));
     std::vector<double> nvS(static_cast<size_t>(nSym));
-    const bool smooth = rtsSmoothingEnabled();
     const double gain = fllGainOverride >= 0.0
                             ? fllGainOverride
                             : fllGain(tracker->robustClass());
-    if (smooth) tracker->beginHistory();
+    tracker->beginHistory();
     for (int k = 0; k < nSym; ++k) {
       const int64_t start = nextSampleStart + int64_t(k) * symLen + cpLen;
       if (!fftSymbol(start, bins[size_t(k)])) {
-        if (smooth) tracker->smoothHistory(hS, nvS);  // stop recording
+        tracker->smoothHistory(hS, nvS);  // stop recording
         return false;
       }
       tracker->processSymbol(bins[size_t(k)], symIdx + k);
       const auto& h = tracker->h();
-      if (!smooth) {
-        hS[size_t(k)] = h;
-        nvS[size_t(k)] = tracker->noiseVar();
-      }
       if (gain > 0.0) {
         if (fllPrevH.size() == h.size()) {
           std::complex<double> r(0, 0);
@@ -263,7 +236,7 @@ struct SymbolWalker {
         fllPrevH = h;
       }
     }
-    if (smooth) tracker->smoothHistory(hS, nvS);
+    tracker->smoothHistory(hS, nvS);
 
     int got = 0;
     for (int grp = 0; grp < nGroups; ++grp) {
@@ -316,14 +289,6 @@ struct SymbolWalker {
   }
 };
 
-std::vector<uint8_t> bitsToBytes(std::span<const uint8_t> bits) {
-  std::vector<uint8_t> out((bits.size() + 7) / 8, 0);
-  for (size_t i = 0; i < bits.size(); ++i) {
-    out[i / 8] |= uint8_t((bits[i] & 1) << (7 - i % 8));
-  }
-  return out;
-}
-
 // Deinterleave, optionally add IR info-bit priors at the systematic
 // positions (priorOff = this codeword's offset into the payload's info
 // stream), decode. sysOut (optional) receives the deinterleaved
@@ -356,6 +321,32 @@ bool decodeCodeword(const LdpcCode& code, std::vector<float>& llrInterleaved,
   return code.decode(llr, info);
 }
 
+// Removes a linear CFO drift r (Hz/s) as the quadratic phase -pi*r*t^2,
+// t in seconds from absolute sample `origin`, over src[lo, hi) into dst
+// (src == dst is fine); index 0 is absolute sample `base`. A phasor
+// recurrence - the phase has a constant second difference, so two complex
+// multiplies per sample replace a cos/sin pair - re-seeded every 4096
+// samples to bound float rounding.
+void derotateDrift(const cfloat* src, cfloat* dst, size_t lo, size_t hi,
+                   double r, double base, double origin) {
+  const double dt = 1.0 / kFsBaseband;
+  for (size_t blk = lo; blk < hi; blk += 4096) {
+    const size_t end = std::min(hi, blk + 4096);
+    const double t = (base + double(blk) - origin) * dt;
+    const double ph0 = -M_PI * r * t * t;
+    const double d1 = -M_PI * r * (2.0 * t * dt + dt * dt);  // ph(n+1)-ph(n)
+    const double d2 = -2.0 * M_PI * r * dt * dt;              // its step
+    std::complex<double> rot(std::cos(ph0), std::sin(ph0));
+    std::complex<double> step(std::cos(d1), std::sin(d1));
+    const std::complex<double> acc(std::cos(d2), std::sin(d2));
+    for (size_t n = blk; n < end; ++n) {
+      dst[n] = src[n] * cfloat(float(rot.real()), float(rot.imag()));
+      rot *= step;
+      step *= acc;
+    }
+  }
+}
+
 // CSS frame receive (WAVEFORM.md "CSS Deep Tier"): the chirp preamble
 // gave coarse timing and CFO; the two known shift-0 SF8 sync symbols
 // refine timing to the sample (CFO<->delay coupling makes any residual
@@ -379,8 +370,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // Derotate by the preamble CFO estimate once, over the maximum extent
   // a CSS frame can occupy from the coarse start.
   const double coarse =
-      hit.startSample +
-      double(chirpPattern(family, ChirpSig::Css).size()) * chirpRepSamples();
+      hit.startSample + double(chirpPreambleSamples(family, ChirpSig::Css));
   // CFO BRANCH CHECK. The preamble's fine CFO is ambiguous modulo amb
   // (6.25 Hz on HF), and a residual f moves the SF8 sync peak by
   // f * symH * spc / fs samples - on NARROW ~77 per branch. A frame one
@@ -390,19 +380,11 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // all 6 payload failures at the floor were +-6.1-6.3 Hz). So the sync
   // window spans +-1 branch where a branch is wider than the base window,
   // and a peak about a branch away moves the CFO one branch and re-syncs.
-  // SKW_CSS_BRANCH_CHECK=0 disables (A/B).
-  static const bool branchCheck = [] {
-    const char* e = getenv("SKW_CSS_BRANCH_CHECK");
-    return !(e && e[0] == '0');
-  }();
   const double branchSamples = chirpCfoAmbiguityHz(family, ChirpSig::Css) *
                                double(symH) * double(spc) / kFsBaseband;
-  static const double branchMinChips = [] {
-    const char* e = getenv("SKW_CSS_BRANCH_MIN_CHIPS");
-    return e ? atof(e) : 2.0;
-  }();
-  const bool wideSync =
-      branchCheck && branchSamples > branchMinChips * double(spc);
+  static const double branchMinChips =
+      envDouble("SKW_CSS_BRANCH_MIN_CHIPS", 2.0);
+  const bool wideSync = branchSamples > branchMinChips * double(spc);
   const bool doBranchCheck = wideSync && allowBranchCheck;
   const int W = wideSync ? int(std::ceil(branchSamples)) + 2 * spc + 8
                          : 2 * spc + 24;  // sync search half-window, samples
@@ -463,7 +445,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   if (doBranchCheck) {
     const long k = std::lround(double(dBest) / branchSamples);
     if (k != 0 && std::abs(k) <= 1) {
-      if (getenv("SKW_RX_DEBUG")) {
+      if (rxDebug()) {
         fprintf(stderr, "skw-css: branch check dBest=%d -> cfo %+.2f -> %+.2f\n",
                 dBest, cfoHz,
                 cfoHz - double(k) * chirpCfoAmbiguityHz(family, ChirpSig::Css));
@@ -472,7 +454,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
       if (!syncAt(cfoHz)) return std::nullopt;
     }
   }
-  if (getenv("SKW_RX_DEBUG")) {
+  if (rxDebug()) {
     fprintf(stderr,
             "skw-css: start=%.1f cfo=%.2f W=%d dBest=%d peak=%.3g med=%.3g "
             "ratio=%.2f\n",
@@ -482,10 +464,8 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // Sync acceptance: peak over the profile median. 3.5 -> 3.0 recovered
   // MID M0 at the floor 11.7 -> 6.7% and M1 at floor-2 dB 20 -> 13%
   // (2.5 added nothing); a false sync costs a header walk the CRC rejects.
-  static const float syncFactor = [] {
-    const char* e = getenv("SKW_CSS_SYNC_FACTOR");
-    return e ? float(atof(e)) : 3.0f;
-  }();
+  static const float syncFactor =
+      float(envDouble("SKW_CSS_SYNC_FACTOR", 3.0));
   if (med <= 0.0f || peak < syncFactor * med) return std::nullopt;  // sync fail
 
   // Persistent RAKE tap tracker. Rayleigh taps hand dominance back and
@@ -499,19 +479,13 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // second path was never a tap - whenever it dominated, every symbol
   // read 4.8 chips off (CSS on Poor: 91-100% FER at ANY SNR, measured
   // 2026-10-14). MID/NARROW chips are long enough already.
-  static const int kTapSpanMinSamples = [] {
-    const char* e = getenv("SKW_CSS_TAP_SPAN_MS");
-    return int(std::lround((e ? atof(e) : 3.0) * 1e-3 * kFsBaseband));
-  }();
+  static const int kTapSpanMinSamples = int(std::lround(
+      envDouble("SKW_CSS_TAP_SPAN_MS", 3.0) * 1e-3 * kFsBaseband));
   const int tapSpan = std::max(3 * spc, kTapSpanMinSamples);
-  static const float kFarTapPeak = [] {
-    const char* e = getenv("SKW_CSS_FAR_TAP_PEAK");
-    return e ? float(atof(e)) : 0.35f;
-  }();
-  static const float kFarTapNoise = [] {
-    const char* e = getenv("SKW_CSS_FAR_TAP_NOISE");
-    return e ? float(atof(e)) : 3.5f;
-  }();
+  static const float kFarTapPeak =
+      float(envDouble("SKW_CSS_FAR_TAP_PEAK", 0.35));
+  static const float kFarTapNoise =
+      float(envDouble("SKW_CSS_FAR_TAP_NOISE", 3.5));
   struct TapTrack {
     int delay;
     float ema;
@@ -628,72 +602,78 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     out = -slopes[slopes.size() / 2] / coupling;
     return true;
   };
-  // Header sections also collect soft bit LLRs here (see walkHeaders).
-  std::vector<float>* sectionLlr = nullptr;
-  auto walkSection = [&](int sectionSf,
-                         size_t byteCount) -> std::optional<
-                                                 std::vector<uint8_t>> {
+  // The known SF8 pilot at `at` in `buf` (indexed like rx): correlate it
+  // over +-PW samples; a pilot that clears the quality gate refreshes the
+  // tap tracker and records its peak offset. False when the samples run
+  // out. Shared by the header walk and the payload demod.
+  const int PW = tapSpan + 6;  // pilot search half-window, samples
+  auto readPilot = [&](const std::vector<cfloat>& buf, size_t at,
+                       size_t symIdx) {
+    if (buf.size() < at + size_t(2 * PW) + symH) return false;
+    std::vector<float> pp(size_t(2 * PW + 1), 0.0f);
+    for (int d = -PW; d <= PW; ++d) {
+      cfloat c(0, 0);
+      const cfloat* xr = buf.data() + long(at) + d;
+      for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
+      pp[size_t(d + PW)] = float(std::abs(c));
+    }
+    int dp = 0;
+    float pk = 0.0f;
+    // Pilot quality (peak, offset, noise median) from the 3-chip core
+    // only: the extended tap span searched more noise, and its maxima
+    // passed the gate and fed the tracker (WIDE/ULTRA AWGN ~0.5 dB).
+    const int core = std::min(PW, 3 * spc + 6);
+    for (int d = -core; d <= core; ++d) {
+      if (pp[size_t(d + PW)] > pk) {
+        pk = pp[size_t(d + PW)];
+        dp = d;
+      }
+    }
+    std::vector<float> ns;
+    for (int d = -core; d <= core; ++d) {
+      if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
+    }
+    std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2), ns.end());
+    const float nsMed = ns[ns.size() / 2];
+    // A pilot caught in a deep fade updates nothing; the tracker's
+    // remembered taps carry the block. The anchor position never jumps -
+    // per-tap delay follow absorbs clock drift.
+    if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
+      updateTaps(pp, PW, 0, nsMed, false);
+      notePilot(at, dp);
+    }
+    if (rxDebug()) {
+      fprintf(stderr, "skw-css pilot s=%zu dp=%d pk=%.3g med=%.3g taps:",
+              symIdx, dp, double(pk), double(nsMed));
+      for (const auto& t : taps) {
+        fprintf(stderr, " (%d,%.2f)", t.delay, double(t.weight));
+      }
+      fprintf(stderr, "\n");
+    }
+    return true;
+  };
+  // Walks one header section: hard symbol decisions (Hamming-decoded
+  // bytes returned) plus the soft bit LLRs appended to `llrOut`.
+  auto walkSection = [&](int sectionSf, size_t byteCount,
+                         std::vector<float>& llrOut)
+      -> std::optional<std::vector<uint8_t>> {
     const size_t symLen = cssSymbolSamples(family, sectionSf);
     const size_t nsym = cssSymbolsForBytes(byteCount, sectionSf);
-    const int PW = tapSpan + 6;
     std::vector<uint16_t> syms;
     syms.reserve(nsym);
     for (size_t s = 0; s < nsym; ++s) {
       if (s % size_t(kCssPilotInterval) == 0) {
-        if (rx.size() < pos + size_t(2 * PW) + symH) return std::nullopt;
-        std::vector<float> pp(size_t(2 * PW + 1), 0.0f);
-        for (int d = -PW; d <= PW; ++d) {
-          cfloat c(0, 0);
-          const cfloat* xr = rx.data() + long(pos) + d;
-          for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
-          pp[size_t(d + PW)] = float(std::abs(c));
-        }
-        int dp = 0;
-        float pk = 0.0f;
-        // Pilot quality (peak, offset, noise median) from the 3-chip core
-        // only: the extended tap span searched more noise, and its maxima
-        // passed the gate and fed the tracker (WIDE/ULTRA AWGN ~0.5 dB).
-        const int core = std::min(PW, 3 * spc + 6);
-        for (int d = -core; d <= core; ++d) {
-          if (pp[size_t(d + PW)] > pk) {
-            pk = pp[size_t(d + PW)];
-            dp = d;
-          }
-        }
-        std::vector<float> ns;
-        for (int d = -core; d <= core; ++d) {
-          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PW)]);
-        }
-        std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
-                         ns.end());
-        const float nsMed = ns[ns.size() / 2];
-        // A pilot caught in a deep fade updates nothing; the tracker's
-        // remembered taps carry the block. The anchor position never
-        // jumps - per-tap delay follow absorbs clock drift.
-        if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
-          updateTaps(pp, PW, 0, nsMed, false);
-          notePilot(pos, dp);
-        }
-        if (getenv("SKW_RX_DEBUG")) {
-          fprintf(stderr, "skw-css pilot s=%zu dp=%d pk=%.3g med=%.3g taps:",
-                  s, dp, double(pk), double(nsMed));
-          for (const auto& t : taps) {
-            fprintf(stderr, " (%d,%.2f)", t.delay, double(t.weight));
-          }
-          fprintf(stderr, "\n");
-        }
+        if (!readPilot(rx, pos, s)) return std::nullopt;
         pos += symH;
       }
       if (rx.size() < pos + symLen) return std::nullopt;
       syms.push_back(cssDemodSymbolTaps(
           family, sectionSf, std::span<const cfloat>(rx).subspan(pos, symLen),
           taps));
-      if (sectionLlr) {
-        cssSoftDemodSymbol(family, sectionSf,
-                           std::span<const cfloat>(rx).subspan(pos, symLen),
-                           taps, *sectionLlr);
-      }
-      if (getenv("SKW_RX_DEBUG")) {
+      cssSoftDemodSymbol(family, sectionSf,
+                         std::span<const cfloat>(rx).subspan(pos, symLen),
+                         taps, llrOut);
+      if (rxDebug()) {
         fprintf(stderr, "skw-css sym %zu = %u\n", s, unsigned(syms.back()));
       }
       pos += symLen;
@@ -709,7 +689,6 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // the saved airtime; a lost first copy on the two-copy layout still
   // recovers from copy 2 as before.
   std::optional<PhyHeader> hdr;
-  static const bool softHeader = !getenv("SKW_CSS_HARD_HEADER");  // A/B
   const size_t posAtHeader = pos;
   const auto trackAtHeader = track;
   const auto tapsAtHeader = taps;
@@ -723,9 +702,8 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     std::vector<std::vector<float>> copyLlr;
     for (int c = 0; c < copies; ++c) {
       copyLlr.emplace_back();
-      sectionLlr = softHeader ? &copyLlr.back() : nullptr;
-      auto hdrBytes = walkSection(kCssHeaderSf, kPhyHeaderBytes);
-      sectionLlr = nullptr;
+      auto hdrBytes =
+          walkSection(kCssHeaderSf, kPhyHeaderBytes, copyLlr.back());
       if (!hdrBytes) {
         copyLlr.pop_back();
         if (!hdr) {
@@ -744,30 +722,29 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     // no copy parsed: soft ML-decode each copy, then the two copies'
     // summed bit LLRs (identical symbol streams - soft combining, ~3 dB
     // on top of soft decoding). The CRC-16 still arbitrates.
-    if (!hdr && softHeader) {
+    if (!hdr) {
       for (const auto& l : copyLlr) {
-        hdr = parsePhyHeader(cssDecodeSoft(l, kCssHeaderSf, kPhyHeaderBytes));
+        hdr = parsePhyHeader(cssDecodeSoft(l, kPhyHeaderBytes));
         if (hdr) break;
       }
       if (!hdr && copyLlr.size() >= 2 &&
           copyLlr[0].size() == copyLlr[1].size()) {
         std::vector<float> sum(copyLlr[0]);
         for (size_t i = 0; i < sum.size(); ++i) sum[i] += copyLlr[1][i];
-        hdr = parsePhyHeader(cssDecodeSoft(sum, kCssHeaderSf, kPhyHeaderBytes));
+        hdr = parsePhyHeader(cssDecodeSoft(sum, kPhyHeaderBytes));
       }
       // A soft-recovered header that claims ONE copy contradicts the two
       // walked: the copy-2 samples were payload, so reject it.
       if (hdr && hdr->cssHeaderCopies == 1 && copyLlr.size() >= 2) {
         const bool fromFirst =
-            parsePhyHeader(cssDecodeSoft(copyLlr[0], kCssHeaderSf,
-                                         kPhyHeaderBytes))
+            parsePhyHeader(cssDecodeSoft(copyLlr[0], kPhyHeaderBytes))
                 .has_value();
         if (!fromFirst) hdr.reset();
       }
     }
   };
   walkHeaders();
-  if (getenv("SKW_RX_DEBUG")) {
+  if (rxDebug()) {
     fprintf(stderr, "skw-css header first pass: %s sync=%lld\n",
             hdr ? "ok" : (hdrTruncated ? "truncated" : "FAIL"),
             (long long)(region0 + W + dBest));
@@ -781,38 +758,19 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // second pass re-reads the residual). Only failed frames pay. The
   // payload then runs on the derotated samples and its own search
   // estimates what remains.
-  static const bool hdrDriftRetry = [] {
-    const char* e = getenv("SKW_CSS_DRIFT_SEARCH");
-    return !(e && std::string(e) == "0");
-  }();
   double hdrRate = 0.0;
-  for (int it = 0; !hdr && !hdrTruncated && hdrDriftRetry && it < 2; ++it) {
+  for (int it = 0; !hdr && !hdrTruncated && it < 2; ++it) {
     double r = 0.0;
     if (!slopeRate(pilotObs, r, 3) || std::abs(r) < 0.03 ||
         std::abs(hdrRate + r) > 1.0) {
       break;
     }
     hdrRate += r;
-    const double dt = 1.0 / kFsBaseband;
-    const double t0 = driftOrigin;
-    for (size_t blk = 0; blk < rx.size(); blk += 4096) {
-      const size_t end = std::min(rx.size(), blk + 4096);
-      const double t = (double(region0) + double(blk) - t0) * dt;
-      const double ph0 = -M_PI * r * t * t;
-      const double d1 = -M_PI * r * (2.0 * t * dt + dt * dt);
-      const double d2 = -2.0 * M_PI * r * dt * dt;
-      std::complex<double> rot(std::cos(ph0), std::sin(ph0));
-      std::complex<double> step(std::cos(d1), std::sin(d1));
-      const std::complex<double> acc(std::cos(d2), std::sin(d2));
-      for (size_t n = blk; n < end; ++n) {
-        rx[n] *= cfloat(float(rot.real()), float(rot.imag()));
-        rot *= step;
-        step *= acc;
-      }
-    }
+    derotateDrift(rx.data(), rx.data(), 0, rx.size(), r, double(region0),
+                  driftOrigin);
     pilotObs.clear();
     walkHeaders();
-    if (getenv("SKW_RX_DEBUG")) {
+    if (rxDebug()) {
       fprintf(stderr, "skw-css header drift retry: r=%.3f Hz/s -> %s\n",
               hdrRate, hdr ? "parsed" : "failed");
     }
@@ -845,7 +803,6 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   const size_t symLenP = cssSymbolSamples(family, sf);
   const size_t codedBits = cssPayloadCodedBits(size_t(hdr->length));
   const size_t nsymP = (codedBits + size_t(sf) - 1) / size_t(sf);
-  const int PWp = tapSpan + 6;
   const size_t payloadPos = pos;
   const auto trackAtPayload = track;
   const auto tapsAtPayload = taps;
@@ -868,37 +825,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
     ratioSum = 0.0;
     for (size_t s = 0; s < nsymP; ++s) {
       if (s % size_t(kCssPilotInterval) == 0) {
-        if (buf.size() < p + size_t(2 * PWp) + symH) return false;
-        std::vector<float> pp(size_t(2 * PWp + 1), 0.0f);
-        for (int d = -PWp; d <= PWp; ++d) {
-          cfloat c(0, 0);
-          const cfloat* xr = buf.data() + long(p) + d;
-          for (size_t n = 0; n < symH; ++n) c += xr[n] * std::conj(base[n]);
-          pp[size_t(d + PWp)] = float(std::abs(c));
-        }
-        float pk = 0.0f;
-        int dp = 0;
-        // Pilot quality (peak, offset, noise median) from the 3-chip core
-        // only: the extended tap span searched more noise, and its maxima
-        // passed the gate and fed the tracker (WIDE/ULTRA AWGN ~0.5 dB).
-        const int core = std::min(PWp, 3 * spc + 6);
-        for (int d = -core; d <= core; ++d) {
-          if (pp[size_t(d + PWp)] > pk) {
-            pk = pp[size_t(d + PWp)];
-            dp = d;
-          }
-        }
-        std::vector<float> ns;
-        for (int d = -core; d <= core; ++d) {
-          if (std::abs(d - dp) > spc) ns.push_back(pp[size_t(d + PWp)]);
-        }
-        std::nth_element(ns.begin(), ns.begin() + long(ns.size() / 2),
-                         ns.end());
-        const float nsMed = ns[ns.size() / 2];
-        if (nsMed > 0.0f && pk >= 2.5f * nsMed) {
-          updateTaps(pp, PWp, 0, nsMed, false);
-          notePilot(p, dp);
-        }
+        if (!readPilot(buf, p, s)) return false;
         p += symH;
       }
       if (buf.size() < p + symLenP) return false;
@@ -990,48 +917,23 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
   // decode the candidate whose symbols correlate best. The CRC arbitrates,
   // so a frame that decodes today is untouched and a wrong candidate
   // cannot pass. HARQ is not touched by the retry (its store holds
-  // pass 1's LLRs). SKW_CSS_DRIFT_SEARCH=0 disables it (A/B).
-  static const bool driftSearch = [] {
-    const char* e = getenv("SKW_CSS_DRIFT_SEARCH");
-    return !(e && std::string(e) == "0");
-  }();
-  if (!res.payloadOk && samplesOk && driftSearch) {
-    static const bool syncTaps = !getenv("SKW_CSS_SEARCH_HDR_TAPS");
-    if (syncTaps) {
-      startTrack = &trackAtHeader;
-      startTaps = &tapsAtHeader;
-    }
-    const double t0 = driftOrigin;
+  // pass 1's LLRs).
+  if (!res.payloadOk && samplesOk) {
+    startTrack = &trackAtHeader;
+    startTaps = &tapsAtHeader;
     // Only the payload span is re-read: derotating the whole capture
     // window (up to the 90 s ladder rung) doubled the cost for nothing.
     const size_t pilotsP = (nsymP + size_t(kCssPilotInterval) - 1) /
                            size_t(kCssPilotInterval);
-    const size_t spanLo = payloadPos > size_t(PWp) ? payloadPos - size_t(PWp) : 0;
+    const size_t spanLo = payloadPos > size_t(PW) ? payloadPos - size_t(PW) : 0;
     const size_t spanHi = std::min(rx.size(), payloadPos + nsymP * symLenP +
-                                                  pilotsP * symH + size_t(PWp) + 1);
+                                                  pilotsP * symH + size_t(PW) + 1);
     // One buffer for every candidate (it used to allocate and zero the
-    // whole capture per rate), filled by a phasor recurrence: the phase
-    // -pi*r*t^2 has a constant second difference, so two complex
-    // multiplies per sample replace a cos/sin pair. Re-seeded every
-    // 4096 samples to bound float rounding.
+    // whole capture per rate).
     std::vector<cfloat> buf(rx.size());
     auto derotate = [&](double r) -> const std::vector<cfloat>& {
-      const double dt = 1.0 / kFsBaseband;
-      for (size_t blk = spanLo; blk < spanHi; blk += 4096) {
-        const size_t end = std::min(spanHi, blk + 4096);
-        const double t = (double(region0) + double(blk) - t0) * dt;
-        const double ph0 = -M_PI * r * t * t;
-        const double d1 = -M_PI * r * (2.0 * t * dt + dt * dt);  // ph(n+1)-ph(n)
-        const double d2 = -2.0 * M_PI * r * dt * dt;              // its step
-        std::complex<double> rot(std::cos(ph0), std::sin(ph0));
-        std::complex<double> step(std::cos(d1), std::sin(d1));
-        const std::complex<double> acc(std::cos(d2), std::sin(d2));
-        for (size_t n = blk; n < end; ++n) {
-          buf[n] = rx[n] * cfloat(float(rot.real()), float(rot.imag()));
-          rot *= step;
-          step *= acc;
-        }
-      }
+      derotateDrift(rx.data(), buf.data(), spanLo, spanHi, r, double(region0),
+                    driftOrigin);
       return buf;
     };
     double bestR = 0.0, bestScore = ratio0;
@@ -1106,7 +1008,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
       tryRate(c + 0.01);
     }
     if (!bestLlr.empty()) decodePayload(bestLlr, nullptr);
-    if (getenv("SKW_RX_DEBUG")) {
+    if (rxDebug()) {
       fprintf(stderr, "skw-css drift search: est %s%.3f (%zu pilots), %d "
               "rates, best r=%.3f Hz/s score %.1f (pass 1 %.1f) -> %s\n",
               haveEst ? "" : "none ", rEst, pilotObs.size(), tried, bestR,
@@ -1125,7 +1027,7 @@ std::optional<RxFrameResult> cssReceiveFrameOnce(
 // preamble every MID M1 payload failure at floor-1 was a +-6.25/12.5 Hz
 // branch error. So a frame whose header decoded but whose payload failed
 // is re-received on the neighbouring branches, and the payload CRC
-// decides. Only failed frames pay. SKW_CSS_BRANCH_RETRY=0 disables.
+// decides. Only failed frames pay.
 std::optional<RxFrameResult> cssReceiveFrame(
     Family family, std::span<const cfloat> sig, const ChirpDetection& hit,
     double cfoHz, const std::function<void(RxStage)>& stage,
@@ -1137,11 +1039,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
   // A payload that ran out of samples is still arriving: re-receiving it
   // on other CFO branches (four full passes) only burns worker time.
   if (truncated) return res;
-  static const bool branchRetry = [] {
-    const char* e = getenv("SKW_CSS_BRANCH_RETRY");
-    return !(e && e[0] == '0');
-  }();
-  if (!res || res->payloadOk || !branchRetry) return res;
+  if (!res || res->payloadOk) return res;
   const double amb = chirpCfoAmbiguityHz(family, ChirpSig::Css);
   if (amb <= 0.0) return res;
   // Relative to the CFO the first attempt ended on, one and two branches
@@ -1155,7 +1053,7 @@ std::optional<RxFrameResult> cssReceiveFrame(
     auto r2 = cssReceiveFrameOnce(family, sig, hit, base + k * amb,
                                   [](RxStage) {}, nullptr, false);
     if (r2 && r2->payloadOk) {
-      if (getenv("SKW_RX_DEBUG")) {
+      if (rxDebug()) {
         fprintf(stderr, "skw-css: branch retry %+.2f Hz recovered the payload\n",
                 k * amb);
       }
@@ -1169,9 +1067,18 @@ std::optional<RxFrameResult> cssReceiveFrame(
 }  // namespace
 
 int irStepDownMode(int mode) {
-  if (mode == 9) return 8;    // QPSK r3/4 -> QPSK r1/2
-  if (mode == 11) return 10;  // 16QAM r3/4 -> 16QAM r1/2
-  return mode;                // r1/2 already, or 64QAM (no r1/2 rung)
+  // The r1/2 rung with the same waveform, constellation and spreading
+  // (M9 -> M8, M11 -> M10); none for 64QAM/256QAM.
+  const ModeDef& m = kModes[size_t(mode)];
+  if (m.rate.num == 1 && m.rate.den == 2) return mode;
+  for (int j = 0; j < kNumModes; ++j) {
+    const ModeDef& c = kModes[size_t(j)];
+    if (c.waveform == m.waveform && c.constellation == m.constellation &&
+        c.spread == m.spread && c.rate.num == 1 && c.rate.den == 2) {
+      return j;
+    }
+  }
+  return mode;
 }
 
 void HarqChase::storeInfoPriors(uint64_t key, std::vector<float> llrs) {
@@ -1210,6 +1117,23 @@ int HarqChase::combine(uint64_t key, std::vector<float>& llr) {
   return 1;
 }
 
+namespace {
+
+// CFO branch candidates between the chirp and ZC stages: each a CFO
+// hypothesis, its delay-Doppler-corrected ZC block start, and the
+// residual fit range for the full ZC refinement, in the order
+// receiveFrameImpl tries them against the header decode.
+struct CfoBranch {
+  double cfoHz;
+  double start;
+  double fitRangeHz;
+};
+
+bool cfoDebug() {
+  static const bool on = envFlag("SKW_CFO_DEBUG");
+  return on;
+}
+
 // CFO BRANCH RESOLUTION (GAP_CLOSURE_PLAN.md R1). The chirp detector's
 // fine CFO is exact only modulo its ambiguity spacing, and the branch it
 // picks can be wrong two ways: a slope-less pattern (fast U-U) has no
@@ -1240,9 +1164,7 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
                                           ChirpSig chirpSig, double cfoHz,
                                           double zcCoarse, int zcCount) {
   const double amb = chirpCfoAmbiguityHz(family, chirpSig);
-  if (!cfoBranchSearchEnabled() || amb <= 0.0) {
-    return {CfoBranch{cfoHz, zcCoarse, 3.0}};
-  }
+  if (amb <= 0.0) return {CfoBranch{cfoHz, zcCoarse, 3.0}};
   const double maxHz = chirpCfoCaptureMaxHz();
   const double sens = chirpStartCfoSensitivity(family, chirpSig);
   const double localRange = 0.5 * amb + 0.25;
@@ -1285,7 +1207,7 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
   add(scored[0].b);
   add(home);
   if (scored.size() > 1) add(scored[1].b);
-  if (std::getenv("SKW_CFO_DEBUG")) {
+  if (cfoDebug()) {
     std::fprintf(stderr, "cfo-branch sig=%d chirp=%+.2f amb=%.3f ->", int(chirpSig),
                  cfoHz, amb);
     for (const auto& b : out) std::fprintf(stderr, " %+.2f", b.cfoHz);
@@ -1294,33 +1216,17 @@ std::vector<CfoBranch> resolveCfoBranches(Family family,
   return out;
 }
 
-namespace {
-
+// One receive attempt from a chirp detection `hit` (receiveFrame runs
+// acquisition once and hands every attempt the same detection). `stage`
+// reports how far the attempt got.
 std::optional<RxFrameResult> receiveFrameImpl(
-    Family family, std::span<const cfloat> rx, RxStage* stageOut,
-    HarqChase* harq, const CarrierMask* payloadMask, bool wantConstellation,
-    double fllGainOverride, bool* retryable, double driftRateIn = 0.0,
+    Family family, std::span<const cfloat> rx, const ChirpDetection& hit,
+    RxStage& stageOut, HarqChase* harq, const CarrierMask* payloadMask,
+    bool wantConstellation, double fllGainOverride, bool* retryable,
+    double driftRateIn = 0.0,
     std::vector<std::pair<double, double>>* fllTrace = nullptr,
-    const ChirpDetection* forcedHit = nullptr,
-    ChirpDetection* hitOut = nullptr, bool* truncatedOut = nullptr) {
-  auto stage = [&](RxStage s) {
-    if (stageOut) *stageOut = s;
-  };
-  stage(RxStage::NoDetect);
-  // 1) Chirp acquisition.
-  std::vector<ChirpDetection> hits;
-  if (forcedHit) {
-    hits.push_back(*forcedHit);
-  } else {
-    ChirpDetector det(family);
-    const size_t chunk = 1472;
-    for (size_t i = 0; i < rx.size() && hits.empty(); i += chunk) {
-      det.process(rx.subspan(i, std::min(chunk, rx.size() - i)), hits);
-    }
-  }
-  if (hits.empty()) return std::nullopt;
-  const ChirpDetection& hit = hits.front();
-  if (hitOut) *hitOut = hit;
+    bool* truncatedOut = nullptr) {
+  auto stage = [&](RxStage s) { stageOut = s; };
   stage(RxStage::ZcFail);
 
   // Spectrum inversion auto-correct: conjugate and re-run the whole
@@ -1344,9 +1250,8 @@ std::optional<RxFrameResult> receiveFrameImpl(
   // 2) ZC refinement.
   const bool robust = robustHeaderForSig(hit.sig);
   const int zcCount = zcSymbols(robust);
-  const int reps = int(chirpPattern(family, hit.sig).size());
   const double zcCoarse =
-      hit.startSample + double(reps) * chirpRepSamples();
+      hit.startSample + double(chirpPreambleSamples(family, hit.sig));
   // CFO branch candidates, verified by the header decode (R1): the ZC
   // fit alone cannot pick the branch under fast fading (see
   // resolveCfoBranches), but a header codeword that passes LDPC + CRC can.
@@ -1375,11 +1280,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     const double delta = double(t0) - firstSym;
     std::vector<cfloat> h0 = zc.channel;
     const int n = plan(family).carriers();
-    for (int c = 0; c < n; ++c) {
-      int bin = plan(family).firstBin + c - centerBin();  // signed
-      double ph = 2.0 * M_PI * double(bin) * delta / kFftBaseband;
-      h0[size_t(c)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
-    }
+    applyTimingShift(family, h0, delta);
 
     // Initial noise guess: generous; the tracker converges within a few
     // symbols and the header codeword is long.
@@ -1396,8 +1297,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
     const double nv0 = zc.noiseVar > 0.0
                            ? std::min(zc.noiseVar, h0pow * 0.1)
                            : h0pow * 0.1;
-    const double meanChanPow =
-        qNormEnabled() ? frameMeanChannelPower(family, sig, t0, 96) : -1.0;
+    const double meanChanPow = frameMeanChannelPower(family, sig, t0, 96);
     trackerSlot.emplace(family, robust, std::move(h0), nv0, meanChanPow);
     walkerSlot.emplace(SymbolWalker{family, sig, zc.cfoHz, t0, 0,
                                     &*trackerSlot});
@@ -1451,7 +1351,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
   bool ok = true;
   if (size_t(hdr->length) > piggy) {
     const ModeDef& md = kModes[size_t(hdr->mode)];
-    if (md.waveform != Waveform::Ofdm || !md.active) return std::nullopt;
+    if (md.waveform != Waveform::Ofdm) return std::nullopt;
     size_t restBits = (size_t(hdr->length) - piggy) * 8;
     // Payload phase: apply the session carrier mask (header symbols used
     // the full set). The tracker skips masked pilots; its delay-domain
@@ -1464,7 +1364,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
         effectiveMask(payloadMask, family, int(hdr->mode));
     walker.mask = walkMask;
     tracker.setMask(walkMask);
-    walker.leftoverCopies = leftoverCopiesEnabled();
+    walker.leftoverCopies = true;
     // Burst containers repack on retransmission: identical-codeword
     // combining cannot be guaranteed, so HARQ is bypassed for them.
     if (hdr->frameType == kBurstContainerFrameType) harq = nullptr;
@@ -1554,7 +1454,7 @@ std::optional<RxFrameResult> receiveFrameImpl(
           harq->onDecodeSuccess(key);
         }
       }
-      if (getenv("SKW_RX_DEBUG")) {
+      if (rxDebug()) {
         fprintf(stderr, "skw-rx: cw=%zu n=%d dec=%d nvar=%.3g snr=%.1f\n",
                 cw, pcode.n(), int(dec), tracker.noiseVar(),
                 tracker.snrDb());
@@ -1771,30 +1671,32 @@ std::optional<RxFrameResult> receiveFrame(Family family,
                                           DetectCache* detCache) {
   // Detect once here: the attempts below (primary, runner-up signature,
   // drift retry) all start from this same detection.
+  // The stage is tracked here, whether or not the caller asked for it:
+  // the retries below depend on it (P1 - the runner-up retry used to run
+  // only for callers that passed stageOut).
+  RxStage stage = RxStage::NoDetect;
+  auto finish = [&](std::optional<RxFrameResult> r) {
+    if (stageOut) *stageOut = stage;
+    return r;
+  };
   const auto first = detectFirst(family, rx, detCache);
-  if (!first) {
-    if (stageOut) *stageOut = RxStage::NoDetect;
-    return std::nullopt;
-  }
+  if (!first) return finish(std::nullopt);
+  const ChirpDetection& hit = *first;
   bool retryable = false;
   std::vector<std::pair<double, double>> trace;
-  ChirpDetection hit{};
-  hit.family = family;
   bool truncated = false;
-  auto res = receiveFrameImpl(family, rx, stageOut, harq, payloadMask,
+  auto res = receiveFrameImpl(family, rx, hit, stage, harq, payloadMask,
                               wantConstellation, -1.0, &retryable, 0.0,
-                              &trace, &*first, &hit, &truncated);
-  // RUNNER-UP SIGNATURE (ChirpDetection::hasAlt): near the floor a slope
+                              &trace, &truncated);
+  // RUNNER-UP SIGNATURE (ChirpDetection::alts): near the floor a slope
   // slot flips and a CSS preamble reads as robust/calling (or the other
   // way round), sending the frame down the wrong receive path. When the
   // winner's path found no header, try the runner-up's; a wrong guess
   // costs one sync/ZC search and the header CRC still arbitrates.
-  // SKW_CHIRP_ALT=0 disables (A/B).
-  static const bool altOn = envKnobOn("SKW_CHIRP_ALT");
   // Not on a capture that ran out (the frame is still arriving: the next,
   // longer capture decides) - each alternate is a full receive attempt.
-  if (!res && !truncated && hit.nAlt > 0 && altOn && stageOut &&
-      (*stageOut == RxStage::ZcFail || *stageOut == RxStage::HeaderFail)) {
+  if (!res && !truncated && hit.nAlt > 0 &&
+      (stage == RxStage::ZcFail || stage == RxStage::HeaderFail)) {
     for (int k = 0; k < hit.nAlt; ++k) {
       ChirpDetection alt = hit;
       alt.sig = hit.alts[k].sig;
@@ -1803,20 +1705,20 @@ std::optional<RxFrameResult> receiveFrame(Family family,
       alt.cfoHz = hit.alts[k].cfoHz;
       alt.nAlt = 0;
       RxStage stAlt = RxStage::NoDetect;
-      auto resAlt = receiveFrameImpl(family, rx, &stAlt, harq, payloadMask,
-                                     wantConstellation, -1.0, nullptr, 0.0,
-                                     nullptr, &alt, nullptr);
-      if (std::getenv("SKW_RX_DEBUG")) {
+      auto resAlt = receiveFrameImpl(family, rx, alt, stAlt, harq,
+                                     payloadMask, wantConstellation, -1.0,
+                                     nullptr);
+      if (rxDebug()) {
         std::fprintf(stderr, "skw-rx: alt signature %d (primary %d) -> %s\n",
                      int(alt.sig), int(hit.sig), resAlt ? "header" : "fail");
       }
       if (resAlt) {
-        *stageOut = stAlt;
-        return resAlt;
+        stage = stAlt;
+        return finish(std::move(resAlt));
       }
     }
   }
-  if (!retryable || !fllDriftRetryEnabled()) return res;
+  if (!retryable) return finish(std::move(res));
   // Drift estimate for the retry: the first walk's FLL frequency follows
   // a linear drift with a constant lag, so its SLOPE is the drift rate
   // even where the lag broke the decode. Least squares over the trace
@@ -1825,7 +1727,7 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   // loop alone left NARROW M4/M5 at 2 Hz/s failing 10-17.5% (a second-
   // order loop was measured too: 10% at best, unstable above).
   double rate = 0.0;
-  if (fllDriftEstimateEnabled() && trace.size() >= 16) {
+  if (trace.size() >= 16) {
     const size_t a = trace.size() / 4;
     double st = 0, sf = 0, stt = 0, stf = 0;
     const double n = double(trace.size() - a);
@@ -1844,18 +1746,19 @@ std::optional<RxFrameResult> receiveFrame(Family family,
   // of the same samples would count it twice. A frame that decodes here
   // leaves its HARQ entries to age out, as the CSS drift search does.
   RxStage st2 = RxStage::NoDetect;
-  auto res2 = receiveFrameImpl(family, rx, &st2, nullptr, payloadMask,
+  auto res2 = receiveFrameImpl(family, rx, hit, st2, nullptr, payloadMask,
                                wantConstellation, fllDriftGain(), nullptr,
-                               rate, nullptr, &*first);
-  if (!res2) return res;
-  if (res && res->payloadOk) return res;
-  if (res && !res2->payloadOk) return res;  // keep the first header pass
-  if (std::getenv("SKW_RX_DEBUG")) {
+                               rate);
+  if (!res2) return finish(std::move(res));
+  if (res && res->payloadOk) return finish(std::move(res));
+  // keep the first header pass
+  if (res && !res2->payloadOk) return finish(std::move(res));
+  if (rxDebug()) {
     std::fprintf(stderr, "skw-rx: drift retry (rate %.2f Hz/s) recovered %s\n",
                  rate, res ? "payload" : "header");
   }
-  if (stageOut) *stageOut = st2;
-  return res2;
+  stage = st2;
+  return finish(std::move(res2));
 }
 
 }  // namespace skw

@@ -40,7 +40,7 @@ These decisions were made deliberately and are binding unless revisited:
 | [WAVEFORM.md](WAVEFORM.md) | OFDM numerology, bandwidth families, mode ladder, sync, spreading, FEC |
 | [PROTOCOL.md](PROTOCOL.md) | Session model, frame formats, handshake, ARQ/HARQ, resume, beacons |
 | [LINK_ADAPTATION.md](LINK_ADAPTATION.md) | Adaptive mode control (AMC), channel memory, probing, carrier masking |
-| [DSP.md](DSP.md) | RX/TX signal chains, sync algorithms, equalization, AGC, interference tools, CCA |
+| [DSP.md](DSP.md) | RX/TX signal chains, sync algorithms, equalization, input/TX levels, CCA |
 | [INTERFACES.md](INTERFACES.md) | TCP data/control/voice ports, command set, notifications, PTT, companion split |
 | [SECURITY.md](SECURITY.md) | Key exchange, frame protection, epochs, rotation, legal posture |
 | [VOICE.md](VOICE.md) | Codec2 integration, voice session control, mode mapping |

@@ -13,14 +13,28 @@
 #include <vector>
 
 #include "core/log.hpp"
+#include "core/strutil.hpp"
+#include "link/frame.hpp"
 
 namespace skw {
 namespace {
 
-std::string lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  return s;
+std::string lower(std::string s) { return toLower(std::move(s)); }
+
+// Keys earlier builds wrote that no longer do anything. Dropped on load
+// with a WARN (not preserved as unknown keys), so the next save removes
+// them from the file.
+bool isRetiredKey(const std::string& full) {
+  static const char* kRetired[] = {
+      "tcp.bind_addr",       "modem.impulse_blanker", "modem.multi_notch",
+      "modem.freq_align",    "modem.invert_correct",  "modem.turn_taking",
+      "gui.waterfall",       "gui.constellation",     "modem.probe_promote",
+      "modem.pre_tx_cca",
+  };
+  for (const char* k : kRetired) {
+    if (full == k) return true;
+  }
+  return false;
 }
 
 std::string trim(const std::string& s) {
@@ -74,7 +88,7 @@ bool parseDouble(const std::string& v, double& out) {
   } catch (...) { return false; }
 }
 
-// "auto" -> -1, "m7"/"7" -> 7 (clamped to active ladder for mode fields).
+// "auto" -> -1, "m7"/"7" -> 7 (any ladder index; callers range-check).
 bool parseModeSel(const std::string& v, int& out) {
   std::string s = lower(v);
   if (s == "auto") { out = -1; return true; }
@@ -86,29 +100,15 @@ bool parseModeSel(const std::string& v, int& out) {
 }
 
 bool parseCpSel(const std::string& v, int& out) {
-  std::string s = lower(v);
-  if (s == "auto") { out = -1; return true; }
-  if (s == "short") { out = 0; return true; }
-  if (s == "medium") { out = 1; return true; }
-  if (s == "long") { out = 2; return true; }
-  return false;
+  if (lower(v) == "auto") { out = -1; return true; }
+  auto cp = cpModeFromString(v);
+  if (!cp) return false;
+  out = int(*cp);
+  return true;
 }
 
 std::string cpSelToString(int cp) {
-  switch (cp) {
-    case 0: return "short";
-    case 1: return "medium";
-    case 2: return "long";
-    default: return "auto";
-  }
-}
-
-// Highest mode the table marks active: what `max_mode = auto` means.
-int highestActiveMode() {
-  for (int i = kNumModes - 1; i >= 0; --i) {
-    if (kModes[size_t(i)].active) return i;
-  }
-  return kFirstMode;
+  return cp >= 0 && cp <= 2 ? lower(toString(CpMode(cp))) : "auto";
 }
 
 std::string modeSelToString(int m) {
@@ -120,19 +120,21 @@ std::string modeSelToString(int m) {
 
 }  // namespace
 
-bool callsignValid(const std::string& call) {
-  if (call.size() < 3 || call.size() > 12) return false;
-  std::string up = call;
-  std::transform(up.begin(), up.end(), up.begin(),
-                 [](unsigned char c) { return char(std::toupper(c)); });
-  if (up == "N0CALL") return false;
-  for (char c : up) {
-    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '/')) return false;
-  }
-  return true;
+bool isPlaceholderCall(const std::string& call) {
+  return call.empty() || toUpper(call) == kPlaceholderCall;
 }
 
-bool Config::callsignValid() const { return skw::callsignValid(callsign); }
+int bandMaxMode(Band b) { return b == Band::VhfFm ? 14 : 13; }
+
+const char* toString(CpMode cp) { return cpModeName(cp); }
+
+std::optional<CpMode> cpModeFromString(std::string s) {
+  s = toUpper(std::move(s));
+  for (CpMode cp : {CpMode::Short, CpMode::Medium, CpMode::Long}) {
+    if (s == toString(cp)) return cp;
+  }
+  return std::nullopt;
+}
 
 std::string toString(PttMethod m) {
   switch (m) {
@@ -156,23 +158,19 @@ std::optional<PttMethod> pttMethodFromString(std::string s) {
 }
 
 std::string toString(HarqMode m) {
-  switch (m) {
-    case HarqMode::Auto: return "auto";
-    case HarqMode::Chase: return "chase";
-    case HarqMode::Ir: return "ir";
-  }
-  return "auto";
+  return m == HarqMode::Chase ? "chase" : "ir";
 }
 
 std::optional<HarqMode> harqModeFromString(std::string s) {
   s = lower(std::move(s));
-  if (s == "auto") return HarqMode::Auto;
   if (s == "chase") return HarqMode::Chase;
   if (s == "ir") return HarqMode::Ir;
   return std::nullopt;
 }
 
-std::string toString(Family f) { return lower(plan(f).name); }
+// The family's identity name (the HF table's): on VHF-FM every family
+// index resolves to one "VHF" plan, whose name would not parse back.
+std::string toString(Family f) { return lower(kFamilies[size_t(f)].name); }
 
 std::optional<Family> familyFromString(std::string s) {
   s = lower(std::move(s));
@@ -227,15 +225,27 @@ bool parseIniFile(const std::string& path, IniEntries& out,
 bool Config::load(const std::string& path) {
   IniEntries entries;
   if (!parseIniFile(path, entries)) return false;
-  for (const auto& [full, val] : entries) applyEntry(full, val);
+  applyEntries(entries);
   return true;
+}
+
+void Config::applyEntries(const IniEntries& entries) {
+  for (const auto& [full, val] : entries) {
+    if (full == "modem.band") applyEntry(full, val);
+  }
+  for (const auto& [full, val] : entries) applyEntry(full, val);
 }
 
 void Config::applyEntry(const std::string& full, const std::string& val) {
   {
     bool known = true;
     bool okv = true;
-    if (full == "station.callsign") callsign = val;
+    if (full == "station.callsign") {
+      // The wire's own rule (validateCallsign), stored canonical. An
+      // invalid callsign leaves the placeholder, which refuses to transmit.
+      if (auto v = validateCallsign(val)) callsign = *v;
+      else { callsign = kPlaceholderCall; okv = val.empty(); }
+    }
     else if (full == "station.cw_id") okv = parseBool(val, cwId);
     else if (full == "station.cw_wpm") okv = parseInt(val, cwWpm);
     else if (full == "audio.input_device") parseAudioDevice(val, inputDevice, inputDeviceName);
@@ -245,7 +255,6 @@ void Config::applyEntry(const std::string& full, const std::string& val) {
     else if (full == "tcp.data_port") { int p; okv = parseInt(val, p); if (okv) dataPort = uint16_t(p); }
     else if (full == "tcp.ctrl_port") { int p; okv = parseInt(val, p); if (okv) ctrlPort = uint16_t(p); }
     else if (full == "tcp.voice_port") { int p; okv = parseInt(val, p); if (okv) voicePort = uint16_t(p); }
-    else if (full == "tcp.bind_addr") bindAddr = val;
     else if (full == "ptt.method") { auto m = pttMethodFromString(val); okv = m.has_value(); if (m) pttMethod = *m; }
     else if (full == "ptt.target") pttTarget = val;
     else if (full == "ptt.baud") okv = parseInt(val, pttBaud);
@@ -258,48 +267,77 @@ void Config::applyEntry(const std::string& full, const std::string& val) {
     else if (full == "modem.ultra_enable") okv = parseBool(val, ultraEnable);
     else if (full == "modem.family_fallback") okv = parseBool(val, familyFallback);
     else if (full == "modem.css_tier") okv = parseBool(val, cssTier);
-    else if (full == "modem.mode") okv = parseModeSel(val, mode);
+    else if (full == "modem.mode") {
+      // A pin is one of the band's OFDM modes (what MODE accepts); the
+      // CSS rungs M0-M3, and M14 off VHF-FM, are refused.
+      int m = 0;
+      okv = parseModeSel(val, m) &&
+            (m < 0 || (m >= kFirstMode && m <= bandMaxMode(band)));
+      if (okv) mode = m;
+    }
     else if (full == "modem.max_mode") {
       // A ceiling, not a selector: "auto" (-1) once flowed on as uint8_t
       // 255 - past the AMC floor tables and into START, where the peer
-      // rejected it. Auto = the highest active mode; numbers clamp into
-      // the active OFDM range.
+      // rejected it. Auto = the band's highest mode; numbers outside the
+      // band's OFDM range clamp into it (with a WARN).
       int m = 0;
       okv = parseModeSel(val, m);
       if (okv) {
-        maxMode = m < 0 ? highestActiveMode()
-                        : std::clamp(m, kFirstMode, highestActiveMode());
+        const int top = bandMaxMode(band);
+        maxMode = m < 0 ? top : std::clamp(m, kFirstMode, top);
+        if (m >= 0 && m != maxMode) {
+          SKW_WARN("config: modem.max_mode '%s' outside m%d..m%d; using m%d",
+                   val.c_str(), kFirstMode, top, maxMode);
+        }
       }
     }
     else if (full == "modem.cp_mode") okv = parseCpSel(val, cpMode);
     else if (full == "modem.listen") okv = parseBool(val, listen);
     else if (full == "modem.max_retries") okv = parseInt(val, maxRetries);
-    else if (full == "modem.harq") { auto h = harqModeFromString(val); okv = h.has_value(); if (h) harq = *h; }
+    else if (full == "modem.harq") {
+      auto h = harqModeFromString(val);
+      okv = h.has_value();
+      if (h) {
+        harq = *h;
+      } else if (lower(val) == "auto") {
+        // Earlier builds' "auto" behaved exactly as "ir".
+        harq = HarqMode::Ir;
+        okv = true;
+        SKW_WARN("config: modem.harq = auto is now 'ir' (same behaviour)");
+      }
+    }
     else if (full == "modem.channel_memory") okv = parseBool(val, channelMemory);
     else if (full == "modem.carrier_masking") okv = parseBool(val, carrierMasking);
-    else if (full == "modem.turn_taking") okv = parseBool(val, turnTaking);
     else if (full == "modem.resume") okv = parseBool(val, resume);
-    else if (full == "modem.impulse_blanker") okv = parseBool(val, impulseBlanker);
-    else if (full == "modem.multi_notch") okv = parseBool(val, multiNotch);
-    else if (full == "modem.freq_align") okv = parseBool(val, freqAlign);
-    else if (full == "modem.invert_correct") okv = parseBool(val, invertCorrect);
     else if (full == "modem.tx_watchdog_s") okv = parseDouble(val, txWatchdogSec);
     else if (full == "crypto.enabled") okv = parseBool(val, cryptoEnabled);
-    else if (full == "crypto.psk") cryptoPsk = val;
+    else if (full == "crypto.psk") {
+      // Exactly 32 bytes of hex (what ENCRYPTKEY accepts) or empty. Other
+      // text used to be decoded leniently into a garbage key.
+      okv = val.empty() || (val.size() == 64 && hexDecode(val).has_value());
+      cryptoPsk = okv ? val : std::string();
+    }
     else if (full == "voice.codec") voiceCodec = lower(val);
     else if (full == "voice.broadcast_mode") okv = parseModeSel(val, voiceBroadcastMode);
     else if (full == "gui.enabled") okv = parseBool(val, guiEnabled);
     else if (full == "gui.width") okv = parseInt(val, guiWidth);
     else if (full == "gui.height") okv = parseInt(val, guiHeight);
-    else if (full == "gui.waterfall") okv = parseBool(val, guiWaterfall);
-    else if (full == "gui.constellation") okv = parseBool(val, guiConstellation);
     else if (full == "log.level") okv = parseInt(val, logLevel);
     else if (full == "log.file") logFile = val;
     else known = false;
 
-    if (!known) {
+    if (!known && isRetiredKey(full)) {
+      SKW_WARN("config: '%s' is no longer used; dropped", full.c_str());
+    } else if (!known) {
       SKW_WARN("config: unknown key '%s' preserved", full.c_str());
       unknownKeys[full] = val;
+    } else if (!okv && full == "crypto.psk") {
+      // Never echo key material into the log.
+      SKW_WARN("config: crypto.psk is not 64 hex digits; no key loaded");
+    } else if (!okv && full == "station.callsign") {
+      SKW_WARN("config: invalid callsign '%s' (3-12 of A-Z 0-9 /); "
+               "transmitting is blocked until one is set",
+               val.c_str());
     } else if (!okv) {
       SKW_WARN("config: bad value for '%s': '%s' (keeping default)",
                full.c_str(), val.c_str());
@@ -340,7 +378,6 @@ IniEntries Config::toEntries() const {
   put("tcp.data_port", num(dataPort));
   put("tcp.ctrl_port", num(ctrlPort));
   put("tcp.voice_port", num(voicePort));
-  put("tcp.bind_addr", bindAddr);
   unknown("tcp");
   put("ptt.method", toString(pttMethod));
   put("ptt.target", pttTarget);
@@ -361,12 +398,7 @@ IniEntries Config::toEntries() const {
   put("modem.harq", toString(harq));
   put("modem.channel_memory", b(channelMemory));
   put("modem.carrier_masking", b(carrierMasking));
-  put("modem.turn_taking", b(turnTaking));
   put("modem.resume", b(resume));
-  put("modem.impulse_blanker", b(impulseBlanker));
-  put("modem.multi_notch", b(multiNotch));
-  put("modem.freq_align", b(freqAlign));
-  put("modem.invert_correct", b(invertCorrect));
   put("modem.tx_watchdog_s", num(txWatchdogSec));
   unknown("modem");
   put("crypto.enabled", b(cryptoEnabled));
@@ -378,8 +410,6 @@ IniEntries Config::toEntries() const {
   put("gui.enabled", b(guiEnabled));
   put("gui.width", num(guiWidth));
   put("gui.height", num(guiHeight));
-  put("gui.waterfall", b(guiWaterfall));
-  put("gui.constellation", b(guiConstellation));
   unknown("gui");
   put("log.level", num(logLevel));
   put("log.file", logFile);
@@ -478,7 +508,7 @@ IniEntries mergeIniEntries(const Config& base, const Config& live,
   // Disk values normalised through the same parser (so "yes" == "true"),
   // used only to decide whether the operator really changed a known key.
   Config diskCfg;
-  for (const auto& [k, v] : disk) diskCfg.applyEntry(k, v);
+  diskCfg.applyEntries(disk);
   const auto Dn = toMap(diskCfg.toEntries());
   const auto schema = toMap(Config{}.toEntries());  // known keys only
 
@@ -514,7 +544,7 @@ IniEntries mergeIniEntries(const Config& base, const Config& live,
   // Keys only on disk: the operator added them while the modem ran (keep),
   // unless the base had them and the runtime dropped them.
   for (const auto& [k, dv] : disk) {
-    if (inLive.count(k) || B.count(k)) continue;
+    if (inLive.count(k) || B.count(k) || isRetiredKey(k)) continue;
     bool dup = false;
     for (const auto& [ok, ov] : out) {
       if (ok == k) { dup = true; break; }

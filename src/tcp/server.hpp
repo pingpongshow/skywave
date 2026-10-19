@@ -18,8 +18,8 @@ class TcpServer {
   TcpServer& operator=(const TcpServer&) = delete;
 
   // Bind + listen on 127.0.0.1:port (port 0 = ephemeral). False on error.
+  // Loopback only, by design: there is no bind-address setting.
   bool open(uint16_t port);
-  void close();
   uint16_t boundPort() const { return boundPort_; }
 
   // Accept/refuse pending connections (one client policy: extras are
@@ -40,7 +40,6 @@ class TcpServer {
   // dropped once its backlog passes kTxBufferCap.
   void send(const std::vector<uint8_t>& bytes);
   void send(const std::string& s);
-  void dropClient();
   size_t txBacklog() const { return txBuf_.size(); }
 
   // Enough to ride out a GUI client that pauses for a few frames during a
@@ -53,6 +52,8 @@ class TcpServer {
 
  private:
   void flush();
+  void close();       // client and listener (destructor, re-open)
+  void dropClient();  // client only (EOF, error, stalled reader)
 
   int listen_ = -1;
   int client_ = -1;

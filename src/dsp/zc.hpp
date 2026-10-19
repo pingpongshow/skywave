@@ -2,9 +2,10 @@
 //
 // A ZC sequence of length = family carrier count is mapped onto the active
 // carriers of one OFDM symbol. The sync block transmits identical copies
-// back-to-back (fast class: 2, robust class: 4). The receiver refines the
-// chirp detector's coarse timing/CFO handoff via matched-filter timing and
-// Schmidl-Cox-style pair-phase CFO, and seeds the equalizer's channel
+// back-to-back (band profile zcSymbolsFast / zcSymbolsRobust: 3 / 6 on HF,
+// 2 / 4 on VHF-FM). The receiver refines the chirp detector's coarse
+// timing/CFO handoff via matched-filter timing and an ML frequency fit over
+// the per-symbol matched-filter outputs, and seeds the equalizer's channel
 // estimate.
 //
 // Sync symbols always use MEDIUM CP: they precede the PHY header, so the
@@ -34,14 +35,18 @@ std::vector<cfloat> zcFreqSequence(Family family);
 // One time-domain ZC sync symbol at 12 kHz baseband (CP + core), unit RMS.
 std::vector<cfloat> makeZcSymbol(Family family);
 
-// nSymbols identical ZC symbols back-to-back (2 = fast, 4 = robust).
+// nSymbols identical ZC symbols back-to-back (zcSymbols(robust)).
 std::vector<cfloat> makeZcBlock(Family family, int nSymbols);
+
+// Re-reference a per-carrier channel estimate (index 0 = the family's
+// first carrier) to an FFT window `samples` later: the linear phase a
+// timing shift puts across the carriers.
+void applyTimingShift(Family family, std::span<cfloat> h, double samples);
 
 struct ZcSyncResult {
   bool ok = false;
   double blockStart = 0.0;  // refined start of the ZC block within rx span
   double cfoHz = 0.0;       // fused CFO (prior x measurement, by variance)
-  double cfoSigmaHz = 0.0;  // estimated std dev of cfoHz
   float quality = 0.0f;     // coherent-combining quality in [0, 1]
   // Coherent ML-fit power |sum_s m_s e^{-jws}|^2 at the fitted residual:
   // the metric receiveFrame compares across CFO branch hypotheses.
@@ -73,10 +78,5 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                       double coarseStart, double priorCfoHz,
                       double priorCfoSigmaHz, int nSymbols,
                       int searchRadius = 24, double fitRangeHz = 3.0);
-
-// CFO branch resolution (receiveFrame) and the wrong-branch prior gate
-// above. On by default; SKW_CFO_BRANCH=0 restores the v1.1.0 handoff for
-// A/B measurement.
-bool cfoBranchSearchEnabled();
 
 }  // namespace skw

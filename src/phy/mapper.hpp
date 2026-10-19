@@ -1,11 +1,11 @@
-// Gray-coded constellation mapping (WAVEFORM.md ladder: QPSK/16QAM/64QAM),
-// unit average power.
+// Gray-coded constellation mapping (WAVEFORM.md ladder: QPSK, 16QAM, 64QAM,
+// and 256QAM for the VHF-FM M14 rung), unit average power. The soft
+// demapper is demapLlr (equalizer.hpp).
 #pragma once
 
 #include <complex>
+#include <cmath>
 #include <cstdint>
-#include <span>
-#include <vector>
 
 #include "core/constants.hpp"
 
@@ -14,7 +14,7 @@ namespace skw {
 using cfloat = std::complex<float>;
 
 // Per-axis Gray mapping of `bits` bits to amplitude levels:
-// 1 bit: {+1,-1}; 2 bits: {+3,+1,-1,-3} Gray-ordered; 3 bits likewise.
+// 1 bit: {+1,-1}; 2 bits: {+3,+1,-1,-3} Gray-ordered; 3 and 4 bits likewise.
 inline float grayAxis(uint32_t v, int bits) {
   // Gray decode to index, then map index i -> (max - 2i).
   uint32_t g = v;
@@ -51,21 +51,7 @@ inline cfloat mapSymbol(Constellation c, uint32_t bits) {
   return {0, 0};
 }
 
-// Map a bit stream (one bit per byte, MSB-first grouping) to symbols.
-inline std::vector<cfloat> mapBits(Constellation c,
-                                   std::span<const uint8_t> bits) {
-  const int bps = bitsPerSymbol(c);
-  std::vector<cfloat> out;
-  out.reserve(bits.size() / size_t(bps) + 1);
-  for (size_t i = 0; i + size_t(bps) <= bits.size(); i += size_t(bps)) {
-    uint32_t v = 0;
-    for (int b = 0; b < bps; ++b) v = (v << 1) | (bits[i + size_t(b)] & 1);
-    out.push_back(mapSymbol(c, v));
-  }
-  return out;
-}
-
-// Hard demap (test support; soft LLR demapper arrives with the RX chain).
+// Hard demap (test support: mapper round trips; the receiver uses demapLlr).
 inline uint32_t hardDemap(Constellation c, cfloat s) {
   uint32_t best = 0;
   float bestD = 1e30f;

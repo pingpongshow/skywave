@@ -14,8 +14,6 @@ class Whitener {
   explicit Whitener(uint32_t seed = kSeedWhitener)
       : seed_(seed & 0x1FFFF ? seed & 0x1FFFF : 0x1u), state_(seed_) {}
 
-  void reset() { state_ = seed_; }
-
   uint8_t nextByte() {
     uint8_t out = 0;
     for (int i = 0; i < 8; ++i) {
@@ -31,7 +29,7 @@ class Whitener {
     for (uint8_t& b : data) b ^= nextByte();
   }
 
-  uint32_t state() const { return state_; }
+  uint32_t state() const { return state_; }  // test support (LFSR period)
 
  private:
   uint32_t seed_;

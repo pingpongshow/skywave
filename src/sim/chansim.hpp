@@ -86,7 +86,6 @@ class Chansim {
   double cfoPhase_ = 0.0;
   uint64_t cfoN_ = 0;  // samples since start, for the drift term
   double tonePhase_ = 0.0;
-  uint64_t samplesOut_ = 0;
 };
 
 }  // namespace skw

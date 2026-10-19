@@ -23,7 +23,7 @@ struct ControlBackend {
   virtual bool connectTo(const std::string& call) = 0;  // false: bad state
   virtual bool disconnect() = 0;
   virtual void abortSession() = 0;
-  virtual bool setListen(bool on) = 0;
+  virtual void setListen(bool on) = 0;  // always accepted
   virtual bool listening() = 0;
 
   virtual std::string fsmState() = 0;   // IDLE/LISTENING/...
@@ -34,8 +34,9 @@ struct ControlBackend {
   virtual std::string family() = 0;
   virtual bool setFamily(const std::string& fam) = 0;  // IDLE/LISTENING only
   virtual int maxMode() = 0;
+  // False: not one of the band's OFDM modes (kFirstMode..bandMaxMode).
   virtual bool setMaxMode(int mode) = 0;
-  virtual bool setMonitor(bool on) = 0;
+  virtual void setMonitor(bool on) = 0;  // always accepted
   virtual bool monitoring() = 0;
   virtual bool txTest(double seconds) = 0;  // false: refused
   virtual void txTestStop() = 0;            // TXTEST OFF: end it now
@@ -48,10 +49,10 @@ struct ControlBackend {
   virtual bool cwId() = 0;
   virtual void setCwId(bool on) = 0;
   virtual std::string modeStr() = 0;             // "AUTO(M9)" or "M6"
-  virtual bool setMode(const std::string& m) = 0;  // "M4".."M13"|"AUTO"
+  virtual bool setMode(const std::string& m) = 0;  // "M<n>" (band's OFDM modes) | "AUTO"
   virtual std::string cpModeStr() = 0;           // AUTO/SHORT/MEDIUM/LONG
   virtual bool setCpMode(const std::string& m) = 0;
-  virtual std::string harqStr() = 0;             // AUTO/CHASE/IR
+  virtual std::string harqStr() = 0;             // CHASE/IR
   virtual bool setHarq(const std::string& m) = 0;
   // Feature toggles: CHANMEM / PROBE / MASKING / RESUME / ULTRA. A
   // feature that cannot be switched off refuses OFF (setFeature false).
@@ -91,7 +92,9 @@ struct ControlBackend {
 
 // Uppercases the verb, dispatches, returns the single response line.
 // Unknown commands: "ERROR:UNKNOWN". Bad arguments: "ERROR:BADARG".
-// State refusals: "ERROR:STATE".
+// State refusals: "ERROR:STATE" - including every transmitting command
+// (CONNECT, CQ, BEACON, BCAST, TXTEST, VOICESTART, VOICEPTT ON) while the
+// callsign is the placeholder (N0CALL or empty).
 std::string handleControlLine(const std::string& line, ControlBackend& be);
 
 // ------------------------------------------------- notification formatting

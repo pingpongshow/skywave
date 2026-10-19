@@ -1,9 +1,11 @@
 #include "tcp/control.hpp"
 
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+
+#include "core/config.hpp"
+#include "core/strutil.hpp"
 
 namespace skw {
 namespace {
@@ -23,10 +25,7 @@ std::vector<std::string> tokenize(const std::string& line) {
   return tok;
 }
 
-std::string upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return s;
-}
+std::string upper(std::string s) { return toUpper(std::move(s)); }
 
 std::string onOff(bool v) { return v ? "ON" : "OFF"; }
 
@@ -37,6 +36,27 @@ std::optional<bool> parseOnOff(const std::string& s) {
   return std::nullopt;
 }
 
+// "M<n>" -> n; -1 for anything else.
+int parseModeArg(const std::string& a) {
+  if (a.size() < 2 || a.size() > 3 || a[0] != 'M') return -1;
+  int m = 0;
+  for (size_t i = 1; i < a.size(); ++i) {
+    if (a[i] < '0' || a[i] > '9') return -1;
+    m = m * 10 + (a[i] - '0');
+  }
+  return m;
+}
+
+// Commands that put a signal on the air. With the placeholder callsign
+// (N0CALL or empty: CONFIGURATION.md) every one of them is refused, so an
+// unconfigured station never transmits.
+bool transmits(const std::string& verb, const std::vector<std::string>& tok) {
+  if (verb == "TXTEST") return tok.size() > 1 && upper(tok[1]) != "OFF";
+  if (verb == "VOICEPTT") return tok.size() > 1 && upper(tok[1]) == "ON";
+  return verb == "CONNECT" || verb == "CQ" || verb == "BEACON" ||
+         verb == "BCAST" || verb == "VOICESTART";
+}
+
 }  // namespace
 
 std::string handleControlLine(const std::string& line, ControlBackend& be) {
@@ -44,6 +64,12 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
   if (tok.empty()) return "ERROR:UNKNOWN";
   const std::string verb = upper(tok[0]);
   const size_t argc = tok.size() - 1;
+  // (A compiled-out voice command still answers UNSUPPORTED, below.)
+  const bool voiceVerb = verb.rfind("VOICE", 0) == 0;
+  if (transmits(verb, tok) && (!voiceVerb || be.voiceSupported()) &&
+      isPlaceholderCall(be.myCall())) {
+    return "ERROR:STATE";
+  }
 
   if (verb == "MYCALL") {
     if (argc == 0) return "MYCALL " + be.myCall();
@@ -66,7 +92,8 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
     if (argc == 0) return "LISTEN " + onOff(be.listening());
     auto v = parseOnOff(tok[1]);
     if (!v) return "ERROR:BADARG";
-    return be.setListen(*v) ? "LISTEN " + onOff(*v) : "ERROR:STATE";
+    be.setListen(*v);
+    return "LISTEN " + onOff(*v);
   }
   if (verb == "STATUS") {
     if (argc == 1 && upper(tok[1]) == "JSON") {
@@ -87,18 +114,16 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
   }
   if (verb == "MAXMODE") {
     if (argc == 0) return "MAXMODE M" + std::to_string(be.maxMode());
-    std::string a = upper(tok[1]);
-    if (a.size() < 2 || a[0] != 'M') return "ERROR:BADARG";
-    int m = atoi(a.c_str() + 1);
-    if (m < 4 || m > 13) return "ERROR:BADARG";
-    return be.setMaxMode(m) ? "MAXMODE M" + std::to_string(m)
-                            : "ERROR:STATE";
+    // The backend owns the range (the band's OFDM modes).
+    const int m = parseModeArg(upper(tok[1]));
+    return m >= 0 && be.setMaxMode(m) ? "MAXMODE M" + std::to_string(m)
+                                      : "ERROR:BADARG";
   }
   if (verb == "MONITOR") {
     if (argc == 0) return "MONITOR " + onOff(be.monitoring());
     auto v = parseOnOff(tok[1]);
     if (!v) return "ERROR:BADARG";
-    be.setMonitor(*v);
+    be.setMonitor(*v);  // always accepted
     return "MONITOR " + onOff(*v);
   }
   if (verb == "TXTEST") {
@@ -108,7 +133,7 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
       return "TXTEST OFF";
     }
     double sec = atof(tok[1].c_str());
-    if (sec <= 0.0 || sec > 30.0) return "ERROR:BADARG";
+    if (sec <= 0.0 || sec > kTxTestMaxSec) return "ERROR:BADARG";
     return be.txTest(sec) ? "TXTEST " + tok[1] : "ERROR:STATE";
   }
   if (verb == "VERSION") return "VERSION " + be.version();
@@ -118,23 +143,10 @@ std::string handleControlLine(const std::string& line, ControlBackend& be) {
   if (verb == "BEACON") return be.beacon() ? "BEACON" : "ERROR:STATE";
   if (verb == "BCAST") {
     if (argc != 1) return "ERROR:BADARG";
-    const std::string& h = tok[1];
-    if (h.size() < 2 || (h.size() % 2) != 0) return "ERROR:BADARG";
-    std::vector<uint8_t> payload;
-    payload.reserve(h.size() / 2);
-    for (size_t i = 0; i < h.size(); i += 2) {
-      auto nib = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return -1;
-      };
-      const int hi = nib(h[i]), lo = nib(h[i + 1]);
-      if (hi < 0 || lo < 0) return "ERROR:BADARG";
-      payload.push_back(uint8_t(hi << 4 | lo));
-    }
-    return be.bcast(payload) ? "BCAST " + std::to_string(payload.size())
-                             : "ERROR:BADARG";
+    auto payload = hexDecode(tok[1]);
+    if (!payload || payload->empty()) return "ERROR:BADARG";
+    return be.bcast(*payload) ? "BCAST " + std::to_string(payload->size())
+                              : "ERROR:BADARG";
   }
   if (verb == "CWID") {
     if (argc == 0) return "CWID " + onOff(be.cwId());
@@ -291,15 +303,8 @@ std::string evtTxWatchdog(double seconds) {
 
 std::string evtBroadcast(const std::string& src,
                          const std::vector<uint8_t>& payload) {
-  std::string hex;
-  hex.reserve(payload.size() * 2);
-  char b[4];
-  for (uint8_t v : payload) {
-    snprintf(b, sizeof(b), "%02X", v);
-    hex += b;
-  }
   return "EVT:BROADCAST " + (src.empty() ? std::string("?") : src) + " " +
-         hex;
+         hexEncode(payload);
 }
 
 std::string monLine(const std::string& src, const std::string& dst,

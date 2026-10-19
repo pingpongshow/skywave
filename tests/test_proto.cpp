@@ -49,7 +49,8 @@ TEST_CASE(proto_zstd_roundtrip_and_cap) {
 }
 
 TEST_CASE(proto_marker_and_threshold) {
-  // Compressible payload with zstd negotiated -> 0x5A marker + flag.
+  // Compressible payload with zstd negotiated -> 0x5A marker (the marker
+  // alone says so: no envelope flag).
   {
     ProtoTx tx;
     ProtoRx rx;
@@ -58,7 +59,7 @@ TEST_CASE(proto_marker_and_threshold) {
     tx.submit(msg, 0.0);
     auto s = tx.nextSegment(4096, 1.0);  // past the coalesce window
     CHECK(s.has_value());
-    CHECK((s->flags & kFlagCompressed) != 0);
+    CHECK_EQ(int(s->flags), 0);
     CHECK_EQ(int(s->bytes[0]), int(kProtoMarkerZstd));
     CHECK(s->bytes.size() < 200);  // actually compressed
     rx.onSegment(s->flags, s->bytes);
@@ -74,7 +75,6 @@ TEST_CASE(proto_marker_and_threshold) {
               0.0);
     auto s = tx.nextSegment(4096, 1.0);
     CHECK(s.has_value());
-    CHECK((s->flags & kFlagCompressed) == 0);
     CHECK_EQ(int(s->bytes[0]), int(kProtoMarkerStored));
   }
   // zstd NOT negotiated: compressible data stays stored.
@@ -85,7 +85,6 @@ TEST_CASE(proto_marker_and_threshold) {
     tx.submit(msg, 0.0);
     auto s = tx.nextSegment(4096, 1.0);
     CHECK(s.has_value());
-    CHECK((s->flags & kFlagCompressed) == 0);
     CHECK_EQ(int(s->bytes[0]), int(kProtoMarkerStored));
   }
 }

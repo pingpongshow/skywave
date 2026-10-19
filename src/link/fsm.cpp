@@ -55,6 +55,7 @@ void SessionFsm::enterConnected(double now) {
   deadline_ = 0.0;
   lastRxTime_ = now;
   lastTxTime_ = now;
+  lastKeepaliveReqAt_ = now;
   emit(FsmAction::IndicateConnected);
 }
 
@@ -66,21 +67,21 @@ void SessionFsm::cmdConnect(double now) {
   armResponse(now, cfg_.timings.callSec, cfg_.timings.callAckSec);
 }
 
-void SessionFsm::cmdDisconnect(double now) {
+void SessionFsm::cmdDisconnect(double now, FsmDiscCause cause) {
   if (state_ == FsmState::Idle || state_ == FsmState::Disconnecting) return;
   state_ = FsmState::Disconnecting;
   attemptsLeft_ = cfg_.discAttempts - 1;
   emit(FsmAction::SendDisc);
   timeoutSec_ = 2.0 * cfg_.timings.discSec + 3.0;
   deadline_ = now + timeoutSec_;
-  discCause_ = FsmDiscCause::LocalRequest;
+  discCause_ = cause;
 }
 
-void SessionFsm::cmdAbort(double /*now*/) {
+void SessionFsm::cmdAbort(double /*now*/, FsmDiscCause cause) {
   if (state_ == FsmState::Idle) return;
   state_ = FsmState::Idle;
   deadline_ = 0.0;
-  discCause_ = FsmDiscCause::LocalRequest;
+  discCause_ = cause;
   emit(FsmAction::IndicateDisconnected);
 }
 
@@ -133,10 +134,10 @@ void SessionFsm::rxStartNak(double /*now*/) {
   toIdle(FsmDiscCause::StartNak);
 }
 
-void SessionFsm::rxDisc(double /*now*/) {
+void SessionFsm::rxDisc(double /*now*/, bool fault) {
   if (state_ == FsmState::Idle) return;
   emit(FsmAction::SendDiscAck);
-  toIdle(FsmDiscCause::PeerRequest);
+  toIdle(fault ? FsmDiscCause::LinkLost : FsmDiscCause::PeerRequest);
 }
 
 void SessionFsm::rxDiscAck(double /*now*/) {
@@ -202,11 +203,19 @@ void SessionFsm::tick(double now) {
       // keepaliveSec. A station that is receiving is in a live session
       // and must not key over the sender (a deep-tier IRS between ACKs
       // keyed a CSS keepalive into the DATA window).
+      // The action is a REQUEST: the engine decides whether a keepalive
+      // actually goes out (only the initiator probes; neither end while
+      // data is moving) and reports real transmissions via txTraffic().
+      // Marking it as sent here made a responder, whose own requests are
+      // dropped, believe it had just transmitted - so it never answered
+      // the initiator's keepalive and the initiator idled out 120 s into
+      // every quiet session.
       if (cfg_.keepaliveEnabled &&
           now - lastTxTime_ >= cfg_.keepaliveSec &&
-          now - lastRxTime_ >= cfg_.keepaliveSec) {
+          now - lastRxTime_ >= cfg_.keepaliveSec &&
+          now - lastKeepaliveReqAt_ >= cfg_.keepaliveSec) {
         emit(FsmAction::SendKeepalive);
-        lastTxTime_ = now;
+        lastKeepaliveReqAt_ = now;
       }
       break;
     case FsmState::Disconnecting:
@@ -216,7 +225,9 @@ void SessionFsm::tick(double now) {
           emit(FsmAction::SendDisc);
           deadline_ = now + timeoutSec_;
         } else {
-          toIdle(FsmDiscCause::DiscRetriesExhausted);
+          // Unanswered teardown: the session still ends for the reason
+          // it was torn down (see HandshakeTimings).
+          toIdle(discCause_);
         }
       }
       break;

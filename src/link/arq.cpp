@@ -16,6 +16,14 @@ void ArqTx::setTimeout(double sec) {
 }
 
 double ArqTx::timeoutSec() const {
+  return std::clamp(unclampedTimeoutSec() * backoff_, 4.0, 90.0);
+}
+
+double ArqTx::baseTimeoutSec() const {
+  return std::clamp(unclampedTimeoutSec(), 4.0, 90.0);
+}
+
+double ArqTx::unclampedTimeoutSec() const {
   double t = openLoopSec_;
   if (srtt_ > 0.0) {
     // The full Jacobson/Karels variance term, deliberately UNCAPPED.
@@ -33,13 +41,7 @@ double ArqTx::timeoutSec() const {
     // to prevent.
     t = std::max(t, srtt_ + 4.0 * rttvar_);
   }
-  return std::clamp(t * backoff_, 4.0, 90.0);
-}
-
-double ArqTx::baseTimeoutSec() const {
-  double t = openLoopSec_;
-  if (srtt_ > 0.0) t = std::max(t, srtt_ + 4.0 * rttvar_);
-  return std::clamp(t, 4.0, 90.0);
+  return t;
 }
 
 void ArqTx::sampleRtt(double rttSec) {

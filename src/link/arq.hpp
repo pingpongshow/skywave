@@ -130,7 +130,6 @@ class ArqTx {
   // by the new sender's piggybacked ack_base meanwhile); resuming
   // re-arms a fresh deadline for whatever is still outstanding.
   void setSuspended(bool s, double now);
-  bool suspended() const { return suspended_; }
   // Frames requeued by ACK timeout since the last call (cleared). A
   // burst that is never acknowledged is the ONLY failure evidence a
   // sender gets when the peer heard nothing at all - on a half-duplex
@@ -146,7 +145,6 @@ class ArqTx {
   // (< peerNextSeq), requeue everything still pending with fresh retry
   // budgets, keep the sequence counter - the sequence space continues.
   void resumeFrom(uint16_t peerNextSeq, double now);
-  uint16_t nextSeq() const { return nextSeq_; }
 
  private:
   struct Pending {
@@ -167,6 +165,8 @@ class ArqTx {
   // grows during an RTO-paced retry run, so measuring against the
   // backed-off value would never let a dead peer time out).
   double baseTimeoutSec() const;
+  // max(open-loop floor, srtt + 4 rttvar): the shared body of both.
+  double unclampedTimeoutSec() const;
   // Release the front pending frame, sampling its RTT when unambiguous.
   void releaseFront(double now);
   void sampleRtt(double rttSec);

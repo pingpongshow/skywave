@@ -31,11 +31,6 @@ class Monitor {
   // Feed a received capture; returns an event when a frame decoded.
   std::optional<MonitorEvent> rxBurst(std::span<const cfloat> samples);
 
-  int decodedFrames() const { return decoded_; }
-
-  // Callsign the last decoded frame was attributed to ("?" when unknown).
-  const std::string& lastSource() const { return lastSrc_; }
-
   // Completed BCAST_DATA reassemblies (fragment chains joined), each
   // paired with the callsign it was attributed to. Chains are kept per
   // sender, so overlapping broadcasts no longer corrupt each other.
@@ -45,7 +40,6 @@ class Monitor {
     bcastOut_.clear();
     return out;
   }
-  size_t openBroadcastChains() const { return bcastChains_.size(); }
 
  private:
   Family family_;
@@ -76,6 +70,12 @@ class Monitor {
   std::string lastDst_ = "*";
   int decoded_ = 0;
 };
+
+// On-air span of a received burst from its decoded PHY header alone (the
+// header survives payload failure). `mask`: the carrier mask the sender
+// applied, when known (a session's own RX mask); 0 for an unknown mode.
+double headerAirtimeSec(Family f, const RxFrameResult& r,
+                        const CarrierMask* mask = nullptr);
 
 // INTERFACES.md data-port binary record.
 std::vector<uint8_t> makeMonitorRecord(uint8_t frameType, Family family,

@@ -23,7 +23,6 @@ ChanMemKey key(uint32_t remote = 0xABCDE, int32_t bucket = 7100) {
 ChanMemStats stats(uint8_t mode, double retry = 0.0) {
   ChanMemStats s;
   s.stableMode = mode;
-  s.snrDb = 15.0;
   s.retryRatio = retry;
   return s;
 }

@@ -125,7 +125,6 @@ add_library(skywave_core STATIC
   src/link/mask.cpp
   src/link/monitor.cpp
   src/proto/pipeline.cpp
-  src/proto/filesvc.cpp
   src/tcp/server.cpp
   src/tcp/control.cpp
   src/fec/crc.cpp
@@ -234,7 +233,7 @@ if(BUILD_TESTS)
   skw_test(test_m3_ramp)
   skw_test(test_system)
   skw_test(test_proto)
-  skw_test(test_file)
+  skw_test(test_resume)
   skw_test(test_bcast)
   # test_st2 runs over the HALF-DUPLEX world by default: each station
   # deaf while its own PTT is keyed and for the TX/RX switching interval

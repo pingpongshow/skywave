@@ -48,31 +48,9 @@ TEST_CASE(promote_requires_margin_dwell_consecutive) {
   CHECK(a.evaluate(7.0).kind == AmcDecision::Kind::None);
   auto d = a.evaluate(8.0);
   CHECK(d.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(d.targetMode), 9);  // single step: maxPromoteStep is 1
+  CHECK_EQ(int(d.targetMode), 9);  // single step, however rich the SNR
   a.onModeApplied(9, 8.0);
   CHECK_EQ(int(a.mode()), 9);
-  // With multi-rung promotion enabled (measured and left off by
-  // default, see AmcConfig::maxPromoteStep) the same abundant SNR takes
-  // two rungs, bounded by the step and by the skip headroom.
-  AmcConfig two = cfg();
-  two.maxPromoteStep = 2;
-  Amc m(two, 8, 0.0);
-  cleanFrames(m);
-  m.onLocalSnr(25.0);
-  m.evaluate(7.0);
-  auto dm = m.evaluate(8.0);
-  CHECK(dm.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(dm.targetMode), 10);
-  // Enough margin for the next rung but not for the one above it: a
-  // single step even with skipping enabled.
-  Amc c(two, 8, 0.0);
-  cleanFrames(c);
-  c.onLocalSnr(floorOf(10) + two.promoteMarginDb + two.skipHeadroomDb -
-               0.1 + 1.5);
-  c.evaluate(7.0);
-  auto dc = c.evaluate(8.0);
-  CHECK(dc.kind == AmcDecision::Kind::Promote);
-  CHECK_EQ(int(dc.targetMode), 9);
   // SNR just below the next promote margin: no promotion.
   Amc b(cfg(), 8, 0.0);
   cleanFrames(b);
@@ -123,20 +101,19 @@ TEST_CASE(demote_rules) {
   }
 }
 
-TEST_CASE(fast_demote_and_degraded) {
+TEST_CASE(fast_demote_and_bottom_rung) {
   Amc a(cfg(), 10, 0.0);
   a.onLocalSnr(30.0);
   for (int i = 0; i < 16; ++i) a.onFrameResult(i % 3 != 0, true);  // ~0.66
   auto d = a.evaluate(0.5);  // dwell waived
   CHECK(d.kind == AmcDecision::Kind::FastDemote);
   CHECK_EQ(int(d.targetMode), 8);  // two steps
-  // At the bottom rung: DEGRADED instead of demotion.
+  // At the bottom rung there is nowhere to go: no decision.
   Amc b(cfg(), 4, 0.0);
   b.onLocalSnr(-20.0);
   for (int i = 0; i < 16; ++i) b.onFrameResult(true, false);
   auto db = b.evaluate(1.0);
   CHECK(db.kind == AmcDecision::Kind::None);
-  CHECK(b.degraded());
 }
 
 TEST_CASE(high_mode_gates) {
@@ -267,32 +244,6 @@ TEST_CASE(failure_memory_holds_promotion_and_doubles) {
   CHECK(a.evaluate(114.0).kind == AmcDecision::Kind::Promote);
 }
 
-TEST_CASE(moderate_class_caps_ladder_at_m8) {
-  // MODERATE with the cap enabled (off by default): no promotion above
-  // M8 however rich the SNR (eligibility only - a ladder already above
-  // the cap is left to the failure rules, never force-walked down); the
-  // cap lifts with the verdict.
-  AmcConfig capped = cfg();
-  capped.moderateMaxMode = 8;
-  Amc a(capped, 8, 0.0);
-  cleanFrames(a);
-  a.onLocalSnr(35.0);
-  a.setChannelClass(ChannelClass::Moderate);
-  a.evaluate(7.0);
-  CHECK(a.evaluate(8.0).kind == AmcDecision::Kind::None);  // M9 ineligible
-  Amc b(capped, 10, 0.0);
-  cleanFrames(b);
-  b.onLocalSnr(35.0);
-  b.setChannelClass(ChannelClass::Moderate);
-  CHECK(b.evaluate(7.0).kind == AmcDecision::Kind::None);   // no walk-down
-  CHECK(b.evaluate(14.0).kind == AmcDecision::Kind::None);  // no promote
-  a.setChannelClass(ChannelClass::Fading);  // Good again: cap lifts
-  a.evaluate(20.0);
-  auto p = a.evaluate(21.0);
-  CHECK(p.kind == AmcDecision::Kind::Promote);
-  CHECK(int(p.targetMode) >= 9);  // past the lifted cap
-}
-
 TEST_CASE(failure_memory_ignores_snr_explained_demotions) {
   // A floor-break demotion is explained by the SNR; the SNR coming back
   // is exactly what should let the ladder climb again - no box.
@@ -322,7 +273,6 @@ TEST_CASE(max_mode_255_stays_in_table) {
   // bounded by the mode table whatever maxMode says.
   AmcConfig c = cfg();
   c.maxMode = 255;
-  c.maxPromoteStep = 4;
   Amc a(c, 12, 0.0);
   cleanFrames(a);
   a.onLocalSnr(60.0);

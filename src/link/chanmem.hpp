@@ -20,12 +20,13 @@ struct ChanMemKey {
   bool operator==(const ChanMemKey&) const = default;
 };
 
+// What recommend() consumes - nothing else is kept. (SNR, decode-failure
+// ratio and selectivity were once stored as well and never read: the
+// live handshake measurement already carries them, and a stored
+// selectivity could never bind below the M10 initial-proposal cap.)
 struct ChanMemStats {
   uint8_t stableMode = 4;
-  double snrDb = 0.0;
   double retryRatio = 0.0;
-  double decodeFailRatio = 0.0;
-  uint8_t selectivity = 0;
 };
 
 class ChannelMemory {

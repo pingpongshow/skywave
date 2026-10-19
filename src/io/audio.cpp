@@ -163,12 +163,12 @@ class DeviceBackend final : public AudioBackend {
 class FileBackend final : public AudioBackend {
  public:
   FileBackend(std::string replayPath, std::string recordPath, SampleRing& rx,
-              SampleRing& tx, double silenceSec)
+              SampleRing& tx)
       : replayPath_(std::move(replayPath)), recordPath_(std::move(recordPath)),
-        rx_(rx), tx_(tx), silenceSec_(silenceSec) {}
+        rx_(rx), tx_(tx) {}
 
   bool start() override {
-    if (!replayPath_.empty()) {
+    {
       WavData wav;
       if (!wavRead(replayPath_, wav)) {
         SKW_ERROR("replay: cannot read %s", replayPath_.c_str());
@@ -182,8 +182,6 @@ class FileBackend final : public AudioBackend {
       source_ = std::move(wav.samples);
       SKW_INFO("replay: %zu samples (%.2f s) from %s", source_.size(),
                double(source_.size()) / kFsAudio, replayPath_.c_str());
-    } else {
-      source_.assign(size_t(silenceSec_ * kFsAudio), 0.0f);
     }
     return true;
   }
@@ -221,7 +219,6 @@ class FileBackend final : public AudioBackend {
   std::string recordPath_;
   SampleRing& rx_;
   SampleRing& tx_;
-  double silenceSec_;
   std::vector<float> source_;
   size_t srcPos_ = 0;
   std::vector<float> recorded_;
@@ -268,10 +265,8 @@ std::unique_ptr<AudioBackend> makeDeviceBackend(const AudioConfig& cfg,
 std::unique_ptr<AudioBackend> makeFileBackend(const std::string& replayPath,
                                               const std::string& recordPath,
                                               SampleRing& rxRing,
-                                              SampleRing& txRing,
-                                              double silenceSec) {
-  return std::make_unique<FileBackend>(replayPath, recordPath, rxRing, txRing,
-                                       silenceSec);
+                                              SampleRing& txRing) {
+  return std::make_unique<FileBackend>(replayPath, recordPath, rxRing, txRing);
 }
 
 }  // namespace skw

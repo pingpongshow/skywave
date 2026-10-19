@@ -1,6 +1,6 @@
 // Adaptive mode controller (LINK_ADAPTATION.md "AMC Controller"): input
 // aggregation, promote/demote with hysteresis and dwell, high-mode gates,
-// fast-demote paths, DEGRADED flag, manual pinning with the fast-demote
+// fast-demote paths, failure memory, manual pinning with the fast-demote
 // safety rule. Pure logic, injected time; the link layer feeds
 // observations and executes the returned decisions via MODE_CHANGE (3.2).
 #pragma once
@@ -17,16 +17,10 @@
 namespace skw {
 
 struct AmcConfig {
-  // Optional hard caps per channel class (operator overrides; 13 = off).
-  // Until v1.2.0 these encoded measurements - Severe at M7 ("nothing
-  // above the robust tier closes on CCIR Poor") and Moderate at M8 ("the
-  // fast tier fails 25-75% on Moderate at any SNR"). The v1.2.0 receiver
-  // closes WIDE M10 on Poor and M13 on Moderate, so the classes now
-  // select MEASURED tables instead (constants.hpp kModerateFloors /
-  // kPoorFloors, Amc::operatingFloorDb), where kFadingNA marks the modes
-  // that genuinely never close on that channel.
-  uint8_t severeMaxMode = 13;
-  uint8_t moderateMaxMode = 13;
+  // (Channel classes select MEASURED floor tables - constants.hpp
+  // kModerateFloors / kPoorFloors, Amc::operatingFloorDb - where
+  // kFadingNA marks the modes that never close on that channel. Until
+  // v1.2.0 they acted through hard per-class mode caps instead.)
   Family family = Family::Wide;
   uint8_t maxMode = 13;
   // Bottom rung: kFirstMode (M4) normally, 0 when the session
@@ -85,34 +79,13 @@ struct AmcConfig {
   // shorter than one promote-fail cycle at the fast tier (~40 s), so
   // the repeat counter never advanced past one.
   int failHoldMaxDoublings = 4;  // 30 s -> 240 s (x airtime cadence)
-  // PROMOTION STEP. One rung per decision costs one MODE_CHANGE round
-  // trip per rung, so the climb rate is set by the exchange latency, not
-  // by the channel: on the M3 ramp the AMC trails the oracle by 1-3
-  // rungs the whole way up, and the gap widens with frame airtime
-  // (measured at a 20 s robust-tier frame cap: M6/M7/M10 where the
-  // oracle is at M8/M10/M11). A two-rung step is taken only when the
-  // upper rung clears its floor by skipHeadroomDb ON TOP of the ordinary
-  // promote margin and the retry window is clean - the same evidence
-  // two sequential single steps would act on, minus the chance to
-  // observe a failure at the rung being skipped, which is what the
-  // headroom pays for. Gated rungs (kFadingNA, probe-required) are never
-  // skipped into: modeEligible refuses them without a clean probe.
-  //
-  // MEASURED AND REJECTED (2026-09-07), default 1. It does what it was
-  // built to do on the ramp - M3 ramp 0.87 -> 0.89, and 0.75 -> 0.82 at
-  // a 20 s robust-tier frame cap, static 0.68 -> 0.70 - and loses the
-  // throughput it was meant to protect:
-  //           coupled churn   seed 11   seed 12   seed 13     total
-  //   step 1     196,667       37,006    73,028    89,473   396,174
-  //   step 2     122,931       40,043    69,708    96,344   329,026
-  // A 37% coupled regression, -17% of all bytes moved. The ramp is a TRACKING metric on a
-  // monotone SNR sweep, where skipping a rung is free; the churn is a
-  // fading channel where the skipped rung is the evidence, and landing
-  // two rungs high on CCIR Moderate pays the failure and penalty-box
-  // cost repeatedly. Set to 2 to re-measure; the ladder's climb rate
-  // (one MODE_CHANGE round trip per rung) remains the real limit.
-  int maxPromoteStep = 1;
-  double skipHeadroomDb = 3.0;
+  // PROMOTION STEP: always one rung. A two-rung step (only into a rung
+  // clearing its floor by a further 3 dB, clean retry window) was
+  // MEASURED AND REJECTED 2026-09-07: M3 ramp 0.87 -> 0.89, but coupled
+  // churn 196,667 -> 122,931 B (-17% of all bytes moved over seeds
+  // 11-13). The ramp is a tracking metric on a monotone sweep, where
+  // skipping a rung is free; on a fading channel the skipped rung is the
+  // evidence. The climb rate stays one MODE_CHANGE round trip per rung.
   // High-mode gates.
   double m11RetryMax = 0.10;
   // Pilot-residual energy relative to channel power (phy/receiver.hpp
@@ -181,7 +154,6 @@ class Amc {
   void applyAdvisorBias(int bias) { advisorBias_ = std::clamp(bias, -1, 1); }
   double effectiveSnrDb(double now) const;
   double retryRatio() const;
-  bool degraded() const { return degraded_; }
   uint8_t mode() const { return mode_; }
   double pilotStability() const { return pilotStability_; }
   uint8_t selectivity() const { return selectivity_; }
@@ -201,7 +173,6 @@ class Amc {
   // failed on frames, 255 when clear; and the hold still in force.
   uint8_t failedMode() const { return failMode_; }
   double failHoldSec(double now) const;
-  const AmcConfig& config() const { return cfg_; }
 
  private:
   bool modeEligible(uint8_t k, double effSnr,
@@ -227,7 +198,6 @@ class Amc {
   double failAt_ = -1e9;
   int failRepeats_ = 0;
   bool pinned_ = false;
-  bool degraded_ = false;
   double lastChange_;
   double localSnr_ = 0.0;
   bool haveLocal_ = false;

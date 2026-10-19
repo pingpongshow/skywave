@@ -105,6 +105,8 @@ TEST_CASE(css_frame_geometry_matches_build) {
       auto g = computeGeometry(tp);
       auto bb = buildFrameBaseband(tp);
       CHECK_EQ(bb.size(), size_t(g.totalSamples));
+      // The CSS payload is LDPC: (52 + 2 CRC) bytes = 432 bits -> 2 x 324.
+      CHECK_EQ(g.payloadCodewords, 2);
     }
   }
 }
@@ -185,7 +187,7 @@ TEST_CASE(css_header_soft_combining) {
     uint16_t v = g ^ (g >> 1);  // toGray
     for (int b = 0; b < sf; ++b) clean.push_back(((v >> b) & 1) ? -4.f : 4.f);
   }
-  auto dec = cssDecodeSoft(clean, sf, 9);
+  auto dec = cssDecodeSoft(clean, 9);
   CHECK(std::equal(dec.begin(), dec.end(), hdr));
   // Each copy: every 5th bit flipped at low confidence, at different
   // offsets - the summed LLRs keep every bit's sign.
@@ -198,7 +200,7 @@ TEST_CASE(css_header_soft_combining) {
   CHECK(flips > 20);
   std::vector<float> sum(c1);
   for (size_t i = 0; i < sum.size(); ++i) sum[i] += c2[i];
-  dec = cssDecodeSoft(sum, sf, 9);
+  dec = cssDecodeSoft(sum, 9);
   CHECK(std::equal(dec.begin(), dec.end(), hdr));
 }
 

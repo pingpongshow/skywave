@@ -18,19 +18,25 @@ double besselI0(double x) {
 
 }  // namespace
 
+int kaiserLowpassLength(double sampleRate, double transitionHz,
+                        double attenDb) {
+  const double dw = 2.0 * M_PI * transitionHz / sampleRate;
+  int n = int(std::ceil((attenDb - 8.0) / (2.285 * dw)));
+  if (n % 2 == 0) ++n;  // odd length -> integer group delay
+  return n;
+}
+
 std::vector<float> designKaiserLowpass(double sampleRate, double passHz,
                                        double stopHz, double attenDb,
                                        double gain) {
   const double fc = (passHz + stopHz) / 2.0 / sampleRate;  // normalized cutoff
-  const double dw = 2.0 * M_PI * (stopHz - passHz) / sampleRate;
   // Kaiser estimates.
   double beta;
   if (attenDb > 50.0) beta = 0.1102 * (attenDb - 8.7);
   else if (attenDb >= 21.0) beta = 0.5842 * std::pow(attenDb - 21.0, 0.4) +
                                    0.07886 * (attenDb - 21.0);
   else beta = 0.0;
-  int n = int(std::ceil((attenDb - 8.0) / (2.285 * dw)));
-  if (n % 2 == 0) ++n;  // odd length -> integer group delay
+  const int n = kaiserLowpassLength(sampleRate, stopHz - passHz, attenDb);
   const int mid = n / 2;
 
   std::vector<float> h(static_cast<size_t>(n));
@@ -51,11 +57,6 @@ std::vector<float> designKaiserLowpass(double sampleRate, double passHz,
 FirDecimator::FirDecimator(std::vector<float> taps, int factor)
     : taps_(std::move(taps)), factor_(factor) {
   hist_.assign(taps_.size() - 1, cfloat(0.0f, 0.0f));
-}
-
-void FirDecimator::reset() {
-  hist_.assign(taps_.size() - 1, cfloat(0.0f, 0.0f));
-  phase_ = 0;
 }
 
 void FirDecimator::process(std::span<const cfloat> in,
@@ -86,10 +87,6 @@ FirInterpolator::FirInterpolator(std::vector<float> taps, int factor)
     : taps_(std::move(taps)), factor_(factor) {
   // Pad taps to a multiple of factor for clean polyphase split.
   while (taps_.size() % size_t(factor_) != 0) taps_.push_back(0.0f);
-  hist_.assign(taps_.size() / size_t(factor_) - 1, cfloat(0.0f, 0.0f));
-}
-
-void FirInterpolator::reset() {
   hist_.assign(taps_.size() / size_t(factor_) - 1, cfloat(0.0f, 0.0f));
 }
 

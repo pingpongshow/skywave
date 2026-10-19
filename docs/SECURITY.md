@@ -38,6 +38,11 @@ Transcript = both callsigns, family, capability bitmaps, both ephemeral
 publics. Auth failure → `START_NAK(auth)`; the link never silently falls
 back to cleartext when encryption was requested.
 
+A `START` retry resends the first attempt's ephemeral public (the
+responder re-acks a duplicate `START` with its stored `START_ACK`, which
+answers that first public); a fresh key pair per retry made every retried
+encrypted handshake fail.
+
 `AUTH` state (reported by `SECURITY`) is true only when the HMAC exchange
 verified — it is identity assurance, distinct from "encryption on".
 
@@ -57,7 +62,8 @@ Applied in the payload pipeline after compression, before segmentation:
   tampering breaks authentication
 - per-frame overhead: **16 bytes** (tag only)
 - replay: 128-frame sliding window per direction; duplicates and
-  out-of-window frames are dropped and counted
+  out-of-window frames are dropped (counted inside the crypto session for
+  the tests; not reported on the control port)
 - **the epoch is a nonce field**, so a frame accepted through the
   rotation grace window must be opened with the previous epoch *number*
   as well as the previous key — swapping the key alone produces a wrong
@@ -98,8 +104,11 @@ crypto.
 
 ## Key Material Handling
 
-- `ENCRYPTKEY <hex>` loads a 32-byte hex PSK; stored in the INI (`[crypto]
-  psk`) — file permissions are the user's responsibility, documented
+- `ENCRYPTKEY <hex>` loads a 32-byte PSK as exactly 64 hex digits; it is
+  saved in the INI (`[crypto] psk`), which the modem writes atomically
+  with mode `0600` ([CONFIGURATION.md](CONFIGURATION.md)). An INI `psk`
+  that is not 64 hex digits loads as **no key** with a `WARN` (the value
+  is never logged) — it used to be decoded leniently into a garbage key
 - `ENCRYPTION ON` requires PSK present **and hardware AES** (the
   AES-NI runtime check); both commands rejected while
   `CALLING`/`CONNECTING`/`CONNECTED`
@@ -113,8 +122,10 @@ crypto.
   so a replayed `START_ACK` cannot re-run the exchange mid-session.
   Session end zeroizes the keys, which also invalidates any resume
   context (a crypto state change is a resume invalidator)
-- zeroization: session keys and `K_master` are wiped (`sodium_memzero`) at
-  session end; PSK is wiped at process exit
+- zeroization: session keys, `K_master` and the crypto session's binary
+  copy of the PSK are wiped (`sodium_memzero`) at session end and when the
+  session object is destroyed. The hex PSK itself stays in the running
+  configuration for the life of the process (it is what the INI saves)
 - library: libsodium for X25519/HKDF primitives and constant-time helpers;
   AES-256-GCM via libsodium (`crypto_aead_aes256gcm`, hardware-accelerated)
   with a runtime check and graceful refusal on CPUs without AES-NI

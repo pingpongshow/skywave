@@ -43,30 +43,11 @@ CarrierMask MaskDetector::proposal(double now) const {
     }
   }
   std::sort(cand.begin(), cand.end());
-  const int cap = int(cfg_.maxMaskedRatio * n);
+  const int cap = cfg_.maxMasked(n);
   for (int i = 0; i < int(cand.size()) && i < cap; ++i) {
     m.exclude(cand[size_t(i)].second);
   }
   return m;
-}
-
-bool MaskDetector::ratioExceeded(double now) const {
-  if (!seeded_) return false;
-  const int n = plan(family_).carriers();
-  int q = 0;
-  for (int c = 0; c < n; ++c) {
-    if (belowSince_[size_t(c)] >= 0 &&
-        now - belowSince_[size_t(c)] >= cfg_.persistSec) {
-      ++q;
-    }
-  }
-  return q > int(cfg_.maxMaskedRatio * n);
-}
-
-void MaskDetector::reset() {
-  seeded_ = false;
-  ema_.clear();
-  belowSince_.clear();
 }
 
 }  // namespace skw

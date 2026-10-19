@@ -5,10 +5,10 @@
 // v1 profile; a future VHF-FM profile is a second BandProfile instance.
 #pragma once
 
-#include <cstdlib>
-
 #include <array>
 #include <cstdint>
+
+#include "core/env.hpp"
 
 namespace skw {
 
@@ -34,6 +34,10 @@ static_assert(kFftBaseband == 320);
 inline constexpr int kHfCenterBin = 40;
 
 enum class CpMode : uint8_t { Short = 0, Medium = 1, Long = 2 };
+// The one CP-name table (control port, INI, status).
+inline constexpr const char* cpModeName(CpMode cp) {
+  return cp == CpMode::Short ? "SHORT" : cp == CpMode::Medium ? "MEDIUM" : "LONG";
+}
 // CP length sets in audio-rate samples (divide by kDecimation for
 // baseband); PER BAND PROFILE - HF spans 2/4/6 ms for millisecond delay
 // spreads, VHF-FM 0.67/2/4 ms (its multipath is microseconds; the CP is
@@ -94,18 +98,17 @@ inline constexpr int    kPilotSpacing   = 8;    // 1-in-8 carriers per symbol
 inline constexpr double kPilotBoostDb   = 2.0;
 
 // ------------------------------------------------------------------- preamble
-inline constexpr int    kChirpRepsFast      = 2;  // up-up
-inline constexpr int    kChirpRepsRobust    = 4;  // up-down-up-down
-inline constexpr int    kChirpRepsCalling   = 4;  // up-up-up-up
+// Chirp rep patterns live in chirp.cpp (chirpPattern: 2-rep fast, 4-rep
+// robust/calling/CSS, 12-rep CSS on MID/NARROW). HF ZC sync-block
+// lengths (the band profile below holds the active band's):
 inline constexpr int    kZcSymbolsFast      = 3;
 inline constexpr int    kZcSymbolsRobust    = 6;
 // CFO capture is +-55 Hz for every signature (chirp.cpp
 // chirpCfoCaptureMaxHz; the receiver resolves the fine estimate's branch,
-// GAP_CLOSURE_PLAN.md R1). The former kCfoCapture*/kCfoSearchStepHz
-// constants were never read by any code path.
+// GAP_CLOSURE_PLAN.md R1).
 
 // ------------------------------------------------------------------ mode ladder
-enum class Waveform : uint8_t { Ofdm = 0, Css = 1 /* reserved */ };
+enum class Waveform : uint8_t { Ofdm = 0, Css = 1 };
 enum class Constellation : uint8_t { Qpsk = 0, Qam16 = 1, Qam64 = 2, Qam256 = 3 };
 inline constexpr int bitsPerSymbol(Constellation c) {
   switch (c) {
@@ -126,37 +129,38 @@ struct ModeDef {
   Waveform waveform;
   Constellation constellation;
   CodeRate rate;
-  uint8_t spread;   // frequency-domain spreading factor S
-  bool active;      // false = reserved (CSS tier, v1)
+  uint8_t spread;   // frequency-domain spreading factor S (CSS: the SF)
 };
 
 inline constexpr int kNumModes  = 15;   // M0..M14 (M14: VHF-FM 256QAM)
-inline constexpr int kFirstMode = 4;    // lowest active mode in v1
+// Lowest OFDM mode (M4). M0-M3 are the CSS deep tier, used only by a
+// session that negotiated CAP_CSS_TIER.
+inline constexpr int kFirstMode = 4;
 inline constexpr std::array<ModeDef, kNumModes> kModes = {{
     // M0-M3: CSS deep tier. `spread` holds the spreading factor SF
     // (2^SF chips per symbol); M0 is the deepest; payload transport is
-    // LDPC r1/2 over soft-demodulated CSS symbols. Active as of 6.2;
-    // session use is still gated on CAP_CSS_TIER negotiation.
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 8, true},  // M0 SF8
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 7, true},  // M1 SF7
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 6, true},  // M2 SF6
-    {Waveform::Css, Constellation::Qpsk, {1, 2}, 5, true},  // M3 SF5
+    // LDPC r1/2 over soft-demodulated CSS symbols. Session use is gated
+    // on CAP_CSS_TIER negotiation.
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 8},  // M0 SF8
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 7},  // M1 SF7
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 6},  // M2 SF6
+    {Waveform::Css, Constellation::Qpsk, {1, 2}, 5},  // M3 SF5
     // M4-M13: unified spread-OFDM ladder
-    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2}, 16, true},  // M4
-    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  8, true},  // M5
-    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  4, true},  // M6
-    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  2, true},  // M7
-    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  1, true},  // M8
-    {Waveform::Ofdm, Constellation::Qpsk,  {3, 4},  1, true},  // M9
-    {Waveform::Ofdm, Constellation::Qam16, {1, 2},  1, true},  // M10
-    {Waveform::Ofdm, Constellation::Qam16, {3, 4},  1, true},  // M11
-    {Waveform::Ofdm, Constellation::Qam64, {2, 3},  1, true},  // M12
-    {Waveform::Ofdm, Constellation::Qam64, {5, 6},  1, true},  // M13
+    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2}, 16},  // M4
+    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  8},  // M5
+    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  4},  // M6
+    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  2},  // M7
+    {Waveform::Ofdm, Constellation::Qpsk,  {1, 2},  1},  // M8
+    {Waveform::Ofdm, Constellation::Qpsk,  {3, 4},  1},  // M9
+    {Waveform::Ofdm, Constellation::Qam16, {1, 2},  1},  // M10
+    {Waveform::Ofdm, Constellation::Qam16, {3, 4},  1},  // M11
+    {Waveform::Ofdm, Constellation::Qam64, {2, 3},  1},  // M12
+    {Waveform::Ofdm, Constellation::Qam64, {5, 6},  1},  // M13
     // M14: 256QAM r5/6 - the VHF-FM top rung (WAVEFORM.md Phase 7).
-    // Active in the table; unreachable on HF (floor sentinels below)
+    // Unreachable on HF (floor sentinels below)
     // and above kInitialModeCap, so only deliberate AMC promotion on a
     // rich flat channel ever lands here.
-    {Waveform::Ofdm, Constellation::Qam256, {5, 6}, 1, true},  // M14
+    {Waveform::Ofdm, Constellation::Qam256, {5, 6}, 1},  // M14
 }};
 
 // Average data carriers per symbol = carriers * (spacing-1)/spacing.
@@ -191,7 +195,7 @@ using FloorTable = std::array<double, kNumModes>;
 // preamble and the sync CFO-branch check (full frames, AWGN, 100 trials
 // per 0.5 dB): M0 12% at -18.5, 7% at -18.0, 3% at -17.5; M1 13% at
 // -17.5, 5% at -17.0, 1% at -16.5 (now payload-limited). Same rule as
-// cssFloorDb (lowest SNR with FER <= ~15%, rounded up to 0.5 dB).
+// the other CSS floors (lowest SNR with FER <= ~15%, rounded up to 0.5 dB).
 // MID CSS M0 LOWERED -16.5 -> -17.5 with the same 12-rep preamble and the
 // CSS CFO-branch retry (100 trials: 12% at -17.5, 6-7% at -17/-16.5).
 // ALL CSS M0-M3 are FULL-FRAME floors since 2026-10-14 (bertool
@@ -381,6 +385,17 @@ inline constexpr FloorTable kVhfFloorRow = {
 inline constexpr std::array<FloorTable, kNumFamilies> kVhfFloors = {
     {kVhfFloorRow, kVhfFloorRow, kVhfFloorRow, kVhfFloorRow}};
 
+// ------------------------------------------------- per-band header + TX level
+// PHY header spreading (WAVEFORM.md "PHY Header"): the robust class is the
+// same on every band; the fast class is per profile (HF value here).
+inline constexpr int kHeaderSpreadFast   = 2;
+inline constexpr int kHeaderSpreadRobust = 16;
+// HF passband RMS of a data burst at output_gain_db = 0 (-13.2 dBFS); the
+// active band's level is activeProfile().txTargetRms. The PHY emits
+// unit-RMS baseband with an 8 dB PAPR allowance; its real upconverted form
+// has ~12 dB crest, so 0.22 RMS peaks near -1 dBFS.
+inline constexpr double kTxTargetRms = 0.22;
+
 // ------------------------------------------------------------- band profiles
 // The active profile is set ONCE at startup (before any DSP object is
 // constructed) from `[modem] band`; everything numerology-shaped that
@@ -436,9 +451,10 @@ struct BandProfile {
 inline constexpr BandProfile kHfProfile = {
     "hf",     &kFamilies,    kHfCenterBin,    &kFloors,   &kFadingFloors,
     &kModerateFloors, &kPoorFloors,
-    true,     true,          0.160,           CpMode::Medium,
-    &kHfCpSamplesAudio,      3,               6,             8.0,  2,
-    16,       5,             0.22,        4};
+    true,     true,          0.160,           kCpDefault,
+    &kHfCpSamplesAudio,      kZcSymbolsFast,  kZcSymbolsRobust, 8.0,
+    kHeaderSpreadFast,
+    16,       5,             kTxTargetRms,    4};
 inline constexpr BandProfile kVhfFmProfile = {
     "vhf-fm", &kVhfFamilies, 96 /* 3600 Hz */, &kVhfFloors, &kVhfFloors,
     &kVhfFloors, &kVhfFloors,
@@ -458,21 +474,9 @@ inline Band activeBand() {
   return activeProfileSlot() == &kVhfFmProfile ? Band::VhfFm : Band::Hf;
 }
 
-// R4 multipath margins (zcWindowBackoff / trackerPreTaps), or the v1.1.0
-// values 2/2 with SKW_MULTIPATH_MARGIN=0 for A/B measurement.
-inline bool multipathMarginEnabled() {
-  static const bool on = [] {
-    const char* e = std::getenv("SKW_MULTIPATH_MARGIN");
-    return !(e && std::atoi(e) == 0);
-  }();
-  return on;
-}
-inline int zcWindowBackoff() {
-  return multipathMarginEnabled() ? activeProfile().zcWindowBackoff : 2;
-}
-inline int trackerPreTaps() {
-  return multipathMarginEnabled() ? activeProfile().trackerPreTaps : 2;
-}
+// R4 multipath margins (GAP_CLOSURE_PLAN.md; see BandProfile).
+inline int zcWindowBackoff() { return activeProfile().zcWindowBackoff; }
+inline int trackerPreTaps() { return activeProfile().trackerPreTaps; }
 
 inline const FamilyPlan& plan(Family f) {
   return (*activeProfile().families)[size_t(f)];
@@ -488,6 +492,16 @@ inline int zcSymbols(bool robust) {
                 : activeProfile().zcSymbolsFast;
 }
 inline int centerBin() { return activeProfile().centerBin; }
+// Baseband FFT bin of a family carrier (index 0-based within the family):
+// signed (negative = below the center), and as an index into the
+// 320-point transform.
+inline int carrierBinSigned(Family f, int carrierIdx) {
+  return plan(f).firstBin + carrierIdx - centerBin();
+}
+inline int carrierToBasebandBin(Family f, int carrierIdx) {
+  const int b = carrierBinSigned(f, carrierIdx);
+  return b >= 0 ? b : kFftBaseband + b;
+}
 inline double centerHz() { return centerBin() * kSubcarrierHz; }
 inline double floorDb(Family f, int mode) {
   return (*activeProfile().floors)[size_t(f)][size_t(mode)];
@@ -530,8 +544,8 @@ inline constexpr int kLdpcNLong  = 1944;   // data frames
 // ----------------------------------------------------------------- PHY header
 inline constexpr uint8_t kPhyMagic       = 0x5C;
 inline constexpr uint8_t kWireVersion    = 1;
-inline constexpr int     kHeaderSpreadFast   = 2;
-inline constexpr int     kHeaderSpreadRobust = 16;
+// Header spreading: kHeaderSpreadRobust here, the fast class per band
+// profile (HF kHeaderSpreadFast, above).
 // Header codeword info capacity (N=648 r1/2) minus header bits ~= piggyback.
 inline constexpr int     kHeaderPiggybackBytes = 30;
 
@@ -540,29 +554,6 @@ inline constexpr int     kHeaderPiggybackBytes = 30;
 inline constexpr uint32_t kSeedWhitener     = 0x1D2C5A5Bu;
 inline constexpr uint32_t kSeedSpreadPhase  = 0x5EA5CAFEu;
 inline constexpr uint32_t kSeedPilotPhase   = 0x0FD1E5EDu;
-
-// ------------------------------------------------------------------ TX levels
-// HF passband RMS of a data burst at output_gain_db = 0 (-13.2 dBFS); the
-// active band's level is activeProfile().txTargetRms. The PHY
-// emits unit-RMS baseband with an 8 dB PAPR allowance; its real upconverted
-// form has ~12 dB crest, so 0.22 RMS peaks near -1 dBFS. (Until 2026-10
-// this was defined but unused: bursts went out at ~0.7 RMS, +9 dBFS peaks,
-// which real interfaces clip and virtual cables pass untouched.)
-inline constexpr double kTxTargetRms       = 0.22;
-inline constexpr double kTxScaleMin        = 0.30;
-inline constexpr double kTxScaleMax        = 1.15;
-inline constexpr double kTxPeakPreHeadroom = 1.90;
-inline constexpr double kTxFinalHeadroom   = 0.50;
-
-// ----------------------------------------------------------------- link timers
-inline constexpr double kHandshakeTurnaroundSec = 6.0;
-inline constexpr double kHandshakeTimeoutMinSec = 12.0;
-inline constexpr double kHandshakeTimeoutMaxSec = 45.0;
-inline constexpr int    kHandshakeAttempts      = 4;
-inline constexpr double kAckTimeoutMinSec       = 4.0;
-inline constexpr double kAckTimeoutMaxSec       = 45.0;
-inline constexpr double kIdleDisconnectSec      = 120.0;
-inline constexpr double kKeepaliveSec           = 20.0;
 
 // --------------------------------------------------------------- TCP defaults
 inline constexpr uint16_t kPortData  = 9100;
@@ -633,26 +624,6 @@ inline constexpr int kRobustCwMax = 8;
 // schedule is identical in every cell - it never leaves the fast tier.
 inline constexpr double kRobustFrameAirCapSec = 10.0;
 
-// Target airtime of one coalesced proto message (engine applySealCap),
-// 0 = no airtime bound. Proto assembly is head-of-line, so a message's
-// airtime looked like the app-visible delivery interval - and it is not
-// the binding term. MEASURED 2026-09-07 (SKW_DELIV_DEBUG, churn):
-// delivery gaps 89-132 s median at M6-M9, while the median ISS turn is
-// 42 s, i.e. an ~85 s turn CYCLE. A station can only deliver what
-// arrived while the peer held the turn, so the cycle floors the gap and
-// shrinking messages under it buys nothing:
-//              coupled    seed 11   seed 12   seed 13
-//   off       196,667     37,006    63,344    89,473
-//   45 s      196,667     37,006    61,099    89,473
-//   25 s      196,667     29,671    63,344    89,473
-// Left at 0. (An earlier version divided a burst-container's airtime
-// into a single frame's budget, capping framesPerBurst times too hard;
-// that bit the fast tier it was meant to leave alone - coupled 196.7 ->
-// 120.7 KB - while lifting the robust-tier seeds 12-37%. Tempting, and
-// the wrong reason: it was a bug, not a bound.) SKW_DELIVER_TARGET_SEC
-// re-enables it for measurement.
-inline constexpr double kDeliverTargetSec = 0.0;
-
 // Anti-starvation backstop: how many ARQ timeouts queued DATA may wait
 // behind a busy channel before it airs regardless of the busy verdict.
 // On a link where BOTH ends have traffic the channel is busy essentially
@@ -662,8 +633,7 @@ inline constexpr double kDeliverTargetSec = 0.0;
 // Tunable for measurement: SKW_DATA_STARVE_X.
 inline double dataStarveTimeouts() {
   static const double v = [] {
-    const char* e = std::getenv("SKW_DATA_STARVE_X");
-    const double d = e ? std::atof(e) : 3.0;
+    const double d = envDouble("SKW_DATA_STARVE_X", 3.0);
     return d > 0.0 ? d : 3.0;
   }();
   return v;

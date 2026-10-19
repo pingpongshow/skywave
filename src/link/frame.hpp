@@ -71,11 +71,12 @@ inline bool usesVoiceSequence(LinkType t) {
 }
 
 // -------------------------------------------------------------------- flags
-inline constexpr uint8_t kFlagCompressed    = 1u << 0;
+// Bit 0 is unused: whether a proto message is compressed is stated by its
+// marker byte (proto/pipeline.hpp), which the receiver decides on.
 inline constexpr uint8_t kFlagEncrypted     = 1u << 1;
 inline constexpr uint8_t kFlagMoreFragments = 1u << 2;
-inline constexpr uint8_t kFlagResumeContext = 1u << 3;
-inline constexpr uint8_t kFlagsReservedMask = 0xF0;  // must be 0 in v1
+inline constexpr uint8_t kFlagsReservedMask =
+    uint8_t(~(kFlagEncrypted | kFlagMoreFragments));  // must be 0
 
 // ----------------------------------------------------------------- envelope
 inline constexpr size_t kEnvelopeBytes = 8;
@@ -116,24 +117,25 @@ enum class StartNakReason : uint8_t {
   FamilyMismatch = 1,
   VersionMismatch = 2,
   CapabilityConflict = 3,
-  Busy = 4,
-  PolicyRefusal = 5,
+  // Encryption was negotiated but the key exchange failed (no PSK on
+  // this end, missing or unauthenticated KEX material - SECURITY.md).
+  AuthFailed = 4,
   // RESUME_REQ rejected (bad/expired token): the initiator falls back
   // to a clean START in place - never a session failure.
-  ResumeInvalid = 6,
+  ResumeInvalid = 5,
 };
 
-// Capability bitmap (u16). Bits 9-15 reserved, must be 0.
+// Capability bitmap (u16). Bits 5 and 8-15 reserved, must be 0.
 inline constexpr uint16_t kCapZstd        = 1u << 0;
 inline constexpr uint16_t kCapEncryption  = 1u << 1;
 inline constexpr uint16_t kCapResume      = 1u << 2;
 inline constexpr uint16_t kCapHarqIr      = 1u << 3;
 inline constexpr uint16_t kCapMasking     = 1u << 4;
-inline constexpr uint16_t kCapBurstMac    = 1u << 5;
 inline constexpr uint16_t kCapVoice       = 1u << 6;
 inline constexpr uint16_t kCapCssTier     = 1u << 7;
-inline constexpr uint16_t kCapTurnSched   = 1u << 8;
-inline constexpr uint16_t kCapReservedMask = 0xFE00;
+// Burst aggregation and scheduled turn-taking are unconditional; their
+// old bits 5 and 8 are retired into the reserved mask.
+inline constexpr uint16_t kCapReservedMask = 0xFF20;
 
 struct CallBody {
   std::string srcCall;  // canonical
@@ -157,11 +159,7 @@ struct CallAckBody {
 struct StartBody {
   uint16_t caps = 0;         // committed intersection
   uint8_t initialMode = 4;   // proposed
-  uint8_t cpMode = 1;
-  uint8_t maxMode = 13;
-  uint8_t macProfile = 0;
-  bool hasResumeToken = false;
-  std::array<uint8_t, 8> resumeToken{};
+  uint8_t maxMode = 13;      // initiator's mode cap
   std::vector<uint8_t> kexPublic;  // empty = absent; <= 255 bytes
   std::vector<uint8_t> pack() const;
   static std::optional<StartBody> parse(std::span<const uint8_t> b);
@@ -169,6 +167,10 @@ struct StartBody {
 
 struct StartAckBody {
   uint8_t finalMode = 4;  // responder may only lower the proposal
+  // Session mode cap: the LOWER of the two stations' max_mode. The
+  // initiator's AMC climbs no higher, and the responder refuses a
+  // MODE_CHANGE above it.
+  uint8_t maxMode = 13;
   std::vector<uint8_t> kexResponse;  // empty = absent
   // Resume token minted here (PROTOCOL.md "Session Resume"): 8-byte ID
   // bound to family + callsign pair, valid for the resume window.
@@ -179,7 +181,7 @@ struct StartAckBody {
 };
 
 struct StartNakBody {
-  StartNakReason reason = StartNakReason::Busy;
+  StartNakReason reason = StartNakReason::CapabilityConflict;
   std::vector<uint8_t> pack() const;
   static std::optional<StartNakBody> parse(std::span<const uint8_t> b);
 };
@@ -246,16 +248,14 @@ struct ProbeBody {
 
 struct ProbeAckBody {
   uint8_t probeId = 0;
-  int8_t snrHalfDb = 0;
-  uint8_t decodedOk = 0;
+  uint8_t decodedOk = 0;  // probe.hpp kProbeFailed/Marginal/Clean
   std::vector<uint8_t> pack() const;
   static std::optional<ProbeAckBody> parse(std::span<const uint8_t> b);
 };
 
 // Carrier mask: one bit per family carrier (<= 72 => 9 bytes), 1 = usable.
 struct MaskUpdateBody {
-  uint8_t epoch = 0;
-  uint8_t family = 0;
+  uint8_t epoch = 0;  // 4-bit generation, echoed by MASK_ACK
   std::array<uint8_t, 9> mask{};
   std::vector<uint8_t> pack() const;
   static std::optional<MaskUpdateBody> parse(std::span<const uint8_t> b);
@@ -267,40 +267,33 @@ struct MaskAckBody {
   static std::optional<MaskAckBody> parse(std::span<const uint8_t> b);
 };
 
+// The sender's SNR report, as in ACK: on a quiet link (no DATA, so no
+// ACKs) this is the only way the peer's view of the channel arrives.
 struct KeepaliveBody {
-  uint8_t remoteSnr = 0;  // dB + 20
+  int8_t snrHalfDb = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<KeepaliveBody> parse(std::span<const uint8_t> b);
 };
 
-// Both resume bodies may carry the sender's file-RECEIVE checkpoint
-// (file_id, contiguous offset) so the peer's paused file TX rewinds to
-// exactly what survived the drop.
 struct ResumeReqBody {
   std::array<uint8_t, 8> token{};
   uint16_t lastRxSeq = 0;  // sender's next-expected ARQ sequence
-  bool hasFileCkpt = false;
-  uint32_t fileId = 0;
-  uint64_t fileOffset = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<ResumeReqBody> parse(std::span<const uint8_t> b);
 };
 
 struct ResumeAckBody {
   uint16_t lastRxSeq = 0;
-  bool hasFileCkpt = false;
-  uint32_t fileId = 0;
-  uint64_t fileOffset = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<ResumeAckBody> parse(std::span<const uint8_t> b);
 };
 
+// Normal = operator/application disconnect: the session ends for real.
+// The other reasons are failure-mode drops that keep the resume token.
 enum class DiscReason : uint8_t {
   Normal = 0,
   IdleTimeout = 1,
   RetryExhausted = 2,
-  Operator = 3,
-  Fault = 4,
 };
 
 struct DiscBody {
@@ -310,18 +303,17 @@ struct DiscBody {
 };
 // DISC_ACK carries no body.
 
+// Telemetry for listeners (monitor MON: lines carry the whole frame);
+// the modem itself reads only the callsign.
 struct BeaconBody {
   std::string callsign;
-  uint8_t snrFloorPlus20 = 0;
-  uint8_t family = 0;
-  uint8_t swVersion = 1;
+  uint8_t snrFloorPlus20 = 0;  // local noise-floor estimate, dB + 20
   std::vector<uint8_t> pack() const;
   static std::optional<BeaconBody> parse(std::span<const uint8_t> b);
 };
 
 struct CqBody {
   std::string callsign;
-  uint16_t caps = 0;
   std::vector<uint8_t> pack() const;
   static std::optional<CqBody> parse(std::span<const uint8_t> b);
 };
@@ -338,6 +330,12 @@ struct BcastDataBody {
 inline constexpr size_t kBcastMaxPayload = 256;
 
 enum class VoiceCodec : uint8_t { C700 = 0, C1300 = 1, C2400 = 2, C3200 = 3 };
+inline constexpr const char* voiceCodecName(VoiceCodec c) {
+  return c == VoiceCodec::C700    ? "700C"
+         : c == VoiceCodec::C1300 ? "1300"
+         : c == VoiceCodec::C2400 ? "2400"
+                                  : "3200";
+}
 
 struct VoiceOpenBody {  // also VOICE_OPEN_ACK (echoed/possibly lowered codec)
   VoiceCodec codec = VoiceCodec::C700;

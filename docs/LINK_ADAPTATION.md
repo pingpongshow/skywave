@@ -43,8 +43,11 @@ Aggregated each received frame and each ACK:
   not the channel's. Counted as retries, those held the ratio at
   0.2–0.5 and pinned the ladder at M6 for 300 s at a measured 10–12 dB,
   above the 0.15 promotion gate.
-- decode-failure ratio (header-ok-payload-fail / total)
-- frequency-selectivity index (per-carrier SNR variance from the equalizer)
+- frame failures: a burst whose header decoded but whose payload failed
+  its final decode attempt; three in a row demote (below)
+- frequency-selectivity index: the fraction of carriers sitting ≥ 10 dB
+  below the band median (0–255 scale), per decoded frame; it feeds the
+  `M12+` gate and is reported in `CALL_ACK`
 - pilot stability — the pilot-residual energy relative to channel power
   **in excess of its noise share**. The raw ratio is ~0.7 / SNR on pure
   AWGN (bertool `pilot` column: 2.95 at M4 −7.5 dB, 0.006 at M11 22 dB,
@@ -75,12 +78,12 @@ Per-family mode floors come from the WAVEFORM tables. AMC applies margins:
 | fast demote | 2-step drop when retry ratio > 0.5 in the window, min dwell waived |
 | promotion step | single step only (`k → k+1`); no promotion skipping |
 
-Multi-rung promotion was built and measured (`AmcConfig::maxPromoteStep`,
-bounded at 2, only into a rung clearing its floor by an extra 3 dB with
-a clean retry window): M3 ramp 0.87 → 0.89 but the coupled churn
-196,667 → 122,931 B. The ramp is a tracking metric on a monotone sweep,
-where skipping a rung is free; on a fading channel the skipped rung is
-the evidence. Left at 1.
+Multi-rung promotion was built and measured (bounded at 2, only into a
+rung clearing its floor by an extra 3 dB with a clean retry window): M3
+ramp 0.87 → 0.89 but the coupled churn 196,667 → 122,931 B. The ramp is a
+tracking metric on a monotone sweep, where skipping a rung is free; on a
+fading channel the skipped rung is the evidence. Removed; one rung per
+decision.
 
 The underlying limit is one rung per `MODE_CHANGE` round trip, so the
 climb rate is set by exchange latency rather than by the channel.
@@ -91,8 +94,8 @@ promotions at announce as well, scoped to the HF robust tier, takes
 those up-steps to 0.0 s and improves the static ramp 0.68 → 0.73 — but
 it cancels against robust-tier frame growth, since leaving the tier
 sooner denies the frames the clean deliveries they grow on. Frame growth
-wins the pair, so this is opt-in (`SKW_PROMOTE_AT_ANNOUNCE`); see the
-2×2 in ROADMAP.
+wins the pair, so promotions keep waiting for `MODE_ACK`; see the 2×2 in
+ROADMAP.
 
 The margins are **negative on purpose**: the floors are one-shot 10–15%
 FER points, and with chase/IR HARQ plus selective-repeat ARQ a rung is
@@ -152,7 +155,11 @@ Extra requirements stacked on top of SNR for fragile modes:
 `MODE Mx` (control port) pins the mode: AMC stops promoting/demoting but the
 fast-demote safety rule **still applies** (a pinned mode that cannot decode
 is useless). `MODE AUTO` returns control to AMC. Pinning to `M0–M3` is
-rejected in v1.
+accepted only when the session negotiated `CAP_CSS_TIER`, and no pin may
+exceed the **session max mode** (the lower of the two stations' max-mode
+caps, exchanged in `START` / `START_ACK`; the AMC never climbs above it
+either). On the responder a pin is a request riding its ACKs (`rx_flags`)
+that the initiator — the only mode controller — executes.
 
 ## Channel Memory
 
@@ -181,8 +188,11 @@ with no dial report the store keys on callsigns and family alone.
 
 ### Stored State
 
-Per entry, EMA-smoothed (α = 0.2): last stable mode, SNR, retry ratio,
-decode-failure ratio, selectivity index, last carrier-mask, timestamp.
+Per entry: the last stable mode, the retry ratio (EMA-smoothed,
+α = 0.2) and a wall-clock timestamp — exactly what the recommendation
+below consumes. (SNR, decode-failure ratio and selectivity were once
+stored too and never read: the live handshake measurement carries them,
+and a stored selectivity could never bind below the `M10` initial cap.)
 
 ### Recommendation
 
@@ -200,8 +210,13 @@ On connect to a known key:
 
 Before committing promotion into a fragile mode, verify it live.
 
-- applies to promotions into `M11+` (config-adjustable)
-- eligibility: retry ratio ≤ 0.08 and stable pilots
+- applies to promotions into `M11+` (`ProbeGateConfig::fromMode`) and
+  into `kFadingNA` (near-static-only) rungs; `M13` additionally requires
+  the clean probe inside the AMC itself
+- eligibility: the AMC would promote into the rung (all its gates hold:
+  retry ratio ≤ 0.10 and pilot stability for `M11+`, selectivity for
+  `M12+`) — or the clean probe is the only condition missing (dwell met,
+  retry ratio ≤ 0.15)
 - probe: 1 `PROBE` frame (2 for `M12+`) transmitted at the **candidate**
   mode carrying a known test payload; peer answers `PROBE_ACK` (at the
   current mode) with decode quality: clean / marginal / failed
@@ -215,29 +230,32 @@ successor to tone masking).
 
 ### Detection
 
-The receiver maintains per-carrier quality weights from equalizer SNR and
-LDPC soft-error concentration. Carriers persistently ≥ 12 dB worse than the
+The receiver keeps an EMA (α = 0.3) of the tracker's per-carrier SNR from
+every in-session `M8+` frame. Carriers persistently ≥ 12 dB worse than the
 band median for ≥ 5 s become mask candidates.
 
 ### Exchange
 
-- `MASK_UPDATE` body: `mask_id` (u8, cycles 0–15), flags (u8:
-  `ACTIVATE_NOW`, `FULL_REPLACE`, `RLE`), carrier count (u16), bitmap
-  (raw or RLE, LSB = lowest active carrier)
+- `MASK_UPDATE` body: epoch (u8, a 4-bit generation cycling 0–15) and a
+  raw 9-byte bitmap, one bit per family carrier (≤ 72; 1 = usable). Either
+  end may propose a mask for its own receive direction, at `M8+`
 - receiver of a mask **transmits** with masked carriers zeroed (no data, no
   pilots relocated — pilots on masked carriers are skipped and the
-  estimator interpolates)
-- peer confirms with `MASK_ACK(mask_id)`; sender activates on ACK or on
-  `ACTIVATE_NOW`
-- retry: 2 s cadence, 2 attempts, then abandon this mask generation
+  estimator interpolates); a proposal excluding more carriers than the
+  detector itself ever proposes (30%) is refused, unacknowledged
+- peer confirms with `MASK_ACK(epoch)`; the proposer applies the mask to
+  its own reception on that ACK
+- retry: re-sent every ARQ timeout (airtime-derived), abandoned after the
+  4th unanswered attempt, then a 60 s cooldown before proposing again;
+  successive generations are spaced ≥ 20 s
 
 ### Interaction with the Ladder
 
-- masked carriers reduce per-symbol capacity; the PHY reports effective
-  data-carrier count and NET rates scale accordingly (STATUS reflects real
-  throughput)
-- if masked ratio > 0.30, AMC demotes one step to regain margin and clears
-  the oldest mask generation
+- masked carriers reduce per-symbol capacity: a masked frame of the same
+  payload runs longer (the NET rate reported in `STATUS` is the unmasked
+  table figure)
+- a proposal never excludes more than 30% of the carriers (the worst
+  first); interference beyond that is left to the ordinary demotion rules
 - spread modes (`M4–M7`) skip masking: spreading already averages over
   interference, and robust-tier airtime is too precious for mask exchange
 
@@ -245,13 +263,13 @@ band median for ≥ 5 s become mask candidates.
 
 Signals that bypass normal evaluation cadence:
 
-- **ACK starvation**: 2 consecutive ACK timeouts → treat as fast-demote
-  trigger (channel may have collapsed below current mode)
-- **header-only reception**: robust header decodes but payload repeatedly
-  fails → immediate one-step demote request via `MODE_CHANGE`
-- **remote distress**: ACK rx-quality flags include a `DEGRADED` bit the
-  peer sets when its decoder is near failure; receipt biases AMC one
-  evaluation toward demotion
+- **ACK starvation**: every ACK-timeout event charges the AMC two failed
+  frames per timed-out frame (at most eight per event), and every explicit
+  NAK (`rx_flags` `0x20`) one — the sender's only evidence when the peer,
+  hearing nothing, reports nothing; they feed the failure streak below
+- **header-only reception**: a burst whose robust header decodes but
+  whose payload fails its final attempt counts as a decode failure; three
+  in a row demote one rung at the next evaluation (`demoteFailStreak`)
 
 ## Advisor Layer (Phase 6)
 
@@ -269,8 +287,10 @@ closed-form least-squares trends over short bounded histories:
 - constraints: single-step influence only, clamped to legal ranges, never
   overrides handshake mode selection, no effect on voice
 - control: environment variables only (`SKW_ADVISOR=off|shadow|assist`,
-  per-domain confidence floors); default `shadow` until validated in
-  hardware, then `assist`
+  per-domain confidence floors); default `shadow` (computes and logs at
+  debug level only) — `assist` is an experiment, reachable only through
+  the environment
+- per session: its histories restart with every connected session
 - cadence: one SNR sample and one evaluation per NEW trusted link
   measurement (a decoded frame). Until 2026-10 the engine fed and
   evaluated it on every tick (~7 ms): the 8-sample history spanned
@@ -294,12 +314,13 @@ negotiation:
 
 | Signal | Static | Fading (Good) | Moderate | Severe (Poor) |
 |---|---:|---:|---:|---:|
-| pilot excess (see Inputs) | 0.001–0.007 | 0.001–0.009 | ≥ 0.010 (0.008–0.014 at M10, 0.02–0.06 at M6) | ≥ 1.2 |
+| pilot excess (see Inputs) | 0.001–0.007 | 0.001–0.009 | ≥ 0.010 (0.008–0.014 at M10, 0.02–0.06 at M6) | ≥ 0.040–0.125 by family |
 | delay spread | ~0 | ~0.5–1 ms | ~1 ms | ≥ 2 ms |
 | SNR variance | low | moderate | moderate | high |
 | frame error rate | ~0 | low | fast tier fails | ≥ 35% |
 
-`Static` requires **all** gates; `Severe` requires **any two**. Its
+`Static` requires **all** gates; `Severe` requires **any two** of its four
+signals (pilot excess, delay spread, SNR variance, FER). Its
 delay-spread signal is the **median** of the last 9 decoded frames, not
 the EMA. On CCIR Good (true spread about 0.5 ms) 26% of decoded frames
 read 1.6 ms or more, most about 5 ms, while the median read 0.62 ms. The
@@ -327,10 +348,11 @@ Moderate (`kModerateFloors`), `Severe` every mode measured on CCIR Poor
 Moderate and Severe tables `kFadingNA` is a measurement - the mode never
 closes on that channel - and makes it ineligible (on the designated
 table it keeps its "static-only, probe-gated" meaning). Until v1.1.0 the
-classes acted through hard caps (`severeMaxMode` M7, `moderateMaxMode`
-M8) encoding "the fast tier never closes there"; the v1.2.0 receiver
-closes WIDE M10 on Poor and M13 on Moderate, so the caps are now
-operator overrides defaulting off (13). Classes still act on eligibility
+classes acted through hard caps (Severe M7, Moderate M8) encoding "the
+fast tier never closes there"; the v1.2.0 receiver closes WIDE M10 on
+Poor and M13 on Moderate, so the tables replaced the caps, which were
+removed. The verdict restarts (`Unknown`) with every connected session.
+Classes still act on eligibility
 only; a verdict that arrives while the ladder sits above an ineligible
 rung leaves the failure rules to bring it down (a forced
 one-rung-per-dwell walk-down was measured and withdrawn: under ISI the

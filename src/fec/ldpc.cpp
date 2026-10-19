@@ -29,7 +29,6 @@ LdpcCode::LdpcCode(int n, int z, int baseRows, const int8_t* base)
   // Build sparse H edge structure.
   numChecks_ = baseRows_ * z_;
   checkHead_.assign(size_t(numChecks_), -1);
-  varDegree_.assign(size_t(n_), 0);
   varEdges_.resize(size_t(n_));
   for (int bi = 0; bi < baseRows_; ++bi) {
     for (int bj = 0; bj < kBaseCols; ++bj) {
@@ -41,7 +40,6 @@ LdpcCode::LdpcCode(int n, int z, int baseRows, const int8_t* base)
         int idx = int(edges_.size());
         edges_.push_back({var, checkHead_[size_t(check)]});
         checkHead_[size_t(check)] = idx;
-        varDegree_[size_t(var)]++;
         varEdges_[size_t(var)].push_back(idx);
       }
     }

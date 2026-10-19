@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-#include "link/frame.hpp"  // kFlagCompressed / kFlagMoreFragments
+#include "link/frame.hpp"  // kFlagMoreFragments, kFrameOverhead
 #include "phy/framer.hpp"
 
 namespace skw {
@@ -54,7 +54,8 @@ size_t dataPayloadBudget(int mode, int framesPerBurst, int codewordsTarget) {
   // PHY payload length as a function of the per-frame DATA payload size:
   // solo frame = envelope + rv + payload + CRC; container entries add a
   // u16 length prefix each (engine burst container, PHY frameType 62).
-  const size_t perFrame = framesPerBurst == 1 ? 13 : 15;
+  static_assert(dataFrameOverhead(1) == kFrameOverhead + 1);
+  const size_t perFrame = dataFrameOverhead(framesPerBurst);
   const bool css = kModes[size_t(mode)].waveform == Waveform::Css;
   size_t best = 1;
   for (size_t p = 1;; ++p) {
@@ -78,19 +79,18 @@ void ProtoTx::submit(std::span<const uint8_t> bytes, double now) {
   coalesce_.insert(coalesce_.end(), bytes.begin(), bytes.end());
 }
 
-void ProtoTx::seal(uint8_t svcTag, std::span<const uint8_t> raw) {
+void ProtoTx::seal(std::span<const uint8_t> raw) {
   // Message body = [service tag][bytes]; compression covers the whole
   // body, the marker byte stays outermost.
   std::vector<uint8_t> body;
   body.reserve(1 + raw.size());
-  body.push_back(svcTag);
+  body.push_back(kSvcStream);
   body.insert(body.end(), raw.begin(), raw.end());
   Msg m;
   m.rawBytes = raw.size();
   if (zstd_) {
     auto z = zstdPack(body);
     if (!z.empty() && z.size() + kCompressMinSaving <= body.size()) {
-      m.flags = kFlagCompressed;
       m.bytes.reserve(1 + z.size());
       m.bytes.push_back(kProtoMarkerZstd);
       m.bytes.insert(m.bytes.end(), z.begin(), z.end());
@@ -104,25 +104,16 @@ void ProtoTx::seal(uint8_t svcTag, std::span<const uint8_t> raw) {
   msgs_.push_back(std::move(m));
 }
 
-void ProtoTx::submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes) {
-  // Seal any open stream window first: order across services holds.
-  if (!coalesce_.empty()) {
-    seal(kSvcStream, coalesce_);
-    coalesce_.clear();
-  }
-  seal(svcTag, bytes);
-}
-
 void ProtoTx::maybeSeal(double now) {
   const size_t cap = std::min(coalesceMaxBytes(), sealCap_);
   while (coalesce_.size() >= cap) {
     std::vector<uint8_t> chunk(coalesce_.begin(),
                                coalesce_.begin() + long(cap));
     coalesce_.erase(coalesce_.begin(), coalesce_.begin() + long(cap));
-    seal(kSvcStream, chunk);
+    seal(chunk);
   }
   if (!coalesce_.empty() && now >= deadline_) {
-    seal(kSvcStream, coalesce_);
+    seal(coalesce_);
     coalesce_.clear();
   }
 }
@@ -134,7 +125,6 @@ std::optional<ProtoSegment> ProtoTx::nextSegment(size_t budget, double now) {
   Msg& m = msgs_.front();
   const size_t n = std::min(budget, m.bytes.size() - m.off);
   ProtoSegment s;
-  s.flags = m.flags;
   const bool last = (m.off + n == m.bytes.size());
   if (!last) s.flags |= kFlagMoreFragments;
   s.bytes.assign(m.bytes.begin() + long(m.off),
@@ -234,40 +224,15 @@ void ProtoRx::deliver(std::span<const uint8_t> message) {
   auto payload = message.subspan(1);
   if (tag == kSvcStream) {
     out_.insert(out_.end(), payload.begin(), payload.end());
-  } else if (tag == kSvcFile) {
-    svcOut_.emplace_back(
-        tag, std::vector<uint8_t>(payload.begin(), payload.end()));
   } else {
     ++bad_;  // unknown service
   }
-}
-
-std::vector<std::vector<uint8_t>> ProtoRx::takeServiceMessages(
-    uint8_t svcTag) {
-  std::vector<std::vector<uint8_t>> out;
-  for (auto it = svcOut_.begin(); it != svcOut_.end();) {
-    if (it->first == svcTag) {
-      out.push_back(std::move(it->second));
-      it = svcOut_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  return out;
 }
 
 std::vector<uint8_t> ProtoRx::takeBytes() {
   auto out = std::move(out_);
   out_.clear();
   return out;
-}
-
-void ProtoRx::reset() {
-  assembly_.clear();
-  resync_ = false;
-  out_.clear();
-  svcOut_.clear();
-  bad_ = 0;
 }
 
 }  // namespace skw

@@ -77,7 +77,7 @@ Design references: [ARCHITECTURE.md](ARCHITECTURE.md) (layout, threading),
   *Gate: chain SNR > 60 dB across 300–2900 Hz; image rejection > 60 dB.*
   ✓ 2026-07-28 (tone SNR >60 dB at 300/1000/1500/2500/2850 Hz; round trip
   >60 dB at ±1300 Hz offsets)
-- [x] **1.3 AGC + DC block** `[P]` — per DSP.md dynamics, freeze hook.
+- [x] **1.3 AGC + DC block** — dropped (2026-10 code review): the RX chain is level-independent (normalized chirp detection, estimated channel gain and noise), so neither block was ever wired in; removed with their tests (DSP.md "Input Level").
   *Gate: `test_dsp` AGC attack/release/freeze cases.* ✓ 2026-07-28
 - [x] **1.4 CRC + whitener** `[P]` — CRC-16/32 (header/link), LFSR
   whitener. *Gate: published CRC vectors; whitener period/balance.*

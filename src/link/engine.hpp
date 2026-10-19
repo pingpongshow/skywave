@@ -23,6 +23,7 @@
 #include "link/amc.hpp"
 #include "link/arq.hpp"
 #include "link/mask.hpp"
+#include "link/monitor.hpp"
 #include "link/probe.hpp"
 #include "link/chanclass.hpp"
 #include "link/chanmem.hpp"
@@ -31,7 +32,6 @@
 #include "link/handshake.hpp"
 #include "phy/framer.hpp"
 #include "phy/receiver.hpp"
-#include "proto/filesvc.hpp"
 #include "proto/pipeline.hpp"
 #ifdef SKW_HAVE_CRYPTO
 #include "crypto/session.hpp"
@@ -71,14 +71,9 @@ struct EngineConfig {
   HandshakePolicy policy;
   int arqMaxRetries = 8;
   bool maskingEnabled = true;  // negotiated via kCapMasking as well
-  bool burstAggregation = true;  // MAC burst container (M7+ profiles)
   bool cpAuto = true;            // delay-spread-driven CPMODE
   bool cwId = false;             // CW ID after disconnect / 10-min
   int cwWpm = 20;
-  // Crypto (SECURITY.md, crypto builds only): request encryption for
-  // outgoing/accepted sessions. A requested-but-unachievable session is
-  // refused - the link NEVER silently falls back to cleartext.
-  bool encryptionRequested = false;
   std::vector<uint8_t> psk;      // 32 bytes when installed
   // Channel memory (LINK_ADAPTATION.md 3.5). Owned by the caller (the
   // worker persists it across restarts); null disables the feature
@@ -97,22 +92,16 @@ class LinkEngine {
   void sendData(std::span<const uint8_t> bytes);  // buffered until sent
   std::vector<uint8_t> takeReceivedData();
 
-  // --- file transfer (4.3) ---------------------------------------------
-  // One transfer per direction at a time; false if one is active.
-  bool sendFile(const std::string& name, std::vector<uint8_t> data,
-                uint64_t mtime);
-  bool fileTxActive() const { return fileTx_.active(); }
-  std::optional<ReceivedFile> takeReceivedFile() {
-    return fileRx_.takeCompleted();
-  }
-  uint64_t fileRxCheckpoint() const { return fileRx_.checkpointOffset(); }
   // Control-port notification lines ("EVT:..."), drained by the caller.
   std::vector<std::string> takeEvents();
 
   // --- session resume (4.4) --------------------------------------------
-  // True while the current connection was established via RESUME.
+  // True while the current connection was established via RESUME
+  // (tests and diagnostics).
   bool sessionResumed() const { return resumed_; }
   bool hasResumeContext() const { return resumeCtx_.valid; }
+  // Why the peer refused our last START (nullopt: it did not).
+  std::optional<StartNakReason> lastRefusal() const { return lastRefusal_; }
 
   // --- crypto (5.3) ------------------------------------------------------
   // SECURITY reporting: AUTH is identity assurance (HMAC verified),
@@ -149,7 +138,6 @@ class LinkEngine {
   VoiceCodec voiceCodec() const {
     return bvOpen_ ? voiceEnc_.codec() : voiceFsm_.codec();
   }
-  bool voiceCodecAuto() const { return voiceCodecAuto_; }
   // The plan the open voice service runs on (VOICESTATUS RT=, UNIT=).
   const VoicePlan& voicePlanActive() const {
     return bvOpen_ ? bvPlan_ : voicePlan_;
@@ -174,6 +162,9 @@ class LinkEngine {
   FsmState state() const { return fsm_.state(); }
   FsmDiscCause lastDiscCause() const { return fsm_.lastDiscCause(); }
   int sessionMode() const { return mode_; }
+  // Session mode cap: the lower of the two stations' max_mode (START /
+  // START_ACK). Neither the AMC nor a pin goes above it.
+  int sessionMaxMode() const { return sessionMaxMode_; }
   size_t txBacklog() const { return protoTx_.backlogBytes(); }
   bool idleClean() const;  // nothing pending anywhere
 
@@ -189,6 +180,8 @@ class LinkEngine {
   bool modePinned() const;
   double txShiftHz() const { return txShiftHz_; }
   const Advisor& advisor() const { return advisor_; }
+  // This session's channel-character verdict (link/chanclass.hpp).
+  ChannelClass channelClass() const { return chanClass_.verdict(); }
   CpMode cpMode() const { return cpMode_; }
   double lastRxCfoHz() const { return lastRxQuality_.cfoHz; }
 
@@ -200,21 +193,14 @@ class LinkEngine {
   uint16_t sessionId() const { return sessionId_; }
   uint16_t sessionCaps() const { return sessionCaps_; }
   double lastRxSnrDb() const { return lastRxQuality_.snrDb; }
-  // Turn-taking (PROTOCOL.md "Turn-Taking"): true when scheduled
-  // turn-taking governs this session, and whether this station currently
-  // holds the data-sender (ISS) role.
+  // Turn-taking (PROTOCOL.md "Turn-Taking") governs every connected
+  // session: true while connected, and whether this station currently
+  // holds the data-sender (ISS) role. The IRS answers only the burst
+  // whose PHY header carries POLL (PROTOCOL.md "Poll").
   bool turnSchedActive() const {
-    return (sessionCaps_ & kCapTurnSched) != 0 &&
-           fsm_.state() == FsmState::Connected;
+    return fsm_.state() == FsmState::Connected;
   }
   bool turnIss() const { return turnRole_ == TurnRole::Iss; }
-  // Under turn-taking the IRS answers only the burst whose PHY header
-  // carries POLL (PROTOCOL.md "Poll"). SKW_NO_POLL=1: per-burst feedback,
-  // the pre-1.2.4 behaviour (diagnostic A/B).
-  bool pollFeedback() const {
-    static const bool kOff = std::getenv("SKW_NO_POLL") != nullptr;
-    return turnSchedActive() && !kOff;
-  }
   // On-air duration implied by the PHY header of the capture the LAST
   // rxBurst() call decoded a header for (0 when it decoded none). The
   // header survives payload failure, so the worker's decode ladder can
@@ -222,13 +208,12 @@ class LinkEngine {
   // final attempt instead of climbing rungs of trailing noise.
   double lastRxBurstAirtimeSec() const { return lastRxAirtimeSec_; }
   // How long a burst from the peer is expected to stay on the air when
-  // its own header has not said so yet: under turn-taking the ISS hears
-  // feedback and the IRS hears DATA bursts; otherwise the longer of the
-  // two, or the last decoded burst's airtime before a session exists.
+  // its own header has not said so yet: in session the ISS hears
+  // feedback and the IRS hears DATA bursts; before a session exists, the
+  // last decoded burst's airtime.
   double expectedPeerBurstSec() const {
     if (fsm_.state() != FsmState::Connected) return lastRxAirtimeSec_;
-    if (turnSchedActive()) return turnIss() ? ackAirSec_ : dataFrameAirSec_;
-    return std::max(ackAirSec_, dataFrameAirSec_);
+    return turnIss() ? ackAirSec_ : dataFrameAirSec_;
   }
 
   // --- GUI instrument taps -----------------------------------------------
@@ -257,11 +242,11 @@ class LinkEngine {
   }
 
   // --- scheduling ------------------------------------------------------
-  // Pre-TX CCA gate (DSP.md): the worker feeds the fused busy-detector
-  // verdict each chunk. DATA-class bursts (new + retransmit) defer
-  // while the channel is busy, with a fairness cap and a short
-  // randomized post-clear backoff; control / handshake / ACK / voice
-  // frames bypass (urgent, short, naturally gap-timed).
+  // Busy detector (DSP.md): the worker feeds the fused busy-detector
+  // verdict each chunk. It arbitrates nothing in session (turn-taking
+  // does); it only keeps any burst - DATA included - from keying over a
+  // peer burst still airing, with a runaway cap (ccaDataGated, and the
+  // control hold in tick). Voice bypasses.
   void setChannelBusy(bool busy) { chanBusy_ = busy; }
   // Seconds of already-emitted audio still waiting in the worker's TX
   // path (staging + ring). Feeds ARQ deadline arming (a frame sent now
@@ -313,6 +298,34 @@ class LinkEngine {
   void drainFsmActions(double now);
   void pumpData(double now);
   std::vector<cfloat> buildBurst(const OutFrame& f, bool poll = false);
+  // One PHY burst: a single link frame or a burst container (frameType
+  // kBurstContainerFrameType). Mask, CP and TX shift applied.
+  std::vector<cfloat> buildPhyBurst(std::span<const uint8_t> payload,
+                                    ChirpSig sig, int mode, uint8_t frameType,
+                                    uint8_t seqLow, bool poll);
+  // Queue the clean START (with the KEX blob when encryption was
+  // negotiated): the FSM's SendStart and the ResumeInvalid fallback.
+  void queueStart(double now);
+  // The committed capability set and everything that follows from it.
+  void commitSessionCaps(uint16_t caps);
+  // RESUME_REQ / RESUME_ACK accepted: continue the sequence spaces at the
+  // stored mode, clamped by what this exchange's quality supports.
+  void adoptResume(uint16_t peerNextSeq, const QualityMeasurement& q);
+  void queueMaskUpdate(double now);
+  void queueKeepalive();
+  // Feedback (ACK, TURN_GRANT) transport: at least as robust as the
+  // forward traffic - the session's CSS mode below M4, M4 for M4-M6.
+  int feedbackMode() const;
+  ChirpSig feedbackSig() const;
+  OutFrame makeAckFrame();
+  AckBody makeAckBody() const;
+  // Transport of a MODE_CHANGE / MODE_ACK leaving `from` toward
+  // `target`: demotions ride the robust tier, promotions the target.
+  static int modeChangeTxMode(int from, int target);
+  // Per-station xorshift jitter in [0, 1).
+  double nextJitter();
+  bool hasQueuedData() const;
+  std::deque<OutFrame>::iterator firstQueuedData();
   // True when the DATA burst being built is the last before this station
   // stops and listens (PhyHeader::poll).
   bool burstEndsWindow() const;
@@ -356,13 +369,14 @@ class LinkEngine {
 
  private:
   // Mode-control ownership: the session INITIATOR drives AMC decisions
-  // and MODE_CHANGE; the responder's channel view reaches it via ACK SNR
-  // reports. Two independent controllers would collide mid-air (observed:
-  // mode oscillation and pin override). Responder-side manual pinning is
-  // a v1 limitation, noted in ROADMAP.
+  // and MODE_CHANGE; the responder's channel view reaches it via ACK and
+  // keepalive SNR reports. Two independent controllers would collide
+  // mid-air (observed: mode oscillation and pin override). A responder
+  // pin is a REQUEST riding its ACKs (pinMode).
   bool isInitiator_ = false;
   std::string remoteCall_;
   int mode_ = 4;                  // committed session mode
+  int sessionMaxMode_ = 13;       // min of both stations' max_mode
   CpMode cpMode_ = activeProfile().cpDefault;  // committed session CP
   // TX frequency alignment (PROTOCOL.md): tracks -reported/2 per report
   // (loop gain 0.5), clamped +-kTxShiftMaxHz.
@@ -401,15 +415,13 @@ class LinkEngine {
   // arrived on. All handshake control follows hsSig()/hsMode().
   bool hsOnCss_ = false;
   int callTxCount_ = 0;
+  std::optional<StartNakReason> lastRefusal_;
   bool lastRxWasCss_ = false;
   std::vector<uint8_t> lastStartAckBody_;  // duplicate-START re-ack
-  // Reason evaluateStart() actually computed for the pending refusal.
-  // The SendStartNak action used to hardcode Busy, so every refusal -
-  // family mismatch, version mismatch, capability conflict, policy
-  // block - went out as "Busy". The protocol defines six reasons and
-  // the implementation transmitted one, which makes a refused connect
-  // undiagnosable from the calling end.
-  StartNakReason pendingNakReason_ = StartNakReason::Busy;
+  // Reason computed for the pending refusal (evaluateStart, or the KEX
+  // failing), sent by SendStartNak: a refused connect must be
+  // diagnosable from the calling end.
+  StartNakReason pendingNakReason_ = StartNakReason::CapabilityConflict;
   // ARQ sequence of the LAST fragment of each proto message handed to
   // the ARQ, oldest first. When the ARQ's contiguous acknowledged point
   // passes one, that whole message reached the peer and ProtoTx can
@@ -441,10 +453,10 @@ class LinkEngine {
   int modeChangeTries_ = 0;
   uint16_t sessionId_ = 0;
   bool ackPending_ = false;       // send an ACK on the next tick
-  // Pre-TX CCA gate state (setChannelBusy).
+  // Pre-TX gate state (setChannelBusy, ccaDataGated).
   bool chanBusy_ = false;
-  double ccaWaitStart_ = -1.0;   // busy-defer began (fairness cap)
-  double ccaProceedAt_ = -1.0;   // post-clear jittered proceed time
+  double ccaWaitStart_ = -1.0;   // DATA held for a busy channel since
+  double ccaProceedAt_ = -1.0;   // post-burst listen turn ends at
   uint64_t ccaRng_ = 0;          // per-station jitter (desyncs peers)
   bool ccaGatedNow_ = false;     // per-tick cached verdict
   double txQueueSec_ = 0.0;      // worker TX backlog (setTxQueueSec)
@@ -460,7 +472,6 @@ class LinkEngine {
   // are OFDM-tuned), > 1 for the CSS deep tier whose frames are an order
   // of magnitude longer. Recomputed in updateArqTimeout().
   double airScale_ = 1.0;
-  double dataRecencySec_ = 15.0;  // "peer is actively sending" window
   double dataQueuedSince_ = -1.0;  // data waiting to AIR (backstop clock)
   double maskCooldownUntil_ = 0.0;  // mask-epoch spacing / abandon backoff
   bool ccaDataGated(double now);
@@ -474,7 +485,6 @@ class LinkEngine {
   double peerCfoHz_ = 0.0;
   double peerCfoAt_ = -1.0;
   double lastAckTxAt_ = -1.0;
-  OutFrame makeAckFrame();
   // CFO figure an ACK reports: the latest peer frame's while connected.
   double reportCfoHz() const {
     return peerCfoAt_ >= 0.0 ? peerCfoHz_ : lastRxQuality_.cfoHz;
@@ -493,26 +503,39 @@ class LinkEngine {
   // configured family only while the receiver-side scan is in play.
   Family rxFamily_ = Family::Wide;
   bool wantConstellation_ = false;
-  // Deep-tier adaptive frame length, in LDPC codewords per frame.
+  double lastDeliverAt_ = -1.0;  // app-visible delivery (SKW_DELIV_DEBUG)
+  double dataFrameAirSec_ = 0.0;  // current DATA TX-unit airtime
   // MODE_CHANGE commit latency (instrumentation, SKW_MODE_DEBUG MCLAT):
   // when the exchange was requested and from which rung.
-  double lastDeliverAt_ = -1.0;  // app-visible delivery (SKW_DELIV_DEBUG)
-  double dataFrameAirSec_ = 0.0;  // current DATA TX-unit airtime (seal cap)
-  size_t dataBurstBytes_ = 0;     // payload bytes in that same TX unit
   double modeReqAt_ = -1.0;
   int modeReqFrom_ = 0;
-  int cssCwTarget_ = 2;
-  int cssCleanRun_ = 0;
-  // OFDM robust tier (M4-M7), same rule as the deep tier above:
-  // codewords per frame, grown on clean deliveries, halved on loss.
-  int robustCwTarget_ = kRobustCwMin;
-  int robustCleanRun_ = 0;
+  // Adaptive frame length, in LDPC codewords per frame, for the deep
+  // (CSS M0-M3) and the OFDM robust (M4-M7) tiers: grown after a run of
+  // clean deliveries, halved on loss (see tick / onFrame).
+  struct CwTarget {
+    int min, max, target, cleanRun = 0;
+    void restart() { target = min; cleanRun = 0; }
+    bool shrink() {  // a loss; true when the target changed
+      if (target <= min) return false;
+      cleanRun = 0;
+      target = std::max(min, target / 2);
+      return true;
+    }
+    bool grow() {  // a clean delivery; true when the target changed
+      if (++cleanRun < kCssGrowRun || target >= max) return false;
+      cleanRun = 0;
+      target = std::min(max, target * 2);
+      return true;
+    }
+  };
+  CwTarget cssCw_{kCssCwMin, kCssCwMax, 2};
+  CwTarget robustCw_{kRobustCwMin, kRobustCwMax, kRobustCwMin};
   // When a standalone ACK was skipped in favour of piggybacking, so the
   // skip can be undone if our data never airs. -1 = nothing deferred.
   double ackDeferredAt_ = -1.0;
   // --- Turn-taking (PROTOCOL.md "Turn-Taking") --------------------------
   // Scheduled ISS/IRS roles replace occupancy sensing for in-session
-  // DATA arbitration when kCapTurnSched is negotiated: exactly one
+  // DATA arbitration in every session: exactly one
   // station (the ISS) sends data; the other (IRS) sends feedback and
   // requests the turn via kRxFlagBreakReq; TURN_GRANT hands it over.
   enum class TurnRole : uint8_t { Iss, Irs };
@@ -581,9 +604,8 @@ class LinkEngine {
   // samples from an arbitrary station.
   double pumpDbgLast_ = -1e9;
   // Which ccaDataGated() branch held, for SKW_PUMP_DEBUG: 0 clear,
-  // 1 own-TX draining, 2 post-burst handoff gap, 3 channel busy,
-  // 4 post-clear backoff / listen turn, 5 turn-taking IRS (not the
-  // sending role).
+  // 1 own-TX draining, 4 post-burst listen turn, 5 IRS (not the sending
+  // role), 6 peer burst still airing, 7 awaiting the MODE_ACK.
   int ccaReason_ = 0;
   // Handshake round-trip measurement, used to SEED the ARQ RTT
   // estimator at connect. `hsTxAt_` is when we last emitted a
@@ -628,24 +650,16 @@ class LinkEngine {
   bool lossyCoalesce_ = false;
   bool listenFeedbackArrived() const {
     // Guarded by yieldInFlight_ so it fires ONLY during a real
-    // post-burst listen turn - never on the post-clear backoff or the
-    // bidirectional courtesy gap, whose ccaProceedAt_ arms carry no
-    // listen-turn semantics.
+    // post-burst listen turn.
     return yieldInFlight_ > 0 && listenTurnStart_ >= 0.0 &&
            lastFeedbackAt_ >= listenTurnStart_;
   }
   size_t dataBudget_ = 57;  // exact-fill segment size at mode_/profile
-  // File service (4.3).
-  void pumpFile();
-  void drainFileRx();
-  FileTx fileTx_;
-  FileRx fileRx_;
-  uint32_t nextFileId_ = 1;
   std::vector<std::string> events_;
   // Session resume (4.4): token minted at START_ACK, bound to the
   // family + callsign pair; a failure-mode drop pauses the pipeline and
-  // a reconnect within the window continues sequence spaces + file
-  // checkpoints (PROTOCOL.md "Session Resume").
+  // a reconnect within the window continues the sequence spaces
+  // (PROTOCOL.md "Session Resume").
   struct ResumeCtx {
     bool valid = false;
     std::array<uint8_t, 8> token{};
@@ -653,6 +667,7 @@ class LinkEngine {
     Family family = Family::Wide;
     uint16_t caps = 0;
     int mode = 4;
+    int maxMode = 13;      // the session's cap continues with it
     CpMode cp = kCpDefault;
     double freshAt = 0.0;  // window runs from mint, refreshed at drop
     uint16_t sessionId = 0;  // a resumed session keeps its id
@@ -662,17 +677,21 @@ class LinkEngine {
   // pre-session frames). Chosen by the initiator, adopted from START.
   uint16_t newSessionId(double now);
   std::array<uint8_t, 8> mintToken(double now);
+  // Deterministic hash over time, both callsigns and a counter: the
+  // entropy behind session ids and resume tokens.
+  uint64_t sessionHash(double now, uint64_t salt);
   void discardPausedPipeline();  // clean start: paused state is dead
   ResumeCtx resumeCtx_;
   bool pausedForResume_ = false;  // pipeline held across a broken link
-  bool sentResumeReq_ = false;    // this handshake attempted RESUME
+  bool sentResumeReq_ = false;    // the last START slot carried RESUME_REQ
+  // Any RESUME_REQ went out during this connect attempt: only then is a
+  // START_NAK(ResumeInvalid) an answer to us (sentResumeReq_ alone is
+  // cleared by a START retry that went out clean).
+  bool resumeAttempted_ = false;
   bool resuming_ = false;         // accept path: continue, don't reset
   bool resumed_ = false;
   bool sendResumeAckInstead_ = false;
   uint16_t resumePeerNext_ = 0;   // peer's next-expected ARQ sequence
-  bool resumePeerHasCkpt_ = false;
-  uint32_t resumePeerCkptId_ = 0;
-  uint64_t resumePeerCkptOff_ = 0;
   uint64_t tokenCtr_ = 0;
   // Fault-mode teardown (ARQ exhaustion, peer's for-cause DISC, idle
   // timeout): keeps the resume token alive; operator DISC does not.
@@ -739,7 +758,14 @@ class LinkEngine {
   std::map<uint16_t, SealedData> sealedData_;
   KexContext kexCtx() const;
   std::vector<uint8_t> pendingKexResponse_;  // responder: for START_ACK
+  // Initiator: the KEX blob of this connect attempt's START. Every START
+  // retry carries the SAME blob - the responder re-acks a duplicate START
+  // with its stored START_ACK, which answers the first ephemeral key, so
+  // a fresh key per retry made any retried encrypted START fatal.
+  std::vector<uint8_t> startKexBlob_;
   void sendKeyUpdate(double now);
+  // DATA payload AEAD. AAD = the envelope's first 8 bytes.
+  static std::vector<uint8_t> envelopeAad(const LinkEnvelope& env);
   bool sealPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
   bool openPayload(const LinkEnvelope& env, std::vector<uint8_t>& body);
 #endif

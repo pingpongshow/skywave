@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
+#include <cstdio>
+
+#include "core/env.hpp"
 
 namespace skw {
 
@@ -55,7 +57,7 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
       }
       M0[size_t(i) * T + i] += 1e-3 * double(n);
     }
-    solveHermitian(M0, b0, T);
+    solveLinear(M0, b0, T, 1, 1e-12);
     g_ = b0;
   }
 
@@ -73,8 +75,11 @@ ChannelTracker::ChannelTracker(Family family, bool robustClass,
   // forever (that starved taps was the failure of the per-tap-
   // proportional first cut), so take the neighborhood max plus a floor.
   const double fd = robust_ ? 1.0 : 0.5;
+  // Per-symbol step at the MEDIUM CP (the header's, and the design
+  // reference for every payload CP).
   const double Ts =
-      double(kFftBaseband + cpSamplesAudio(CpMode(1)) / kDecimation) / kFsBaseband;
+      double(kFftBaseband + cpSamplesAudio(CpMode::Medium) / kDecimation) /
+      kFsBaseband;
   const double arg = 2.0 * std::pow(M_PI * fd * Ts, 2.0);
   rho_ = std::exp(-arg);
   double seedPow = 0.0;
@@ -142,7 +147,6 @@ double ChannelTracker::snrDb() const {
 }
 
 void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
-  const int n = plan(family_).carriers();
   const int T = numTaps_;
   auto lay = symbolLayout(family_, symIdx, mask_);
   const int np = int(lay.pilotCarriers.size());
@@ -203,7 +207,6 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
                   ? cfloat(float((gnum / gden).real()),
                            float((gnum / gden).imag()))
                   : cfloat(1, 0);
-  phase_ = std::atan2(lastGain_.imag(), lastGain_.real());
 
   // Bootstrap R: the ZC handoff's noiseVar0 is an H-error figure, not
   // per-pilot measurement noise - at floor SNR it can be 15x low, and an
@@ -233,7 +236,7 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
   meanPrior /= np;
   const double meanS = meanPrior + noiseVar_;
 
-  static const bool eqDbg = getenv("SKW_EQ_DEBUG") != nullptr;
+  static const bool eqDbg = envFlag("SKW_EQ_DEBUG");
   // FLYWHEEL: hold only on a residual far beyond what the filter itself
   // expects (interference, collision) - meanS already accounts for honest
   // mid-fade innovation, so the gate is S-normalized.
@@ -308,26 +311,7 @@ void ChannelTracker::processSymbol(std::span<cfloat> bins, int symIdx) {
   // The projection must be EXACT: P's off-diagonal structure (updates
   // concentrate along the observed subspace) makes the trace a large
   // overcount, and the demapper's LLR scale rides on this number.
-  double hv = 0.0;
-  std::vector<std::complex<double>> Pr(static_cast<size_t>(T));
-  for (int c = 0; c < n; ++c) {
-    const cfloat* row = &basis_[size_t(c) * T];
-    std::complex<double> acc(0, 0);
-    double v = 0.0;
-    for (int t = 0; t < T; ++t) {
-      std::complex<double> rt(row[t].real(), row[t].imag());
-      acc += rt * g_[size_t(t)];
-      std::complex<double> pa(0, 0);
-      for (int u = 0; u < T; ++u) {
-        std::complex<double> ru(row[u].real(), row[u].imag());
-        pa += P_[size_t(t) * T + u] * std::conj(ru);
-      }
-      v += (rt * pa).real();
-    }
-    h_[size_t(c)] = cfloat(float(acc.real()), float(acc.imag()));
-    hv += std::max(v, 0.0);
-  }
-  hVar_ = hv / std::max(n, 1);
+  projectH(g_, P_, h_, hVar_);
   if (recording_) hist_.push_back({g_, P_, true, noiseVar_});
 }
 
@@ -397,40 +381,11 @@ void ChannelTracker::smoothHistory(std::vector<std::vector<cfloat>>& hOut,
     const double r2 = rho_ * rho_;
     for (size_t i = 0; i < Pp.size(); ++i) Pp[i] = r2 * f.P[i];
     for (int t = 0; t < T; ++t) Pp[size_t(t) * T + t] += qDiag_[size_t(t)];
-    // Solve Pp X = Pf (Gauss-Jordan, partial pivoting); G = rho X^H since
-    // Pf and Pp are Hermitian: G = rho Pf Pp^-1 = rho (Pp^-1 Pf)^H.
+    // Solve Pp X = Pf; G = rho X^H since Pf and Pp are Hermitian:
+    // G = rho Pf Pp^-1 = rho (Pp^-1 Pf)^H.
     std::vector<cd> M = Pp;
     X = f.P;
-    for (int col = 0; col < T; ++col) {
-      int piv = col;
-      for (int r = col + 1; r < T; ++r) {
-        if (std::abs(M[size_t(r) * T + col]) >
-            std::abs(M[size_t(piv) * T + col])) {
-          piv = r;
-        }
-      }
-      if (piv != col) {
-        for (int c2 = 0; c2 < T; ++c2) {
-          std::swap(M[size_t(col) * T + c2], M[size_t(piv) * T + c2]);
-          std::swap(X[size_t(col) * T + c2], X[size_t(piv) * T + c2]);
-        }
-      }
-      const cd d = M[size_t(col) * T + col];
-      if (std::abs(d) < 1e-15) continue;
-      for (int c2 = 0; c2 < T; ++c2) {
-        M[size_t(col) * T + c2] /= d;
-        X[size_t(col) * T + c2] /= d;
-      }
-      for (int r = 0; r < T; ++r) {
-        if (r == col) continue;
-        const cd fr = M[size_t(r) * T + col];
-        if (fr == cd(0, 0)) continue;
-        for (int c2 = 0; c2 < T; ++c2) {
-          M[size_t(r) * T + c2] -= fr * M[size_t(col) * T + c2];
-          X[size_t(r) * T + c2] -= fr * X[size_t(col) * T + c2];
-        }
-      }
-    }
+    solveLinear(M, X, T, T, 1e-15);
     for (int i = 0; i < T; ++i) {
       for (int j = 0; j < T; ++j) {
         G[size_t(i) * T + j] = rho_ * std::conj(X[size_t(j) * T + i]);
@@ -472,10 +427,12 @@ void ChannelTracker::smoothHistory(std::vector<std::vector<cfloat>>& hOut,
   hist_.clear();
 }
 
-// In-place Gaussian elimination with partial pivoting; solution in b.
-void ChannelTracker::solveHermitian(std::vector<std::complex<double>>& M,
-                                    std::vector<std::complex<double>>& b,
-                                    int T) {
+// Gauss-Jordan elimination with partial pivoting: solves M X = B in place
+// (M is T x T, B is T x nrhs, both row-major; the solution replaces B).
+// A pivot below `tiny` in magnitude leaves its column unreduced.
+void ChannelTracker::solveLinear(std::vector<std::complex<double>>& M,
+                                 std::vector<std::complex<double>>& B, int T,
+                                 int nrhs, double tiny) {
   for (int col = 0; col < T; ++col) {
     int piv = col;
     for (int r = col + 1; r < T; ++r) {
@@ -484,22 +441,29 @@ void ChannelTracker::solveHermitian(std::vector<std::complex<double>>& M,
         piv = r;
       }
     }
-    for (int c2 = 0; c2 < T; ++c2) {
-      std::swap(M[size_t(col) * T + c2], M[size_t(piv) * T + c2]);
+    if (piv != col) {
+      for (int c2 = 0; c2 < T; ++c2) {
+        std::swap(M[size_t(col) * T + c2], M[size_t(piv) * T + c2]);
+      }
+      for (int c2 = 0; c2 < nrhs; ++c2) {
+        std::swap(B[size_t(col) * nrhs + c2], B[size_t(piv) * nrhs + c2]);
+      }
     }
-    std::swap(b[size_t(col)], b[size_t(piv)]);
-    std::complex<double> d = M[size_t(col) * T + col];
-    if (std::abs(d) < 1e-12) continue;
+    const std::complex<double> d = M[size_t(col) * T + col];
+    if (std::abs(d) < tiny) continue;
+    // Columns left of `col` are already eliminated (exact zeros).
     for (int c2 = col; c2 < T; ++c2) M[size_t(col) * T + c2] /= d;
-    b[size_t(col)] /= d;
+    for (int c2 = 0; c2 < nrhs; ++c2) B[size_t(col) * nrhs + c2] /= d;
     for (int r = 0; r < T; ++r) {
       if (r == col) continue;
-      std::complex<double> f = M[size_t(r) * T + col];
+      const std::complex<double> f = M[size_t(r) * T + col];
       if (std::abs(f) == 0.0) continue;
       for (int c2 = col; c2 < T; ++c2) {
         M[size_t(r) * T + c2] -= f * M[size_t(col) * T + c2];
       }
-      b[size_t(r)] -= f * b[size_t(col)];
+      for (int c2 = 0; c2 < nrhs; ++c2) {
+        B[size_t(r) * nrhs + c2] -= f * B[size_t(col) * nrhs + c2];
+      }
     }
   }
 }

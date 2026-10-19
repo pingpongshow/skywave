@@ -1,11 +1,10 @@
 #include "phy/framer.hpp"
 
-#include <cstdlib>
-
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
+#include "core/env.hpp"
 #include "dsp/css.hpp"
 #include "dsp/fft.hpp"
 #include "dsp/fir.hpp"
@@ -47,33 +46,106 @@ struct BitReader {
   }
 };
 
-std::vector<uint8_t> bytesToBits(std::span<const uint8_t> bytes) {
-  std::vector<uint8_t> bits;
-  bits.reserve(bytes.size() * 8);
-  for (uint8_t b : bytes) {
-    for (int i = 7; i >= 0; --i) bits.push_back((b >> i) & 1);
-  }
-  return bits;
+// Occupied-band TX filter (Kaiser, 300 Hz transition, 50 dB) edges.
+// Guard between the outermost carrier and the filter's passband edge: a
+// Kaiser response is not flat right up to its edge, so a carrier sitting
+// in the knee is attenuated and phase-distorted - and ULTRA's outermost
+// carriers sit closest to the edge of the rig passband the family exists
+// to fill. SKW_TXBAND_MARGIN_HZ overrides the 40 Hz (measurement).
+struct TxBandEdges {
+  double passHz, stopHz;
+};
+TxBandEdges txBandEdges(Family family) {
+  static const double margin = [] {
+    const double v = envDouble("SKW_TXBAND_MARGIN_HZ", 40.0);
+    return v > 0.0 ? v : 40.0;
+  }();
+  const double half = plan(family).carriers() * kSubcarrierHz / 2.0 + margin;
+  return {half, half + 300.0};
 }
+constexpr double kTxBandAttenDb = 50.0;
 
 std::vector<float> familyTxBandTaps(Family family) {
-  // Guard between the outermost carrier and the filter's passband edge.
-  // A Kaiser response is not flat right up to its edge, so a carrier
-  // sitting in the knee is attenuated and phase-distorted - and ULTRA's
-  // outermost carriers sit closest to the edge of the rig passband the
-  // family exists to fill. Overridable for measurement.
-  double margin = 40.0;
-  if (const char* e = getenv("SKW_TXBAND_MARGIN_HZ")) {
-    const double v = std::atof(e);
-    if (v > 0.0) margin = v;
-  }
-  const double half = plan(family).carriers() * kSubcarrierHz / 2.0 + margin;
-  return designKaiserLowpass(kFsBaseband, half, half + 300.0, 50.0);
+  const auto e = txBandEdges(family);
+  return designKaiserLowpass(kFsBaseband, e.passHz, e.stopHz, kTxBandAttenDb);
 }
 
-// Samples the occupied-band filter flush appends after the last symbol.
+// Samples the occupied-band filter flush appends after the last symbol
+// (from the filter's length alone - no design).
 int txBandTailSamples(Family family) {
-  return int(familyTxBandTaps(family).size() / 2) * 2;
+  const auto e = txBandEdges(family);
+  const int taps =
+      kaiserLowpassLength(kFsBaseband, e.stopHz - e.passHz, kTxBandAttenDb);
+  return (taps / 2) * 2;
+}
+
+// Occupied-band filter (flushing its tail so the frame end is not
+// truncated), then normalize to unit RMS.
+std::vector<cfloat> bandFilterNormalize(Family family,
+                                        const std::vector<cfloat>& frame) {
+  FirDecimator bandFilt(familyTxBandTaps(family), 1);
+  std::vector<cfloat> filtered;
+  filtered.reserve(frame.size());
+  bandFilt.process(frame, filtered);
+  std::vector<cfloat> zeros(size_t(txBandTailSamples(family)), cfloat(0, 0));
+  bandFilt.process(zeros, filtered);
+
+  double pow = 0;
+  for (const auto& v : filtered) pow += std::norm(v);
+  const double rms = std::sqrt(pow / double(filtered.size()));
+  if (rms > 1e-12) {
+    const float g = float(1.0 / rms);
+    for (auto& v : filtered) v *= g;
+  }
+  return filtered;
+}
+
+void checkPayloadSize(const TxFrameParams& p) {
+  if (p.payload.size() > kMaxPhyPayloadBytes) {
+    throw std::invalid_argument("frame too large");
+  }
+}
+
+// The PHY header a frame with these parameters carries.
+PhyHeader headerFor(const TxFrameParams& p) {
+  PhyHeader h;
+  h.waveform = kModes[size_t(p.mode)].waveform;
+  h.family = p.family;
+  h.mode = uint8_t(p.mode);
+  h.cpMode = p.cpMode;  // carried but unused by CSS transport
+  h.frameType = p.frameType;
+  h.length = uint16_t(p.payload.size());
+  h.seqLow = p.seqLow;
+  if (h.waveform == Waveform::Css) {
+    h.cssHeaderCopies = p.cssHeaderCopies == 1 ? 1 : 2;
+  }
+  h.poll = p.poll;
+  return h;
+}
+
+// LDPC-encode + interleave `bits` into consecutive codewords at `rate`,
+// each zero-padded to its k (not true-shortened: simplicity over the
+// last few % of efficiency). Codeword size per payloadCodewordN, or
+// always N=648 when `shortOnly` (CSS frames).
+std::vector<std::vector<uint8_t>> encodeCodewords(
+    std::span<const uint8_t> bits, CodeRate rate, bool shortOnly) {
+  std::vector<std::vector<uint8_t>> out;
+  size_t off = 0;
+  while (off < bits.size()) {
+    const size_t remaining = bits.size() - off;
+    const LdpcCode& code = LdpcCode::get(
+        shortOnly ? kLdpcNShort : payloadCodewordN(remaining, rate), rate);
+    std::vector<uint8_t> info(size_t(code.k()), 0);
+    const size_t nCopy = std::min(remaining, size_t(code.k()));
+    std::copy(bits.begin() + long(off), bits.begin() + long(off + nCopy),
+              info.begin());
+    std::vector<uint8_t> cw, il;
+    code.encode(info, cw);
+    interleaveBits(cw, il);
+    out.push_back(std::move(il));
+    off += nCopy;
+  }
+  return out;
 }
 
 }  // namespace
@@ -130,7 +202,7 @@ std::optional<PhyHeader> parsePhyHeader(std::span<const uint8_t> bytes) {
 }
 
 FrameBits buildFrameBits(const TxFrameParams& p) {
-  if (p.payload.size() > 4095) throw std::invalid_argument("frame too large");
+  checkPayloadSize(p);
   FrameBits fb;
 
   // Whiten a copy of the payload (fresh whitener per frame).
@@ -138,16 +210,8 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
   Whitener wh;
   wh.apply(white);
 
-  PhyHeader h;
-  h.family = p.family;
-  h.mode = uint8_t(p.mode);
-  h.cpMode = p.cpMode;
-  h.frameType = p.frameType;
-  h.length = uint16_t(p.payload.size());
-  h.seqLow = p.seqLow;
-  h.poll = p.poll;
   uint8_t hdr[kPhyHeaderBytes];
-  packPhyHeader(h, hdr);
+  packPhyHeader(headerFor(p), hdr);
 
   // Header codeword: 9 header bytes + up to 30 piggyback payload bytes,
   // zero-padded to the N=648 r1/2 info size (324 bits).
@@ -164,27 +228,11 @@ FrameBits buildFrameBits(const TxFrameParams& p) {
   hcode.encode(hinfo, coded);
   interleaveBits(coded, fb.headerCoded);
 
-  // Remaining payload -> codewords at the payload mode's rate, sized by
-  // payloadCodewordN, zero-padded (not true-shortened; simplicity over the
-  // last few % of efficiency - revisit with HARQ-IR in 3.4).
-  const ModeDef& md = kModes[size_t(p.mode)];
-  std::vector<uint8_t> rest(white.begin() + long(piggy), white.end());
-  auto restBits = bytesToBits(rest);
-  size_t off = 0;
-  while (off < restBits.size()) {
-    const size_t remaining = restBits.size() - off;
-    const LdpcCode& pcode =
-        LdpcCode::get(payloadCodewordN(remaining, md.rate), md.rate);
-    std::vector<uint8_t> info(size_t(pcode.k()), 0);
-    size_t nCopy = std::min(remaining, size_t(pcode.k()));
-    std::copy(restBits.begin() + long(off),
-              restBits.begin() + long(off + nCopy), info.begin());
-    std::vector<uint8_t> cw, il;
-    pcode.encode(info, cw);
-    interleaveBits(cw, il);
-    fb.payloadCoded.push_back(std::move(il));
-    off += nCopy;
-  }
+  // Remaining payload -> codewords at the payload mode's rate.
+  const auto restBits =
+      bytesToBits({white.data() + piggy, white.size() - piggy});
+  fb.payloadCoded =
+      encodeCodewords(restBits, kModes[size_t(p.mode)].rate, false);
   return fb;
 }
 
@@ -233,7 +281,7 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
       }
       srcVal.push_back(s);
     }
-    // Leftover cells: extra copies (layout.hpp leftoverCopiesEnabled).
+    // Leftover cells: extra copies (layout.hpp leftoverCopiesForSpread).
     if (nSrc > 0 && leftoverCopies && leftoverCopiesForSpread(spread)) {
       const int rem = int(pool.size()) - nSrc * spread;
       for (int j = 0; j < rem; ++j) {
@@ -258,8 +306,8 @@ int appendOfdmSymbols(Family family, Constellation constellation, int spread,
 }
 
 FrameGeometry computeGeometry(const TxFrameParams& p) {
+  FrameGeometry g;
   if (kModes[size_t(p.mode)].waveform == Waveform::Css) {
-    FrameGeometry g;
     const int sf = cssSf(p.mode);
     const size_t symH = cssSymbolSamples(p.family, kCssHeaderSf);
     const size_t symP = cssSymbolSamples(p.family, sf);
@@ -270,34 +318,28 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
     const size_t pSyms =
         (cssPayloadCodedBits(p.payload.size()) + size_t(sf) - 1) /
         size_t(sf);
-    g.preambleSamples =
-        int(chirpPattern(p.family, ChirpSig::Css).size()) * chirpRepSamples();
-    g.zcSymbols = 0;  // CSS frames sync on their own known symbols
     const size_t copies = p.cssHeaderCopies == 1 ? 1 : 2;
     const size_t hAll = copies * (hSyms + pilots(hSyms));
     g.headerSymbols = int(kCssSyncSymbols + hAll);
     g.payloadSymbols = int(pSyms + pilots(pSyms));
-    g.payloadCodewords = 0;  // Hamming, not LDPC
+    g.payloadCodewords = int(cssPayloadCodewords(p.payload.size()));
     g.totalSamples =
-        g.preambleSamples +
+        chirpPreambleSamples(p.family, ChirpSig::Css) +
         int(symH) * int(kCssSyncSymbols + hAll + pilots(pSyms)) +
         int(symP) * int(pSyms) + txBandTailSamples(p.family);
     return g;
   }
-  FrameGeometry g;
-  auto pre = makeChirpPreamble(p.family, p.sig);
-  g.preambleSamples = int(pre.size());
-  g.zcSymbols = zcSymbols(robustHeaderForSig(p.sig));
-
   const bool robust = robustHeaderForSig(p.sig);
   const int hSpread = headerSpread(robust);
 
-  // Header symbols: walk group capacities (QPSK, MEDIUM CP).
+  // Header symbols: walk group capacities (QPSK, MEDIUM CP) over the
+  // header codeword.
   const int hG = spreadGroupSymbols(p.family, hSpread);
-  int bits = 648;
+  int bits = kLdpcNShort;
   int sym = 0;
   while (bits > 0) {
-    bits -= sourceSymbolsPerGroup(p.family, sym, hSpread) * 2;
+    bits -= sourceSymbolsPerGroup(p.family, sym, hSpread) *
+            bitsPerSymbol(Constellation::Qpsk);
     sym += hG;
   }
   g.headerSymbols = sym;
@@ -331,7 +373,8 @@ FrameGeometry computeGeometry(const TxFrameParams& p) {
       kFftBaseband + cpSamplesAudio(CpMode::Medium) / kDecimation;
   const int paySymSamples =
       kFftBaseband + cpSamplesAudio(p.cpMode) / kDecimation;
-  g.totalSamples = g.preambleSamples + g.zcSymbols * zcSymbolSamples() +
+  g.totalSamples = chirpPreambleSamples(p.family, p.sig) +
+                   zcSymbols(robust) * zcSymbolSamples() +
                    g.headerSymbols * hdrSymSamples +
                    g.payloadSymbols * paySymSamples +
                    txBandTailSamples(p.family);
@@ -344,7 +387,7 @@ namespace {
 // payload (+CRC-16). Constant-envelope, so no PAPR clip; the family band
 // filter still smooths the cyclic-shift wrap discontinuities.
 std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
-  if (p.payload.size() > 4095) throw std::invalid_argument("frame too large");
+  checkPayloadSize(p);
   const int sf = cssSf(p.mode);
 
   std::vector<uint8_t> white(p.payload.begin(), p.payload.end());
@@ -354,16 +397,7 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
   white.push_back(uint8_t(crc >> 8));
   white.push_back(uint8_t(crc & 0xFF));
 
-  PhyHeader h;
-  h.waveform = Waveform::Css;
-  h.family = p.family;
-  h.mode = uint8_t(p.mode);
-  h.cpMode = p.cpMode;  // carried but unused by CSS transport
-  h.frameType = p.frameType;
-  h.length = uint16_t(p.payload.size());
-  h.seqLow = p.seqLow;
-  h.cssHeaderCopies = p.cssHeaderCopies == 1 ? 1 : 2;
-  h.poll = p.poll;
+  const PhyHeader h = headerFor(p);
   uint8_t hdr[kPhyHeaderBytes];
   packPhyHeader(h, hdr);
 
@@ -399,41 +433,14 @@ std::vector<cfloat> buildCssFrameBaseband(const TxFrameParams& p) {
   }
   // Payload: LDPC r1/2 (N=648 only) coded bits over soft symbols.
   {
-    auto restBits = bytesToBits(white);
     std::vector<uint8_t> coded;
     coded.reserve(cssPayloadCodedBits(p.payload.size()));
-    const LdpcCode& pcode = LdpcCode::get(kLdpcNShort, {1, 2});
-    size_t off = 0;
-    while (off < restBits.size()) {
-      const size_t remaining = restBits.size() - off;
-      std::vector<uint8_t> info(size_t(pcode.k()), 0);
-      const size_t nCopy = std::min(remaining, size_t(pcode.k()));
-      std::copy(restBits.begin() + long(off),
-                restBits.begin() + long(off + nCopy), info.begin());
-      std::vector<uint8_t> cw, il;
-      pcode.encode(info, cw);
-      interleaveBits(cw, il);
-      coded.insert(coded.end(), il.begin(), il.end());
-      off += nCopy;
+    for (const auto& cw : encodeCodewords(bytesToBits(white), {1, 2}, true)) {
+      coded.insert(coded.end(), cw.begin(), cw.end());
     }
     appendSymbols(sf, cssMapCodedBits(coded, sf));
   }
-
-  FirDecimator bandFilt(familyTxBandTaps(p.family), 1);
-  std::vector<cfloat> filtered;
-  filtered.reserve(frame.size());
-  bandFilt.process(frame, filtered);
-  std::vector<cfloat> zeros(size_t(txBandTailSamples(p.family)), cfloat(0, 0));
-  bandFilt.process(zeros, filtered);
-
-  double pow = 0;
-  for (const auto& v : filtered) pow += std::norm(v);
-  double rms = std::sqrt(pow / double(filtered.size()));
-  if (rms > 1e-12) {
-    float g = float(1.0 / rms);
-    for (auto& v : filtered) v *= g;
-  }
-  return filtered;
+  return bandFilterNormalize(p.family, frame);
 }
 
 }  // namespace
@@ -472,37 +479,20 @@ std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p) {
       sym += appendOfdmSymbols(p.family, md.constellation, md.spread,
                                p.cpMode, allBits, sym, frame,
                                effectiveMask(p.mask, p.family, p.mode),
-                               leftoverCopiesEnabled());
+                               /*leftoverCopies=*/true);
     }
   }
 
-  // PAPR soft clip at +8 dB over current RMS.
+  // PAPR soft clip at the band's ceiling over current RMS.
   double pow = 0;
   for (const auto& v : frame) pow += std::norm(v);
-  double rms = std::sqrt(pow / double(frame.size()));
+  const double rms = std::sqrt(pow / double(frame.size()));
   const float ceiling = float(rms * std::pow(10.0, activeProfile().txPaprCeilingDb / 20.0));
   for (auto& v : frame) {
     float mag = std::abs(v);
     if (mag > ceiling) v *= ceiling / mag;
   }
-
-  // Occupied-band filter, then normalize to unit RMS.
-  FirDecimator bandFilt(familyTxBandTaps(p.family), 1);
-  std::vector<cfloat> filtered;
-  filtered.reserve(frame.size());
-  bandFilt.process(frame, filtered);
-  // Flush the filter tail so the frame end is not truncated.
-  std::vector<cfloat> zeros(size_t(txBandTailSamples(p.family)), cfloat(0, 0));
-  bandFilt.process(zeros, filtered);
-
-  pow = 0;
-  for (const auto& v : filtered) pow += std::norm(v);
-  rms = std::sqrt(pow / double(filtered.size()));
-  if (rms > 1e-12) {
-    float g = float(1.0 / rms);
-    for (auto& v : filtered) v *= g;
-  }
-  return filtered;
+  return bandFilterNormalize(p.family, frame);
 }
 
 }  // namespace skw

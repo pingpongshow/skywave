@@ -21,7 +21,7 @@ struct PhyHeader {
   uint8_t version = kWireVersion;
   Waveform waveform = Waveform::Ofdm;
   Family family = Family::Wide;
-  uint8_t mode = 8;        // payload ladder mode M4..M13
+  uint8_t mode = 8;        // payload ladder mode M0..M14
   CpMode cpMode = CpMode::Medium;
   uint8_t frameType = 0;   // 6 bits (PROTOCOL.md)
   uint16_t length = 0;     // total link payload bytes (12 bits)
@@ -38,7 +38,26 @@ struct PhyHeader {
   bool poll = false;
 };
 
-inline constexpr int kPhyHeaderBytes = 9;  // 50 field bits + pad + crc16
+inline constexpr int kPhyHeaderBytes = 9;  // 52 field bits + pad + crc16
+// Largest PHY payload: the header's 12-bit length field.
+inline constexpr size_t kMaxPhyPayloadBytes = 4095;
+
+// MSB-first bit (one per byte) <-> byte packing, shared by TX and RX.
+inline std::vector<uint8_t> bytesToBits(std::span<const uint8_t> bytes) {
+  std::vector<uint8_t> bits;
+  bits.reserve(bytes.size() * 8);
+  for (uint8_t b : bytes) {
+    for (int i = 7; i >= 0; --i) bits.push_back((b >> i) & 1);
+  }
+  return bits;
+}
+inline std::vector<uint8_t> bitsToBytes(std::span<const uint8_t> bits) {
+  std::vector<uint8_t> out((bits.size() + 7) / 8, 0);
+  for (size_t i = 0; i < bits.size(); ++i) {
+    out[i / 8] |= uint8_t((bits[i] & 1) << (7 - i % 8));
+  }
+  return out;
+}
 
 // Pack to 9 bytes (CRC16 over the first 7); parse returns nullopt on bad
 // CRC/magic/version.
@@ -78,7 +97,7 @@ inline size_t cssPayloadCodedBits(size_t phyBytes) {
 struct TxFrameParams {
   Family family = Family::Wide;
   ChirpSig sig = ChirpSig::Fast;   // preamble signature / header class
-  int mode = 8;                    // payload mode (M4..M13)
+  int mode = 8;                    // payload mode (M0..M14)
   CpMode cpMode = CpMode::Medium;  // payload CP
   uint8_t frameType = 0;
   uint8_t seqLow = 0;
@@ -86,19 +105,22 @@ struct TxFrameParams {
   // connected-session short layout, capability-gated). See PhyHeader.
   uint8_t cssHeaderCopies = 2;
   bool poll = false;  // see PhyHeader::poll
-  std::span<const uint8_t> payload;  // link frame bytes, <= 4095
+  std::span<const uint8_t> payload;  // link frame bytes, <= kMaxPhyPayloadBytes
   // Session carrier mask, PAYLOAD symbols only (LINK_ADAPTATION.md);
   // nullptr = all carriers usable.
   const CarrierMask* mask = nullptr;
 };
 
-// Frame geometry shared by TX and (later) RX.
+// Frame geometry, computed from the parameters alone (nothing is built:
+// the link layer asks for airtimes many times per frame).
+//   OFDM: header/payload symbols are OFDM symbols (header at MEDIUM CP,
+//         payload at params.cpMode).
+//   CSS:  headerSymbols = sync + header-copy SF8 symbols incl. their
+//         pilots, payloadSymbols = SF(mode) data symbols + SF8 pilots.
 struct FrameGeometry {
-  int preambleSamples = 0;
-  int zcSymbols = 0;
-  int headerSymbols = 0;   // MEDIUM CP each
-  int payloadSymbols = 0;  // params.cpMode each
-  int payloadCodewords = 0;
+  int headerSymbols = 0;
+  int payloadSymbols = 0;
+  int payloadCodewords = 0;  // LDPC codewords after the header piggyback
   int totalSamples = 0;
 };
 FrameGeometry computeGeometry(const TxFrameParams& p);
@@ -134,13 +156,14 @@ inline double frameAirtimeSec(const TxFrameParams& p) {
 // PAPR soft-clipping and per-family band filtering.
 std::vector<cfloat> buildFrameBaseband(const TxFrameParams& p);
 
-// --- pieces exposed for tests and the RX chain -----------------------------
+// --- pieces exposed for tests ------------------------------------------------
 
-// Whiten payload, split into header-piggyback + N=1944 payload codewords,
-// LDPC-encode + interleave each; returns coded-bit vectors (one bit/byte).
+// OFDM frames: whiten payload, split into header piggyback + payload
+// codewords (sized by payloadCodewordN), LDPC-encode + interleave each;
+// returns coded-bit vectors (one bit/byte).
 struct FrameBits {
-  std::vector<uint8_t> headerCoded;               // 648 bits
-  std::vector<std::vector<uint8_t>> payloadCoded;  // 1944 bits each
+  std::vector<uint8_t> headerCoded;                // 648 bits
+  std::vector<std::vector<uint8_t>> payloadCoded;  // 648 or 1944 bits each
 };
 FrameBits buildFrameBits(const TxFrameParams& p);
 

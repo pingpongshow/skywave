@@ -16,6 +16,11 @@ struct MaskDetectorConfig {
   double persistSec = 5.0;
   double emaAlpha = 0.3;
   double maxMaskedRatio = 0.30;  // never propose beyond this
+  // Most carriers a mask may exclude: what the detector proposes at most,
+  // and what a peer's MASK_UPDATE is refused above.
+  int maxMasked(int carriers) const {
+    return int(maxMaskedRatio * carriers);
+  }
 };
 
 class MaskDetector {
@@ -29,8 +34,6 @@ class MaskDetector {
   // Current proposal: carriers excluded, capped at maxMaskedRatio
   // (worst offenders first). All-usable when nothing qualifies.
   CarrierMask proposal(double now) const;
-  bool ratioExceeded(double now) const;  // > 30% qualify: AMC should demote
-  void reset();
 
   // Advisor assist hook (LINK_ADAPTATION.md): bounded threshold bias on
   // top of the configured belowMedianDb; clamped to +-1.5 dB.

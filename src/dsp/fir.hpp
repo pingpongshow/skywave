@@ -15,6 +15,10 @@ using cfloat = std::complex<float>;
 std::vector<float> designKaiserLowpass(double sampleRate, double passHz,
                                        double stopHz, double attenDb,
                                        double gain = 1.0);
+// The tap count designKaiserLowpass returns: it depends only on the
+// transition width (stopHz - passHz) and the attenuation.
+int kaiserLowpassLength(double sampleRate, double transitionHz,
+                        double attenDb);
 
 // Streaming FIR + downsample-by-factor on complex samples.
 class FirDecimator {
@@ -23,7 +27,6 @@ class FirDecimator {
   // Appends outputs to out; input length need not be a multiple of factor.
   void process(std::span<const cfloat> in, std::vector<cfloat>& out);
   int groupDelayInput() const { return int(taps_.size() / 2); }
-  void reset();
 
  private:
   std::vector<float> taps_;
@@ -39,7 +42,6 @@ class FirInterpolator {
   // Emits factor outputs per input sample (polyphase - no explicit zeros).
   void process(std::span<const cfloat> in, std::vector<cfloat>& out);
   int groupDelayOutput() const { return int(taps_.size() / 2); }
-  void reset();
 
  private:
   std::vector<float> taps_;

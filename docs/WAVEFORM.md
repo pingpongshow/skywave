@@ -152,9 +152,9 @@ ordered strictly by robustness.
 | Mode | Waveform | Constellation | LDPC rate | Spread | Notes |
 |---|---|---|---|---:|---|
 | `M0` | CSS | — | LDPC 1/2 (soft) | SF8 | deep tier; CAP_CSS_TIER-gated |
-| `M1` | CSS | — | Hamming(7,4) | SF7 | |
-| `M2` | CSS | — | Hamming(7,4) | SF6 | |
-| `M3` | CSS | — | Hamming(7,4) | SF5 | |
+| `M1` | CSS | — | LDPC 1/2 (soft) | SF7 | |
+| `M2` | CSS | — | LDPC 1/2 (soft) | SF6 | |
+| `M3` | CSS | — | LDPC 1/2 (soft) | SF5 | |
 | `M4` | OFDM | QPSK | 1/2 | 16 | robust floor; handshake transport |
 | `M5` | OFDM | QPSK | 1/2 | 8 | |
 | `M6` | OFDM | QPSK | 1/2 | 4 | |
@@ -359,7 +359,7 @@ handshake):
 |---|---:|---|
 | `magic` | 8 | `0x5C` |
 | `version` | 4 | wire version, v1 = `1` |
-| `waveform` | 4 | `0=OFDM`, `1=CSS (reserved)` |
+| `waveform` | 4 | `0=OFDM`, `1=CSS` (M0–M3) |
 | `family` | 2 | `0=WIDE, 1=MID, 2=NARROW, 3=ULTRA` |
 | `mode` | 4 | ladder index of the **payload** |
 | `cp_mode` | 2 | payload CP |
@@ -449,8 +449,8 @@ inverted.
 
 - per-copy pseudorandom spreading phases and the whitener keep PAPR near the
   Gaussian baseline
-- a soft clipper at 8 dB PAPR ceiling followed by the occupied-band filter
-  bounds out-of-band regrowth
+- a soft clipper at the band's PAPR ceiling (HF 8 dB, VHF-FM 11 dB) followed
+  by the occupied-band filter bounds out-of-band regrowth
 - TX level normalization targets consistent RMS across frame types
   ([DSP.md](DSP.md)); the passband level is per band (`txTargetRms`: HF
   0.22 RMS, -13.2 dBFS; VHF 0.17, -15.4 dBFS) so that each band's PAPR
@@ -466,7 +466,8 @@ integration (6.2: `waveform=1` frames, sync arbitration by preamble
 signature, `CAP_CSS_TIER` negotiation, handshake-on-CSS, AMC ladder
 extension).
 
-**Frame on air** (`waveform=1`): chirp preamble (signature up–down–down–up)
+**Frame on air** (`waveform=1`): chirp preamble (signature up–down–down–up;
+12 reps on MID/NARROW, see "Chirp Preamble")
 → `kCssSyncSymbols` known shift-0 SF8 symbols (fine timing to the sample;
 CFO↔delay coupling makes residual CFO a pure common shift absorbed here;
 multipath tap profile for RAKE) → PHY header **twice** (Hamming(7,4) bit
@@ -481,9 +482,9 @@ symbols of every section: it re-anchors timing (sample-clock drift) and
 refreshes the persistent RAKE tap tracker (Rayleigh taps trade dominance
 on ~1 s scales while deep frames run 10+ s; a tap's remembered strength
 decays over a few pilots rather than vanishing the instant it fades).
-Hard-decision Hamming remains the header transport and the aligned
-modem-layer API; measured ~4–6 dB shy of soft LDPC for long payload
-sections under fading (the 1-error-per-codeword cliff).
+Hamming(7,4) remains the header transport only; the payload moved to
+LDPC because hard Hamming measured ~4–6 dB shy of soft LDPC for long
+payload sections under fading (the 1-error-per-codeword cliff).
 
 **Header copies — measured (2026-09-05).** The second SF8 header copy is
 ~1.9 s per frame on WIDE and ~9.6 s on NARROW, so a single-copy
@@ -515,10 +516,11 @@ split-bin folding doubles the noise). Symbol quality proxy: peak/mean
 magnitude ratio over the lag bank (~0.5·2^SF on a clean channel).
 
 **Bit layer.** Bin index = `fromGray(bits)` so an adjacent-bin demod error
-costs exactly one data bit; Hamming(7,4) per nibble; depth-7 block
-interleaver spreads each codeword across 7 symbols, so one wholly wrong
-symbol costs each touched codeword at most one (corrected) bit for
-SF ≤ 7.
+costs exactly one data bit (payload and header alike). Header: Hamming(7,4)
+per nibble with a full-message row-column interleave (bit i of codeword j
+at stream position i·ncw + j), so a contiguous loss spreads over the
+codewords instead of wiping some. Payload: LDPC coded bits, SF per symbol,
+interleaved per codeword as on OFDM.
 
 **Measured AWGN floors** (dB SNR, 3 kHz noise reference): FULL-FRAME
 floors — preamble, sync, header copies and LDPC payload through the

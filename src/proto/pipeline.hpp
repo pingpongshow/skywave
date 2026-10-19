@@ -23,12 +23,14 @@
 
 namespace skw {
 
+// The marker byte alone says whether a message is compressed (the link
+// envelope carries no compression flag).
 inline constexpr uint8_t kProtoMarkerStored = 0x00;
 inline constexpr uint8_t kProtoMarkerZstd = 0x5A;
 // Inner service tag, first byte of every (decompressed) message
-// (PROTOCOL.md "File Transfer"): which service the bytes belong to.
+// (PROTOCOL.md "Payload Pipeline"). The byte stream is the only service;
+// other values are reserved and dropped as malformed.
 inline constexpr uint8_t kSvcStream = 0x01;
-inline constexpr uint8_t kSvcFile = 0x02;
 inline constexpr size_t kProtoDecompressCap = 8u << 20;  // 8 MiB
 inline constexpr double kCoalesceWindowSec = 0.25;
 // Window-full seal cap: TX-local segmentation policy (the receiver
@@ -53,6 +55,13 @@ std::optional<std::vector<uint8_t>> zstdUnpack(
 // header piggyback, then greedy payloadCodewordN codewords).
 int payloadCodewordCount(size_t phyPayloadBytes, int mode);
 
+// Bytes a DATA frame adds around its payload on the air: the link
+// envelope + CRC (kFrameOverhead, 12), the HARQ rv byte, and - inside a
+// burst container (framesPerBurst > 1) - the u16 entry length prefix.
+inline constexpr size_t dataFrameOverhead(int framesPerBurst) {
+  return 12 + 1 + (framesPerBurst > 1 ? 2 : 0);
+}
+
 // Largest DATA payload size (bytes handed to DataBody) such that the
 // on-air PHY payload - a solo link frame when framesPerBurst == 1, or an
 // F-entry burst container otherwise - fills `codewordsTarget` codewords
@@ -62,7 +71,7 @@ size_t dataPayloadBudget(int mode, int framesPerBurst, int codewordsTarget);
 
 // --- TX side ---------------------------------------------------------------
 struct ProtoSegment {
-  uint8_t flags = 0;  // kFlagCompressed | kFlagMoreFragments
+  uint8_t flags = 0;  // kFlagMoreFragments
   std::vector<uint8_t> bytes;
 };
 
@@ -81,9 +90,6 @@ class ProtoTx {
   // Buffer app STREAM bytes (kSvcStream); the coalesce deadline arms at
   // the first byte of an empty window.
   void submit(std::span<const uint8_t> bytes, double now);
-  // Enqueue one complete service message (e.g. a kSvcFile record). Any
-  // pending stream window seals first so cross-service order is kept.
-  void submitMessage(uint8_t svcTag, std::span<const uint8_t> bytes);
   // Next wire segment of at most `budget` bytes, or nullopt if the
   // coalesce window is still open and nothing is sealed.
   std::optional<ProtoSegment> nextSegment(size_t budget, double now);
@@ -115,14 +121,13 @@ class ProtoTx {
 
  private:
   void maybeSeal(double now);
-  void seal(uint8_t svcTag, std::span<const uint8_t> raw);
+  void seal(std::span<const uint8_t> raw);
 
   bool zstd_ = false;
   size_t sealCap_ = size_t(-1);
   std::vector<uint8_t> coalesce_;
   double deadline_ = 0.0;
   struct Msg {
-    uint8_t flags = 0;
     std::vector<uint8_t> bytes;  // marker + body
     size_t off = 0;
     // APPLICATION bytes this message carries, before the service tag,
@@ -145,15 +150,12 @@ class ProtoRx {
  public:
   void onSegment(uint8_t flags, std::span<const uint8_t> bytes);
   std::vector<uint8_t> takeBytes();  // kSvcStream payload, in order
-  // Complete non-stream service messages (tag stripped), in order.
-  std::vector<std::vector<uint8_t>> takeServiceMessages(uint8_t svcTag);
   uint32_t badMessages() const { return bad_; }
   // Drop any half-assembled message (session teardown without resume).
   void abortMessage() {
     assembly_.clear();
     resync_ = false;
   }
-  void reset();
 
  private:
   void deliver(std::span<const uint8_t> message);
@@ -161,7 +163,6 @@ class ProtoRx {
   std::vector<uint8_t> assembly_;
   bool resync_ = false;  // discarding the rest of an oversize chain
   std::vector<uint8_t> out_;
-  std::vector<std::pair<uint8_t, std::vector<uint8_t>>> svcOut_;
   uint32_t bad_ = 0;
 };
 

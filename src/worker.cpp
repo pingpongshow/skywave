@@ -10,6 +10,7 @@
 #include <cstdlib>
 
 #include "core/constants.hpp"
+#include "core/strutil.hpp"
 #include "sim/chansim.hpp"
 #include "core/log.hpp"
 #include "link/frame.hpp"
@@ -61,15 +62,17 @@ constexpr double kRxHistorySec = 94.0;
 // has already failed several rungs, so the oldest is dropped. Eight is
 // far above any legitimate overlap - a real one is 1-3, and the CSS deep
 // tier's 35-55 s frames still only ever have a couple open at once.
-// SKW_MAX_PENDING_RX is the A/B.
-inline size_t maxPendingRx() {
-  static const size_t v = [] {
-    const char* e = std::getenv("SKW_MAX_PENDING_RX");
-    const long n = e ? std::atol(e) : 8;
-    return n > 0 ? size_t(n) : size_t(8);
-  }();
-  return v;
-}
+constexpr size_t kMaxPendingRx = 8;
+
+// Channel memory is saved when a session ends, at most this often (and
+// always at exit), so a crash loses at most a minute of learning.
+constexpr double kChanMemSaveSec = 60.0;
+
+// BEACON's SNR-floor byte (PROTOCOL.md: u8 = dB + 20). The modem has no
+// calibrated SNR floor - its noise floor is a dBFS level, which says
+// nothing about SNR - so it sends 0xFF, "unknown", instead of the old
+// made-up mapping from dBFS. sendBeacon() adds 20 and clamps to 0..255.
+constexpr double kBeaconSnrUnknownDb = 255.0 - 20.0;
 
 // How long a busy period is presumed to be a station before the chirp
 // detector's silence reclassifies it as noise. Must exceed the detector's
@@ -99,16 +102,12 @@ std::string fmt1(double v) {
 // Control-port responses are canonical UPPERCASE (like MYCALL / MODE /
 // CPMODE); core toString() stays lowercase for INI files and logs, which
 // CONFIGURATION.md defines that way.
-std::string upperStr(std::string s) {
-  for (char& ch : s) ch = char(std::toupper(static_cast<unsigned char>(ch)));
-  return s;
-}
+std::string upperStr(std::string s) { return toUpper(std::move(s)); }
 
 #ifdef SKW_HAVE_VOICE
 // INI voice.codec / VOICECODEC: nullopt = AUTO; false = not a codec.
 bool parseVoiceCodecSel(const std::string& in, std::optional<VoiceCodec>& out) {
-  std::string c;
-  for (char ch : in) c += char(std::toupper(static_cast<unsigned char>(ch)));
+  const std::string c = toUpper(in);
   if (c == "AUTO") { out.reset(); return true; }
   if (c == "700C" || c == "700") { out = VoiceCodec::C700; return true; }
   if (c == "1300") { out = VoiceCodec::C1300; return true; }
@@ -124,6 +123,7 @@ ModemWorker::ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
                          SampleRing& txRing)
     : cfg_(cfg), clock_(clock), rx_(rxRing), tx_(txRing) {
   chunk_.resize(kChunkSamples);
+  ladderDbg_ = std::getenv("SKW_RXLADDER_DEBUG") != nullptr;
   listen_ = cfg_.listen;
 #ifdef SKW_HAVE_VOICE
   // voice.codec was parsed from the INI and then ignored.
@@ -287,10 +287,23 @@ std::string ModemWorker::defaultChanMemPath() {
 }
 
 // Written on teardown and, so a crash cannot lose a day of learning, at
-// most every 60 s while sessions are ending.
+// most every kChanMemSaveSec while sessions are ending.
 void ModemWorker::saveChanMem() {
   if (chanMemPath_.empty() || chanMem_.entries() == 0) return;
-  chanMem_.save(chanMemPath_);
+  if (!chanMem_.save(chanMemPath_)) {
+    SKW_WARN("chanmem: cannot write %s", chanMemPath_.c_str());
+  }
+}
+
+// Runs after the engine's tick in each pass: the engine records a session
+// into the store on its session-end edge, which can be the tick AFTER the
+// worker saw the state leave CONNECTED, so the flag set by
+// updateStateEventsLocked() is only acted on from the next pass.
+void ModemWorker::maybeSaveChanMemLocked(double now) {
+  if (!chanMemDirty_ || now - chanMemSavedAt_ < kChanMemSaveSec) return;
+  chanMemDirty_ = false;
+  chanMemSavedAt_ = now;
+  saveChanMem();
 }
 
 // --- physical keying ---------------------------------------------------------
@@ -410,14 +423,10 @@ void ModemWorker::rebuildEngine() {
   ec.policy.ownCall = cfg_.callsign;
   ec.policy.family = cfg_.family;
   ec.policy.maxMode = uint8_t(cfg_.maxMode);
-  uint16_t caps = kCapZstd | kCapBurstMac;
-  // Scheduled turn-taking (PROTOCOL.md "Turn-Taking"): INI
-  // `modem.turn_taking` (default on); SKW_NO_TURNSCHED is the A/B
-  // override for measuring against the legacy occupancy-gate scheduler.
-  if (cfg_.turnTaking && !getenv("SKW_NO_TURNSCHED")) caps |= kCapTurnSched;
+  uint16_t caps = kCapZstd;
   if (cfg_.resume) caps |= kCapResume;
   if (cfg_.carrierMasking && prof.masking) caps |= kCapMasking;
-  if (cfg_.harq != HarqMode::Chase) caps |= kCapHarqIr;
+  if (cfg_.harq == HarqMode::Ir) caps |= kCapHarqIr;
 #ifdef SKW_HAVE_VOICE
   caps |= kCapVoice;  // the peer may open voice only if we advertise it
 #endif
@@ -425,6 +434,11 @@ void ModemWorker::rebuildEngine() {
   if (css) caps |= kCapCssTier;
   ec.policy.cssEnable = css;
   ec.policy.ultraEnable = cfg_.ultraEnable;
+  // modem.family_fallback drives both halves of the narrower-family
+  // fallback: the caller's late CALL attempts and the engine's decode
+  // scan here, plus the worker's second chirp detector (below). It used
+  // to gate only the detector, leaving the engine's halves always on.
+  ec.policy.familyFallback = cfg_.familyFallback;
   ec.policy.caps = caps;
   ec.arqMaxRetries = cfg_.maxRetries;
   // `CHANMEM OFF` withholds the pointer, which disables seeding AND
@@ -438,19 +452,13 @@ void ModemWorker::rebuildEngine() {
   ec.cwWpm = cfg_.cwWpm;
 #ifdef SKW_HAVE_CRYPTO
   // Encryption is advertised only with a usable PSK and hardware AES.
-  if (cfg_.cryptoPsk.size() == kPskBytes * 2) {
-    ec.psk.reserve(kPskBytes);
-    for (size_t i = 0; i + 1 < cfg_.cryptoPsk.size(); i += 2) {
-      auto nib = [](char ch) {
-        return ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10;
-      };
-      ec.psk.push_back(uint8_t(nib(cfg_.cryptoPsk[i]) << 4 |
-                               nib(cfg_.cryptoPsk[i + 1])));
-    }
+  // (Config load and ENCRYPTKEY both validate the hex; a bad value is no
+  // key, never a garbage one.)
+  if (auto psk = hexDecode(cfg_.cryptoPsk); psk && psk->size() == kPskBytes) {
+    ec.psk = std::move(*psk);
   }
   if (cfg_.cryptoEnabled && ec.psk.size() == kPskBytes &&
       CryptoSession::available()) {
-    ec.encryptionRequested = true;
     ec.policy.caps |= kCapEncryption;
   }
 #endif
@@ -459,8 +467,8 @@ void ModemWorker::rebuildEngine() {
   // per frame, so it is paid for only when something renders it.
   engine_->setWantConstellation(cfg_.guiEnabled);
   if (cfg_.cpMode >= 0) {
-    static const char* kCp[] = {"SHORT", "MEDIUM", "LONG"};
-    engine_->setCpPolicy(kCp[std::clamp(cfg_.cpMode, 0, 2)], nowSec());
+    engine_->setCpPolicy(toString(CpMode(std::clamp(cfg_.cpMode, 0, 2))),
+                         nowSec());
   }
   monitor_.emplace(cfg_.family);
   // Physical keying follows the config; releasing the old driver first
@@ -499,11 +507,6 @@ void ModemWorker::stop() {
   if (thread_.joinable()) thread_.join();
 }
 
-void ModemWorker::postCommand(WorkerCommand cmd) {
-  std::lock_guard lock(cmdMutex_);
-  pendingCmds_.push_back(std::move(cmd));
-}
-
 Config ModemWorker::config() const {
   std::lock_guard lock(modemMutex_);
   return cfg_;
@@ -538,18 +541,6 @@ void ModemWorker::publishTelemetry() {
   std::atomic_thread_fence(std::memory_order_release);
   telemetry_ = working_;
   telemetryVersion_.store(v + 2, std::memory_order_release);  // -> even
-}
-
-void ModemWorker::applyPendingCommands() {
-  std::vector<WorkerCommand> cmds;
-  {
-    std::lock_guard lock(cmdMutex_);
-    cmds.swap(pendingCmds_);
-  }
-  for (auto& c : cmds) {
-    const std::string resp = control(c.line);
-    SKW_DEBUG("cmd '%s' -> '%s'", c.line.c_str(), resp.c_str());
-  }
 }
 
 // --- data / notification bridges ---------------------------------------------
@@ -600,19 +591,13 @@ void ModemWorker::publishStatusLocked(double now) {
   if (lastStatusPubSec_ >= 0.0 && now - lastStatusPubSec_ < 0.25) return;
   lastStatusPubSec_ = now;
   WorkerStatus st;
-  const FsmState fs = engine_->state();
-  st.state = (fs == FsmState::Idle && listen_) ? "LISTENING" : fsmStateNameLocked(fs);
+  st.state = stateNameLocked();
   st.call = cfg_.callsign;
-  st.family = upperStr(toString(cfg_.family));
-  const int m = engine_->sessionMode();
-  st.mode = (engine_->modePinned() || cfg_.mode >= 4)
-                ? "M" + std::to_string(cfg_.mode >= 4 ? cfg_.mode : m)
-                : "AUTO(M" + std::to_string(m) + ")";
+  st.family = familyNameLocked();
+  st.mode = modeNameLocked();
   st.status = statusFieldsLocked(false);
-  st.freqInfo = "CENTER=" + fmt1(centerHz()) +
-                " SHIFT=" + fmt1(engine_->txShiftHz()) +
-                " CFO=" + fmt1(engine_->lastRxCfoHz());
-  st.audioLevel = "RX=" + fmt1(rxLevel_) + " TX=" + fmt1(txLevel_);
+  st.freqInfo = freqInfoLocked();
+  st.audioLevel = audioLevelLocked();
   st.netBps = engine_->netBps();
   std::lock_guard lock(statusMutex_);
   status_ = std::move(st);
@@ -763,10 +748,10 @@ bool ModemWorker::ingestChunkLocked(double now) {
   for (const auto& d : dets_) {
     const double margin = kRxPreMarginSec * kFsBaseband;
     const double s = std::max(0.0, d.startSample - margin);
-    // Bounded backlog: see maxPendingRx(). Dropping the OLDEST keeps the
+    // Bounded backlog: see kMaxPendingRx. Dropping the OLDEST keeps the
     // freshest evidence and, because the history trim below must retain
     // every open capture's start, also bounds hist_.
-    while (pendingRx_.size() >= maxPendingRx()) {
+    while (pendingRx_.size() >= kMaxPendingRx) {
       pendingRx_.pop_front();
       ++rxCapturesDropped_;
     }
@@ -811,8 +796,7 @@ void ModemWorker::decodePendingLocked(double now) {
     // handshake bursts outgrow the 5 s window; WIDE's fit). When the
     // channel just went QUIET, decode NOW with exactly the audio that
     // exists - once per quiet period per capture.
-    if (getenv("SKW_RXLADDER_DEBUG") &&
-        now - ladderDbgAt_ > 1.0) {
+    if (ladderDbg_ && now - ladderDbgAt_ > 1.0) {
       ladderDbgAt_ = now;
       fprintf(stderr,
               "%s ladder t=%.1f busy=%d blk=%.1f floor=%.1f tries=%d "
@@ -860,7 +844,7 @@ void ModemWorker::decodePendingLocked(double now) {
                                     size_t(w1 - w0));
         const bool engineEligible =
             listen_ || engine_->state() != FsmState::Idle;
-        if (getenv("SKW_RXLADDER_DEBUG")) {
+        if (ladderDbg_) {
           fprintf(stderr, "%s burst-end-final t=%.1f air=%.1f tries=%d\n",
                   cfg_.callsign.c_str(), now, it->airtimeSec, it->tries);
         }
@@ -913,7 +897,7 @@ void ModemWorker::decodePendingLocked(double now) {
                                            : 1.5;
       if (have < nextNeed && have > uint64_t(prevSec * kFsBaseband)) {
         it->quietTriedTries = it->tries;
-        if (getenv("SKW_RXLADDER_DEBUG")) {
+        if (ladderDbg_) {
           fprintf(stderr, "%s quiet-try t=%.1f haveSec=%.1f tries=%d\n",
                   cfg_.callsign.c_str(), now,
                   double(have) / kFsBaseband, it->tries);
@@ -1197,13 +1181,13 @@ void ModemWorker::updateStateEventsLocked() {
                                  lastState_ == FsmState::WaitStartAck ||
                                  lastState_ == FsmState::CallAnswered);
     lastState_ = st;
+    // The engine records the session into channel memory on its
+    // session-end edge; persist it (rate limited) from the next pass.
+    if (wasConnected && cfg_.channelMemory) chanMemDirty_ = true;
     std::lock_guard lock(bridgeMutex_);
-    notes_.push_back(evtState(st == FsmState::Idle && listen_
-                                  ? "LISTENING"
-                                  : fsmStateNameLocked(st)));
+    notes_.push_back(evtState(stateNameLocked()));
     if (st == FsmState::Connected) {
-      notes_.push_back(evtConnected(engine_->remoteCall(),
-                                    upperStr(toString(cfg_.family)),
+      notes_.push_back(evtConnected(engine_->remoteCall(), familyNameLocked(),
                                     engine_->sessionMode()));
     }
     // A FAILED CONNECTION ATTEMPT used to report NOTHING. The event was
@@ -1307,6 +1291,7 @@ size_t ModemWorker::processChunk() {
       (double(txPending_.size() - txPendingOff_) + double(tx_.readAvailable())) /
       double(kFsAudio));
   pumpTxLocked(now);
+  maybeSaveChanMemLocked(now);  // before the state check: see there
   pttRetryUnkeyLocked(now);
   drainEngineOutputsLocked();
   updateStateEventsLocked();
@@ -1314,7 +1299,6 @@ size_t ModemWorker::processChunk() {
   exchangeBridgesLocked();  // decoded voice out, backlog after this pass
   publishStatusLocked(now);
 
-  working_.clockUs = clock_.nowUs();
   working_.rxSamplesTotal = rxTotal_;
   working_.rxCapturesOpened = rxCapturesOpened_;
   working_.rxCapturesDropped = rxCapturesDropped_;
@@ -1348,7 +1332,6 @@ size_t ModemWorker::processChunk() {
       working_.maskBits[i] = m.bits[i];
     }
   }
-  working_.fsmState = uint8_t(engine_->state());
   working_.mode = uint8_t(engine_->sessionMode());
   publishTelemetry();
   return std::min(availBefore, kChunkSamples) +
@@ -1376,15 +1359,11 @@ void ModemWorker::applyDeferredLocked(double now) {
   }
 }
 
-size_t ModemWorker::runOnce() {
-  applyPendingCommands();
-  return processChunk();
-}
+size_t ModemWorker::runOnce() { return processChunk(); }
 
 void ModemWorker::threadMain() {
   SKW_INFO("worker: started");
   while (running_.load(std::memory_order_relaxed)) {
-    applyPendingCommands();
     const size_t processed = processChunk();
     if (processed == 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1415,9 +1394,32 @@ std::string ModemWorker::fsmStateNameLocked(FsmState st) {
   return "IDLE";
 }
 
-double ModemWorker::netBps() {
-  std::lock_guard lock(modemMutex_);
-  return engine_->netBps();
+std::string ModemWorker::stateNameLocked() const {
+  const FsmState st = engine_->state();
+  return st == FsmState::Idle && listen_ ? "LISTENING" : fsmStateNameLocked(st);
+}
+
+std::string ModemWorker::familyNameLocked() const {
+  return upperStr(toString(cfg_.family));
+}
+
+// An operator pin (MODE Mx) is reported as soon as it is set - while idle
+// it applies from the next session; a pin the engine holds otherwise (the
+// peer's request) reports the session mode; AUTO shows the mode in use.
+std::string ModemWorker::modeNameLocked() const {
+  const int m = engine_->sessionMode();
+  if (cfg_.mode >= kFirstMode) return "M" + std::to_string(cfg_.mode);
+  if (engine_->modePinned()) return "M" + std::to_string(m);
+  return "AUTO(M" + std::to_string(m) + ")";
+}
+
+std::string ModemWorker::freqInfoLocked() const {
+  return "CENTER=" + fmt1(centerHz()) + " SHIFT=" + fmt1(engine_->txShiftHz()) +
+         " CFO=" + fmt1(engine_->lastRxCfoHz());
+}
+
+std::string ModemWorker::audioLevelLocked() const {
+  return "RX=" + fmt1(rxLevel_) + " TX=" + fmt1(txLevel_);
 }
 
 std::string ModemWorker::myCall() {
@@ -1437,7 +1439,7 @@ bool ModemWorker::setMyCall(const std::string& call) {
 
 bool ModemWorker::connectTo(const std::string& call) {
   std::lock_guard lock(modemMutex_);
-  if (engine_->state() != FsmState::Idle) return false;
+  if (txBlockedLocked() || engine_->state() != FsmState::Idle) return false;
   if (!validateCallsign(call)) return false;
   engine_->connectTo(call, nowSec());
   return true;
@@ -1455,11 +1457,10 @@ void ModemWorker::abortSession() {
   engine_->abortSession(nowSec());
 }
 
-bool ModemWorker::setListen(bool on) {
+void ModemWorker::setListen(bool on) {
   std::lock_guard lock(modemMutex_);
   listen_ = on;
   cfg_.listen = on;  // persisted like every other control-port setting
-  return true;
 }
 
 bool ModemWorker::listening() {
@@ -1469,9 +1470,7 @@ bool ModemWorker::listening() {
 
 std::string ModemWorker::fsmState() {
   std::lock_guard lock(modemMutex_);
-  const FsmState st = engine_->state();
-  if (st == FsmState::Idle && listen_) return "LISTENING";
-  return fsmStateNameLocked(st);
+  return stateNameLocked();
 }
 
 bool ModemWorker::busy() {
@@ -1487,7 +1486,7 @@ size_t ModemWorker::txBufferBytes() {
 
 std::string ModemWorker::family() {
   std::lock_guard lock(modemMutex_);
-  return upperStr(toString(cfg_.family));
+  return familyNameLocked();
 }
 
 bool ModemWorker::setFamily(const std::string& fam) {
@@ -1508,6 +1507,7 @@ int ModemWorker::maxMode() {
 
 bool ModemWorker::setMaxMode(int mode) {
   std::lock_guard lock(modemMutex_);
+  if (mode < kFirstMode || mode > bandMaxMode(cfg_.band)) return false;
   cfg_.maxMode = mode;
   // A live session keeps its negotiated ceiling; the new one applies as
   // soon as the engine is idle again (applyDeferredLocked).
@@ -1519,10 +1519,9 @@ bool ModemWorker::setMaxMode(int mode) {
   return true;
 }
 
-bool ModemWorker::setMonitor(bool on) {
+void ModemWorker::setMonitor(bool on) {
   std::lock_guard lock(modemMutex_);
   monitorOn_ = on;
-  return true;
 }
 
 bool ModemWorker::monitoring() {
@@ -1532,7 +1531,7 @@ bool ModemWorker::monitoring() {
 
 bool ModemWorker::txTest(double seconds) {
   std::lock_guard lock(modemMutex_);
-  if (engine_->state() != FsmState::Idle) return false;
+  if (txBlockedLocked() || engine_->state() != FsmState::Idle) return false;
   txTestUntil_ = nowSec() + seconds;
   return true;
 }
@@ -1553,23 +1552,25 @@ std::string ModemWorker::version() { return SKW_VERSION; }
 
 bool ModemWorker::cq() {
   std::lock_guard lock(modemMutex_);
-  if (engine_->state() != FsmState::Idle) return false;
+  if (txBlockedLocked() || engine_->state() != FsmState::Idle) return false;
   engine_->sendCq();
-  listen_ = true;  // CQ implies listening for answers
+  // CQ implies listening for answers - the same (persisted) switch as
+  // LISTEN ON, so STATUS, the GUI and the saved config all agree.
+  listen_ = true;
+  cfg_.listen = true;
   return true;
 }
 
 bool ModemWorker::beacon() {
   std::lock_guard lock(modemMutex_);
-  if (engine_->state() != FsmState::Idle) return false;
-  // SNR floor estimate: dBFS floor relative to a nominal full-scale
-  // signal; a crude v1 mapping until calibrated RX metering lands.
-  engine_->sendBeacon(std::max(-20.0, -(double(floorDbfs_) + 80.0)));
+  if (txBlockedLocked() || engine_->state() != FsmState::Idle) return false;
+  engine_->sendBeacon(kBeaconSnrUnknownDb);
   return true;
 }
 
 bool ModemWorker::bcast(const std::vector<uint8_t>& payload) {
   std::lock_guard lock(modemMutex_);
+  if (txBlockedLocked()) return false;
   return engine_->sendBroadcast(payload);
 }
 
@@ -1590,11 +1591,7 @@ void ModemWorker::setCwId(bool on) {
 
 std::string ModemWorker::modeStr() {
   std::lock_guard lock(modemMutex_);
-  const int m = engine_->sessionMode();
-  if (engine_->modePinned() || cfg_.mode >= 4) {
-    return "M" + std::to_string(cfg_.mode >= 4 ? cfg_.mode : m);
-  }
-  return "AUTO(M" + std::to_string(m) + ")";
+  return modeNameLocked();
 }
 
 bool ModemWorker::setMode(const std::string& m) {
@@ -1604,14 +1601,14 @@ bool ModemWorker::setMode(const std::string& m) {
     engine_->unpinMode();
     return true;
   }
-  if (m.size() < 2 || m[0] != 'M') return false;
-  const int want = atoi(m.c_str() + 1);
-  // Any active OFDM rung of the band (M14 exists on VHF-FM only; the old
-  // fixed 4..13 range refused it).
-  if (want < 4 || want >= kNumModes || !kModes[size_t(want)].active ||
-      (want == 14 && activeBand() != Band::VhfFm)) {
+  if (m.size() < 2 || m.size() > 3 || m[0] != 'M' ||
+      !std::isdigit(static_cast<unsigned char>(m[1])) ||
+      (m.size() == 3 && !std::isdigit(static_cast<unsigned char>(m[2])))) {
     return false;
   }
+  const int want = atoi(m.c_str() + 1);
+  // One of the band's OFDM modes - the same range MAXMODE and the INI use.
+  if (want < kFirstMode || want > bandMaxMode(cfg_.band)) return false;
   cfg_.mode = want;
   if (engine_->state() == FsmState::Connected) {
     return engine_->pinMode(want, nowSec());
@@ -1626,20 +1623,18 @@ std::string ModemWorker::cpModeStr() {
 
 bool ModemWorker::setCpMode(const std::string& m) {
   std::lock_guard lock(modemMutex_);
-  static const char* kNames[] = {"SHORT", "MEDIUM", "LONG"};
+  if (!engine_->setCpPolicy(m, nowSec())) return false;
   if (m == "AUTO") {
     cfg_.cpMode = -1;
-  } else {
-    for (int i = 0; i < 3; ++i) {
-      if (m == kNames[i]) cfg_.cpMode = i;
-    }
+  } else if (auto cp = cpModeFromString(m)) {
+    cfg_.cpMode = int(*cp);
   }
-  return engine_->setCpPolicy(m, nowSec());
+  return true;
 }
 
 std::string ModemWorker::harqStr() {
   std::lock_guard lock(modemMutex_);
-  return toString(cfg_.harq);
+  return upperStr(toString(cfg_.harq));
 }
 
 bool ModemWorker::setHarq(const std::string& m) {
@@ -1662,7 +1657,6 @@ std::optional<bool> ModemWorker::feature(const std::string& name) {
   if (name == "PROBE") return true;
   if (name == "MASKING") return cfg_.carrierMasking;
   if (name == "RESUME") return cfg_.resume;
-  if (name == "ULTRA") return cfg_.ultraEnable;
   return std::nullopt;
 }
 
@@ -1692,19 +1686,9 @@ bool ModemWorker::setFeature(const std::string& name, bool on) {
 }
 
 std::string ModemWorker::statusFieldsLocked(bool json) {
-  const FsmState st = engine_->state();
-  const std::string state =
-      st == FsmState::Idle && listen_ ? "LISTENING" : fsmStateNameLocked(st);
-  const bool conn = st == FsmState::Connected;
+  const bool conn = engine_->state() == FsmState::Connected;
   const std::string remote =
       conn && !engine_->remoteCall().empty() ? engine_->remoteCall() : "-";
-  const int m = engine_->sessionMode();
-  // A mode pinned while idle applies from the next session; report it
-  // (it used to read AUTO until a session started).
-  const std::string mode =
-      engine_->modePinned() ? "M" + std::to_string(m)
-      : cfg_.mode >= 4      ? "M" + std::to_string(cfg_.mode)
-                            : "AUTO(M" + std::to_string(m) + ")";
   const double rsnr = engine_->remoteSnrDb();
   struct KV {
     const char* k;
@@ -1713,11 +1697,11 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
   };
   const uint16_t caps = engine_->sessionCaps();
   std::vector<KV> kv = {
-      {"STATE", state, true},
+      {"STATE", stateNameLocked(), true},
       {"CALL", cfg_.callsign, true},
       {"REMOTE", remote, true},
-      {"FAMILY", upperStr(toString(cfg_.family)), true},
-      {"MODE", mode, true},
+      {"FAMILY", familyNameLocked(), true},
+      {"MODE", modeNameLocked(), true},
       {"NET", fmt1(engine_->netBps()), false},
       {"SNR", fmt1(engine_->lastRxSnrDb()), false},
       {"RSNR", rsnr <= -98.0 ? std::string("-") : fmt1(rsnr),
@@ -1758,11 +1742,7 @@ std::string ModemWorker::statusFieldsLocked(bool json) {
   if (json) {
     out = "{";
     for (size_t i = 0; i < kv.size(); ++i) {
-      std::string key = kv[i].k;
-      for (auto& c : key) {
-        c = char(std::tolower(static_cast<unsigned char>(c)));
-      }
-      out += "\"" + key + "\":";
+      out += "\"" + toLower(kv[i].k) + "\":";
       out += kv[i].quoted ? "\"" + kv[i].v + "\"" : kv[i].v;
       if (i + 1 < kv.size()) out += ",";
     }
@@ -1793,7 +1773,7 @@ std::string ModemWorker::noiseFloor() {
 
 std::string ModemWorker::audioLevel() {
   std::lock_guard lock(modemMutex_);
-  return "RX=" + fmt1(rxLevel_) + " TX=" + fmt1(txLevel_);
+  return audioLevelLocked();
 }
 
 // `FREQINFO <hz>`: the dial frequency the companion app is tuned to. It
@@ -1809,9 +1789,7 @@ bool ModemWorker::setDialFreqHz(double hz) {
 
 std::string ModemWorker::freqInfo() {
   std::lock_guard lock(modemMutex_);
-  return "CENTER=" + fmt1(centerHz()) +
-         " SHIFT=" + fmt1(engine_->txShiftHz()) +
-         " CFO=" + fmt1(engine_->lastRxCfoHz());
+  return freqInfoLocked();
 }
 
 std::string ModemWorker::pttGet(const std::string& key) {
@@ -1874,10 +1852,7 @@ bool ModemWorker::setPsk(const std::string& hex) {
 #ifdef SKW_HAVE_CRYPTO
   std::lock_guard lock(modemMutex_);
   if (engine_->state() != FsmState::Idle) return false;
-  if (hex.size() != kPskBytes * 2) return false;
-  for (char ch : hex) {
-    if (!std::isxdigit(static_cast<unsigned char>(ch))) return false;
-  }
+  if (hex.size() != kPskBytes * 2 || !hexDecode(hex)) return false;
   cfg_.cryptoPsk = hex;
   rebuildEngine();
   return true;
@@ -1916,14 +1891,6 @@ bool ModemWorker::voiceSupported() {
 
 #ifdef SKW_HAVE_VOICE
 namespace {
-const char* voiceCodecName(VoiceCodec c) {
-  switch (c) {
-    case VoiceCodec::C700: return "700C";
-    case VoiceCodec::C1300: return "1300";
-    case VoiceCodec::C2400: return "2400";
-    default: return "3200";
-  }
-}
 const char* voiceStateName(VoiceState s) {
   switch (s) {
     case VoiceState::Closed: return "CLOSED";
@@ -1940,11 +1907,7 @@ const char* voiceStateName(VoiceState s) {
 std::string ModemWorker::voiceModeStr() {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
-  switch (voiceMode_) {
-    case VoiceMode::Connected: return "CONNECTED";
-    case VoiceMode::Broadcast: return "BROADCAST";
-    default: return "OFF";
-  }
+  return voiceModeNameLocked();
 #else
   return "OFF";
 #endif
@@ -1988,8 +1951,8 @@ bool ModemWorker::setVoiceCodec(const std::string& c) {
   std::lock_guard lock(modemMutex_);
   if (!parseVoiceCodecSel(c, voiceCodecWant_)) return false;
   // A runtime change, saved on exit like the rest.
-  cfg_.voiceCodec = voiceCodecWant_ ? voiceCodecName(*voiceCodecWant_) : "auto";
-  for (char& ch : cfg_.voiceCodec) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  cfg_.voiceCodec =
+      voiceCodecWant_ ? toLower(voiceCodecName(*voiceCodecWant_)) : "auto";
   return true;
 #else
   (void)c;
@@ -2000,7 +1963,7 @@ bool ModemWorker::setVoiceCodec(const std::string& c) {
 bool ModemWorker::voiceStart() {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
-  if (voiceMode_ == VoiceMode::Off) return false;
+  if (txBlockedLocked() || voiceMode_ == VoiceMode::Off) return false;
   if (voiceMode_ == VoiceMode::Broadcast) {
     // voice.broadcast_mode (was read from the INI and never used); auto =
     // the most robust mode that carries a codec in this family.
@@ -2034,6 +1997,7 @@ bool ModemWorker::voiceStop() {
 bool ModemWorker::voicePtt(bool on) {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
+  if (on && txBlockedLocked()) return false;
   return engine_->setVoicePtt(on, nowSec());
 #else
   (void)on;
@@ -2045,11 +2009,8 @@ std::string ModemWorker::voiceStatusLine() {
 #ifdef SKW_HAVE_VOICE
   std::lock_guard lock(modemMutex_);
   const VoiceState st = engine_->voiceState();
-  const std::string codec = voiceCodecWant_
-                                ? voiceCodecName(engine_->voiceCodec())
-                                : std::string("AUTO(") +
-                                      voiceCodecName(engine_->voiceCodec()) +
-                                      ")";
+  const std::string active = voiceCodecName(engine_->voiceCodec());
+  const std::string codec = voiceCodecWant_ ? active : "AUTO(" + active + ")";
   return std::string("MODE=") + voiceModeNameLocked() + " CODEC=" + codec +
          " STATE=" + voiceStateName(st) +
          " PTT=" + (st == VoiceState::Talking ||

@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
               "floor", "estSNR");
 
   for (int mode : modes) {
-    if (mode < 4 || mode >= kNumModes || !kModes[size_t(mode)].active) continue;
+    if (mode < 4 || mode >= kNumModes) continue;
     const bool robust = mode <= 7;
     const size_t len = payloadArg > 0 ? size_t(payloadArg) : (robust ? 60 : 300);
     double floorCnr = -1.0, floorEst = 0.0;

@@ -15,12 +15,14 @@ namespace skw {
 
 // Per-carrier channel tracker for one frame. Seeded by the ZC estimate,
 // updated every symbol from scattered pilots:
-//  - common phase error (CPE) tracked by a small PLL (pilot innovations),
-//  - per-carrier H: pilot measurements interpolated in frequency, blended
-//    in time with a mode-class-dependent IIR (DSP.md),
-//  - noise variance from pilot residuals,
-//  - FLYWHEEL: if a symbol's pilot residual explodes, hold H and keep the
-//    PLL running on prediction only.
+//  - the channel is a set of taps on a delay grid, each a Gauss-Markov
+//    process tracked by a Kalman filter (mode-class-dependent Doppler
+//    design); per-carrier H is its projection, so common phase and
+//    frequency selectivity are tracked together (no separate CPE loop),
+//  - noise variance from pilot innovations,
+//  - FLYWHEEL: if a symbol's pilot residual explodes, hold the state and
+//    run on prediction only,
+//  - optional RTS smoothing over a buffered span (beginHistory).
 class ChannelTracker {
  public:
   // robustClass selects slow/deep smoothing (spread modes M4-M7 + robust
@@ -72,17 +74,13 @@ class ChannelTracker {
   // Delay-spread estimate (ms) from the tap state: extent of taps above
   // 10% of the peak power. Drives CPMODE AUTO.
   double delaySpreadMs() const;
-  double cpePhase() const {
-    return std::atan2(lastGain_.imag(), lastGain_.real());
-  }
 
  private:
   Family family_;
   bool robust_;
   std::vector<cfloat> h_;           // per active carrier (= basis * taps)
-  cfloat lastGain_{1.0f, 0.0f};     // raw per-symbol common-gain fit (diag)
+  cfloat lastGain_{1.0f, 0.0f};     // raw per-symbol common-gain fit (debug)
   double noiseVar_;
-  double phase_ = 0.0;              // retained for the cpePhase() accessor
   int nvarUpdates_ = 0;             // symbols folded into noiseVar_
 
   // Per-tap Gauss-Markov Kalman filter: the channel is T taps on a
@@ -114,8 +112,9 @@ class ChannelTracker {
   double hVar_ = 0.0;               // mean per-carrier posterior variance
   std::vector<cfloat> basis_;       // (n x T): row c = e^{-j2pi c d_t / N}
 
-  static void solveHermitian(std::vector<std::complex<double>>& M,
-                             std::vector<std::complex<double>>& b, int T);
+  static void solveLinear(std::vector<std::complex<double>>& M,
+                          std::vector<std::complex<double>>& B, int T,
+                          int nrhs, double tiny);
 };
 
 // Max-log LLRs for one despread source symbol.

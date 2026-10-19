@@ -36,10 +36,12 @@ struct ImFont;
 
 namespace skw {
 
-// Rolling instrument data the GUI derives from telemetry snapshots.
+// Rolling instrument data the GUI derives from telemetry snapshots, one
+// sample per rendered frame. Drawn in the AUDIO card (rxLevel without an
+// audio tap, noiseFloor always) and the LINK card (modeHistory).
 struct GuiInstruments {
-  static constexpr size_t kHistory = 240;  // ~2 min at 2 Hz
-  std::deque<float> rxLevel, txLevel, noiseFloor;
+  static constexpr size_t kHistory = 240;  // frames
+  std::deque<float> rxLevel, noiseFloor;
   std::deque<uint8_t> modeHistory;
   void push(const Telemetry& t);
 };
@@ -97,10 +99,10 @@ class Gui {
   struct Controls {
     char call[16] = {0};
     char connect[16] = {0};
-    int family = 0;     // kFamilyNames index
-    int mode = 0;       // 0 = AUTO, else M4..M13
-    int cp = 0;         // 0 = AUTO
-    int maxMode = 9;    // 0 = M4 .. 9 = M13
+    int family = 0;     // Family value (kFamilies index)
+    int mode = 0;       // 0 = AUTO, else kFirstMode + mode - 1
+    int cp = 0;         // 0 = AUTO, else CpMode + 1
+    int maxMode = 9;    // kFirstMode + maxMode (M4 .. the band's top mode)
     bool listen = true, monitor = false, cwid = false, ultra = false;
     int pttMethod = 0;  // kPttMethods index
     char pttPort[64] = {0};
@@ -111,7 +113,6 @@ class Gui {
   struct Notice {
     std::string text;
     bool error = false;
-    uint64_t seq = 0;  // bumps on every new notice
   };
   Controls& controls() { return ctl_; }
   const Notice& notice() const { return notice_; }
@@ -153,6 +154,7 @@ class Gui {
              std::function<void(const std::string&)> ok = nullptr);
   void setNotice(std::string text, bool error);
   bool needsCallsign();  // placeholder callsign: explain and refuse
+  int modeIndex(int mode) const;  // mode -> Controls::mode (0 = AUTO)
   void drawNotice();
   void saveScreenshot(const char* path);
   void runDebugScript();  // SKW_GUI_SCRIPT (gui.cpp)
@@ -232,6 +234,9 @@ class Gui {
   std::deque<float> rxMeterHist_;
 
   Controls ctl_;
+  // Mode combos, built from the band's mode range in syncFromModem().
+  int bandMaxMode_ = 13;
+  std::string modeItems_, maxModeItems_;
   Notice notice_;
   double noticeAt_ = -1e9;  // SDL seconds when the notice was set
   // Last modem values seen in the published status: a widget follows the

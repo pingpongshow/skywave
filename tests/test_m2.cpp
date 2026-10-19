@@ -38,9 +38,8 @@ struct Pair {
   uint64_t seedCtr = 1;
 
   explicit Pair(double snrDb, uint64_t seed = 77,
-                Family fam = Family::Wide, bool aggregate = true)
-      : a(makeCfg("W1AW", fam, aggregate)),
-        b(makeCfg("K6XYZ", fam, aggregate)) {
+                Family fam = Family::Wide)
+      : a(makeCfg("W1AW", fam)), b(makeCfg("K6XYZ", fam)) {
     chanAB.fading = false;
     chanAB.snr3kDb = snrDb;
     chanBA = chanAB;
@@ -48,16 +47,11 @@ struct Pair {
     chanBA.seed = seed + 5000;
   }
 
-  static EngineConfig makeCfg(const char* call, Family fam,
-                              bool aggregate = true) {
+  static EngineConfig makeCfg(const char* call, Family fam) {
     EngineConfig c;
     c.policy.ownCall = call;
     c.policy.family = fam;
-    // kCapTurnSched matches the worker's default: every M2 scenario
-    // exercises the scheduled ISS/IRS turn-taking path (the legacy
-    // occupancy-gate fallback keeps m2_turnsched_mixed_caps_fallback).
-    c.policy.caps = kCapZstd | kCapResume | kCapMasking | kCapTurnSched;
-    c.burstAggregation = aggregate;
+    c.policy.caps = kCapZstd | kCapResume | kCapMasking;
     return c;
   }
 
@@ -420,34 +414,6 @@ TEST_CASE(m2_turnsched_grant_loss_reclaims) {
   CHECK(p.a.state() == FsmState::Connected);
 }
 
-// Capability fallback: a peer without kCapTurnSched negotiates it away
-// and the session runs the legacy occupancy-gate scheduler end to end.
-TEST_CASE(m2_turnsched_mixed_caps_fallback) {
-  struct LegacyPair : Pair {
-    LegacyPair() : Pair(30.0, 7331) {
-      // Rebuild B without the turn-taking capability.
-      auto cfg = makeCfg("K6XYZ", Family::Wide);
-      cfg.policy.caps = kCapZstd | kCapResume | kCapMasking;
-      b.~LinkEngine();
-      new (&b) LinkEngine(cfg);
-    }
-  };
-  LegacyPair p;
-  CHECK(p.connect(400));
-  CHECK(!p.a.turnSchedActive());
-  CHECK(!p.b.turnSchedActive());
-  auto blob = noiseBlob(4 * 1024, 23);
-  p.a.sendData(blob);
-  std::vector<uint8_t> got;
-  for (int i = 0; i < 4000 && got.size() < blob.size(); ++i) {
-    p.step();
-    auto d = p.b.takeReceivedData();
-    got.insert(got.end(), d.begin(), d.end());
-  }
-  CHECK_EQ(got.size(), blob.size());
-  CHECK(got == blob);
-}
-
 TEST_CASE(m2_connect_floor) {
   // Handshake success >= 90% at -8 dB WIDE (AWGN; the handshake rides
   // calling chirp + robust header + M4).
@@ -527,7 +493,11 @@ TEST_CASE(m2_disconnect_paths) {
       p.now += 2.0;        // let retry cadences fire
     }
     CHECK(p.a.state() == FsmState::Idle);
-    CHECK(p.a.lastDiscCause() == FsmDiscCause::DiscRetriesExhausted);
+    // The operator asked for the disconnect; an unanswered DISC does not
+    // make it a link failure: the cause stays LocalRequest and the resume
+    // token is gone (it used to survive as "DiscRetriesExhausted").
+    CHECK(p.a.lastDiscCause() == FsmDiscCause::LocalRequest);
+    CHECK(!p.a.hasResumeContext());
   }
   // Idle timeout: connected, then total silence for 120 s.
   {
@@ -710,8 +680,8 @@ TEST_CASE(m3_mask_survives_demotion_below_m8) {
 namespace {
 
 // Airtime to move `bytes` at pinned M13 over a clean 30 dB channel.
-double m13TransferAirtime(bool aggregate, size_t bytes) {
-  Pair p(30.0, 123, Family::Wide, aggregate);
+double m13TransferAirtime(size_t bytes) {
+  Pair p(30.0, 123, Family::Wide);
   if (!p.connect()) return -1;
   if (!p.a.pinMode(13, p.now)) return -1;
   for (int i = 0; i < 40 && p.b.sessionMode() != 13; ++i) p.step();
@@ -728,23 +698,41 @@ double m13TransferAirtime(bool aggregate, size_t bytes) {
   return p.now - t0;
 }
 
+// Payload bytes per second of airtime for one TX unit at M13: a 4-frame
+// burst container, or one solo frame (2 codewords per frame either way).
+double m13UnitRate(int framesPerBurst) {
+  const size_t budget = dataPayloadBudget(13, framesPerBurst,
+                                          2 * framesPerBurst);
+  std::vector<uint8_t> payload(size_t(framesPerBurst) *
+                               (budget + dataFrameOverhead(framesPerBurst)));
+  TxFrameParams tp;
+  tp.family = Family::Wide;
+  tp.sig = ChirpSig::Fast;
+  tp.mode = 13;
+  tp.frameType = framesPerBurst > 1 ? kBurstContainerFrameType
+                                    : uint8_t(LinkType::Data);
+  tp.payload = payload;
+  return double(framesPerBurst) * double(budget) / frameAirtimeSec(tp);
+}
+
 }  // namespace
 
 TEST_CASE(m3_burst_container_throughput) {
   // One preamble/sync/header per 4-frame burst at M13 must beat the
-  // per-frame overhead of single-frame transmission by a wide margin.
+  // per-frame overhead of single-frame transmission by a wide margin
+  // (geometry: the engine always aggregates), and a live transfer must
+  // realise a healthy share of the table rate.
+  const double unitAgg = m13UnitRate(4), unitSolo = m13UnitRate(1);
   const size_t bytes = 18 * 1024;
-  double tAgg = m13TransferAirtime(true, bytes);
-  double tSolo = m13TransferAirtime(false, bytes);
+  const double tAgg = m13TransferAirtime(bytes);
   CHECK(tAgg > 0);
-  CHECK(tSolo > 0);
-  double thruAgg = bytes * 8.0 / tAgg;
-  double thruSolo = bytes * 8.0 / tSolo;
-  std::printf("burst container: agg %.0f bps vs solo %.0f bps (x%.2f); "
-              "net table %.0f bps\n",
-              thruAgg, thruSolo, thruAgg / thruSolo,
-              netRate(Family::Wide, 13, CpMode::Medium));
-  CHECK(thruAgg > 1.25 * thruSolo);
+  const double thruAgg = bytes * 8.0 / tAgg;
+  const double net = netRate(Family::Wide, 13, CpMode::Medium);
+  std::printf("burst container: live %.0f bps; unit %.0f vs solo %.0f B/s "
+              "(x%.2f); net table %.0f bps\n",
+              thruAgg, unitAgg, unitSolo, unitAgg / unitSolo, net);
+  CHECK(unitAgg > 1.25 * unitSolo);
+  CHECK(thruAgg > 0.40 * net);
 
   // Geometry gate: the container frame's payload-section rate must sit
   // within 10% of NET x (1 - container overhead fraction).
@@ -764,7 +752,6 @@ TEST_CASE(m3_burst_container_throughput) {
   const double sectionSec = g.payloadSymbols * paySamples / kFsBaseband;
   const double sectionBits = (payload.size() - 30) * 8.0;
   const double eff = sectionBits / sectionSec;
-  const double net = netRate(Family::Wide, 13, CpMode::Medium);
   std::printf("container geometry: payload-section %.0f bps vs NET %.0f\n",
               eff, net);
   CHECK(eff > 0.80 * net);
@@ -977,4 +964,212 @@ TEST_CASE(m2_unanswered_call_leaves_responder_idle) {
   CHECK(!heard);
   CHECK(p.b.state() == FsmState::Idle);
   CHECK(p.a.state() != FsmState::Connected);
+}
+
+namespace {
+
+std::vector<cfloat> padded(const std::vector<cfloat>& burst) {
+  std::vector<cfloat> x(1500, cfloat(0, 0));
+  x.insert(x.end(), burst.begin(), burst.end());
+  x.insert(x.end(), 2000, cfloat(0, 0));
+  return x;
+}
+
+}  // namespace
+
+// CALL_ACK must report the selectivity the responder measured on the CALL
+// (the receiver computes it per frame). The engine handed the handshake a
+// hard-coded 0, so the report - and every consumer of it - was blind.
+TEST_CASE(m2_call_ack_reports_selectivity) {
+  Pair p(25.0, 4242);
+  // A narrowband interferer A->B notches carriers of the CALL.
+  p.chanAB.toneHz = 300.0;
+  p.chanAB.toneAmp = 0.35;
+  p.a.connectTo("K6XYZ", p.now);
+  std::optional<CallAckBody> ack;
+  int callSel = -1;
+  for (int i = 0; i < 40 && !ack; ++i) {
+    if (auto bA = p.a.tick(p.now)) {
+      const auto y = Chansim::run(p.chanAB, padded(*bA));
+      if (auto r = receiveFrame(Family::Wide, y)) callSel = r->selectivity;
+      p.b.rxBurst(y, p.now);
+    }
+    if (auto bB = p.b.tick(p.now)) {
+      ChansimParams clean;
+      clean.fading = false;
+      clean.snr3kDb = 30.0;
+      auto r = receiveFrame(Family::Wide, Chansim::run(clean, padded(*bB)));
+      if (r && r->payloadOk) {
+        if (auto f = parseFrame(r->payload);
+            f && f->env.type == LinkType::CallAck) {
+          ack = CallAckBody::parse(f->body);
+        }
+      }
+    }
+    p.now += 0.5;
+  }
+  CHECK(ack.has_value());
+  std::printf("call_ack selectivity: measured %d on the CALL, reported %d\n",
+              callSel, ack ? int(ack->selectivity) : -1);
+  CHECK(callSel > 0);
+  CHECK(ack && int(ack->selectivity) == callSel);
+}
+
+// An idle-timeout teardown is a failure-mode drop and the DISC must say
+// so. It went out as DISC(Normal): the peer took it as an operator
+// disconnect and dropped its resume token while this end kept its own.
+TEST_CASE(m2_idle_timeout_disc_keeps_resume_on_both_ends) {
+  Pair p(25.0, 5151);
+  CHECK(p.connect());
+  // B (the IRS) has data, so its ACKs keep asking for the turn: A keeps
+  // hearing B while B hears nothing and idles out.
+  p.b.sendData(noiseBlob(2048, 7));
+  for (int i = 0; i < 6000 && p.b.state() == FsmState::Connected; ++i) {
+    p.step(/*dropAB=*/true, false);
+  }
+  CHECK(p.b.state() == FsmState::Idle);
+  CHECK(p.b.lastDiscCause() == FsmDiscCause::IdleTimeout);
+  for (int i = 0; i < 400 && p.a.state() != FsmState::Idle; ++i) {
+    p.step(true, false);
+  }
+  CHECK(p.a.state() == FsmState::Idle);
+  CHECK(p.a.lastDiscCause() == FsmDiscCause::LinkLost);
+  CHECK(p.a.hasResumeContext());
+  CHECK(p.b.hasResumeContext());
+}
+
+// The responder's max_mode binds the whole session: the initiator's AMC
+// may not promote past it, a MODE_CHANGE above it is refused, and neither
+// end may pin above it. It was sent in START, parsed, and ignored.
+TEST_CASE(m2_responder_max_mode_caps_the_session) {
+  struct CappedPair : Pair {
+    CappedPair() : Pair(35.0, 6161) {
+      auto cb = makeCfg("K6XYZ", Family::Wide);
+      cb.policy.maxMode = 7;
+      b = LinkEngine(std::move(cb));
+    }
+  };
+  CappedPair p;
+  CHECK(p.connect());
+  CHECK_EQ(p.a.sessionMaxMode(), 7);
+  CHECK_EQ(p.b.sessionMaxMode(), 7);
+  auto blob = noiseBlob(16 * 1024, 61);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  int best = std::max(p.a.sessionMode(), p.b.sessionMode());
+  for (int i = 0; i < 6000 && got.size() < blob.size(); ++i) {
+    p.step();
+    best = std::max({best, p.a.sessionMode(), p.b.sessionMode()});
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  std::printf("responder cap: best mode M%d under a cap of M7\n", best);
+  CHECK(got == blob);
+  CHECK(best <= 7);
+  CHECK(!p.a.pinMode(9, p.now));
+  CHECK(!p.b.pinMode(9, p.now));
+  CHECK(p.a.pinMode(6, p.now));
+}
+
+// Per-channel verdicts start fresh with every session: the channel
+// classifier and the advisor history belonged to the last channel.
+TEST_CASE(m2_session_state_starts_fresh) {
+  Pair p(30.0, 7171);
+  CHECK(p.connect());
+  auto blob = noiseBlob(12 * 1024, 71);
+  p.a.sendData(blob);
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 6000 && got.size() < blob.size(); ++i) {
+    p.step();
+    auto d = p.b.takeReceivedData();
+    got.insert(got.end(), d.begin(), d.end());
+  }
+  CHECK(got == blob);
+  std::printf("first session: class %d, advisor span %.1f s\n",
+              int(p.b.channelClass()), p.b.advisor().snrHistorySpanSec());
+  CHECK(p.b.channelClass() != ChannelClass::Unknown);
+  CHECK(p.b.advisor().snrHistorySpanSec() > 0.0);
+  p.a.disconnect(p.now);
+  for (int i = 0; i < 200 && (p.a.state() != FsmState::Idle ||
+                              p.b.state() != FsmState::Idle);
+       ++i) {
+    p.step();
+  }
+  CHECK(p.connect());
+  CHECK(p.b.channelClass() == ChannelClass::Unknown);
+  CHECK(p.b.advisor().snrHistorySpanSec() == 0.0);
+}
+
+// A quiet session (no DATA, so no ACKs) still learns the peer's view of
+// the channel: the keepalive carries the sender's SNR report. It used to
+// carry a constant and was never parsed.
+TEST_CASE(m2_keepalive_carries_snr_report) {
+  Pair p(20.0, 8181);
+  CHECK(p.connect());
+  const double before = p.b.remoteSnrDb();
+  for (int i = 0; i < 400; ++i) {
+    p.step();
+    p.now += 0.5;  // an idle link: let the keepalive timer run
+  }
+  std::printf("keepalive snr: B sees A's report %.1f dB (was %.1f), A sees "
+              "%.1f dB\n",
+              p.b.remoteSnrDb(), before, p.a.remoteSnrDb());
+  CHECK(p.a.state() == FsmState::Connected);
+  CHECK(std::abs(p.b.remoteSnrDb() - 20.0) < 8.0);
+  CHECK(std::abs(p.a.remoteSnrDb() - 20.0) < 8.0);
+}
+
+#ifdef SKW_HAVE_CRYPTO
+// A failed key exchange is refused as an authentication failure. The
+// refusal reason was chosen before the KEX ran, so it went out as "Busy".
+TEST_CASE(m2_kex_failure_is_refused_as_auth_failed) {
+  struct KexPair : Pair {
+    KexPair() : Pair(25.0, 9191) {
+      auto ca = makeCfg("W1AW", Family::Wide);
+      auto cb = makeCfg("K6XYZ", Family::Wide);
+      ca.policy.caps |= kCapEncryption;
+      cb.policy.caps |= kCapEncryption;
+      ca.psk.assign(32, 0x42);  // the responder holds no PSK
+      a = LinkEngine(std::move(ca));
+      b = LinkEngine(std::move(cb));
+    }
+  };
+  KexPair p;
+  CHECK(!p.connect(300));
+  CHECK(p.a.lastRefusal().has_value());
+  CHECK(p.a.lastRefusal() == StartNakReason::AuthFailed);
+  CHECK(!p.a.cryptoActive());
+  CHECK(!p.b.cryptoActive());
+}
+#endif
+
+// ARQ exhaustion is a dead link, not an operator disconnect. The engine
+// tore the session down through the operator's path, so the FSM recorded
+// LocalRequest and the worker reported EVT:DISCONNECTED NORMAL for a link
+// that had simply died. It must end as LinkLost (reported as LINK) and,
+// being a fault drop, keep the resume token.
+TEST_CASE(m2_arq_exhaustion_reports_link_lost) {
+  // A one-retry ARQ budget gives up well inside the 120 s idle window
+  // (otherwise the idle timer, not ARQ, ends a silent link first).
+  struct ShortArqPair : Pair {
+    ShortArqPair() : Pair(25.0, 41) {
+      EngineConfig c = makeCfg("W1AW", Family::Wide);
+      c.arqMaxRetries = 1;
+      a = LinkEngine(std::move(c));
+    }
+  };
+  ShortArqPair p;
+  CHECK(p.connect());
+  std::vector<uint8_t> msg(600, 0x5A);
+  p.a.sendData(msg);
+  for (int i = 0; i < 2000 && p.a.state() != FsmState::Idle; ++i) {
+    p.step(true, true);  // the channel is gone both ways
+    p.now += 1.0;
+  }
+  CHECK(p.a.state() == FsmState::Idle);
+  if (p.a.lastDiscCause() != FsmDiscCause::LinkLost) {
+    std::printf("  cause %d\n", int(p.a.lastDiscCause()));
+  }
+  CHECK(p.a.lastDiscCause() == FsmDiscCause::LinkLost);
+  CHECK(p.a.hasResumeContext());
 }

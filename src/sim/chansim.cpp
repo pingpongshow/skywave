@@ -182,7 +182,6 @@ void Chansim::process(std::span<const cfloat> in, std::vector<cfloat>& out) {
     } else {
       out.push_back(y);
     }
-    ++samplesOut_;
   }
 }
 

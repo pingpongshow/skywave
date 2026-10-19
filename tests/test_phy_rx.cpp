@@ -77,6 +77,47 @@ TEST_CASE(rx_loopback_calling_with_cfo) {
   }
 }
 
+// RUNNER-UP SIGNATURE without stageOut (codereview P1). A CSS preamble
+// (U D D U) preceded by a stray up-rep and with its last rep lost reads
+// as CALLING (U U D D) one rep early: the winner's path (robust OFDM)
+// finds no ZC block and the frame is only recovered by retrying the
+// detector's runner-up (CSS) reading. That retry once ran only when the
+// caller passed stageOut - the production monitor and fmsweep pass none
+// and lost such frames.
+TEST_CASE(rx_runner_up_signature_without_stage_out) {
+  const Family fam = Family::Wide;
+  auto payload = testPayload(20, 7);
+  TxFrameParams p;
+  p.family = fam;
+  p.sig = ChirpSig::Css;
+  p.mode = 3;
+  p.frameType = 9;
+  p.seqLow = 0x21;
+  p.payload = payload;
+  auto frame = buildFrameBaseband(p);
+  const size_t rep = size_t(chirpRepSamples());
+  // Lose the 4th preamble rep (U).
+  for (size_t i = 3 * rep; i < 4 * rep; ++i) frame[i] = cfloat(0, 0);
+  // A stray up-rep right before the preamble.
+  const auto up = makeChirpPreamble(fam, ChirpSig::Fast);  // U U
+  std::vector<cfloat> x(up.begin(), up.begin() + long(rep));
+  x.insert(x.end(), frame.begin(), frame.end());
+  auto y = Chansim::run(cleanChannel(0.0), withPadding(std::move(x), 3000,
+                                                        6000));
+  RxStage st = RxStage::NoDetect;
+  auto withStage = receiveFrame(fam, y, &st);
+  auto noStage = receiveFrame(fam, y);
+  CHECK(withStage.has_value());
+  CHECK(noStage.has_value());
+  if (withStage && noStage) {
+    CHECK(st == RxStage::Ok);
+    CHECK(withStage->sig == ChirpSig::Css);
+    CHECK(noStage->sig == ChirpSig::Css);
+    CHECK(noStage->payloadOk);
+    CHECK(noStage->payload == payload);
+  }
+}
+
 TEST_CASE(rx_loopback_inverted_spectrum) {
   // Inversion is modeled by conjugating the channel output.
   auto payload = testPayload(60);

@@ -20,16 +20,12 @@ uint8_t initialModeFromQuality(Family f, double effectiveSnrDb,
     // AMC promote margin (amc.hpp): one operating point for the initial
     // proposal and the ladder, in the calibrated table convention.
     if (effectiveSnrDb < floor + AmcConfig{}.promoteMarginDb) continue;
-    if (m >= 12 && worstSelectivity > kSelectivityGateM12) continue;
+    // The AMC's M12+ gate. (Inert while kInitialModeCap is M10; kept so
+    // the proposal can never undercut the ladder's own rule.)
+    if (m >= 12 && worstSelectivity > AmcConfig{}.selectivityMax) continue;
     best = m;
   }
   return best;
-}
-
-uint8_t macProfileForMode(uint8_t mode) {
-  if (mode <= 6) return 0;
-  if (mode <= 9) return 1;
-  return 2;
 }
 
 CallBody makeCall(const HandshakePolicy& p, const std::string& dstCall) {
@@ -56,9 +52,7 @@ StartBody makeStart(const HandshakePolicy& p, const CallAckBody& peerAck,
   if (p.chanMemMode) {
     s.initialMode = std::min(s.initialMode, *p.chanMemMode);
   }
-  s.cpMode = uint8_t(kCpDefault);
-  s.maxMode = p.maxMode;
-  s.macProfile = macProfileForMode(s.initialMode);
+  s.maxMode = std::min<uint8_t>(p.maxMode, uint8_t(kNumModes - 1));
   return s;
 }
 
@@ -127,8 +121,6 @@ std::variant<StartAckBody, StartNakBody> evaluateStart(
     // WIDE - the fallback path must be able to land).
     return nak(StartNakReason::FamilyMismatch);
   }
-  if (p.busy) return nak(StartNakReason::Busy);
-  if (p.policyRefuse) return nak(StartNakReason::PolicyRefusal);
   // The committed caps must be a subset of what BOTH sides advertised;
   // a peer committing something we never offered is a conflict.
   if (start.caps & uint16_t(~p.caps)) {
@@ -136,12 +128,15 @@ std::variant<StartAckBody, StartNakBody> evaluateStart(
   }
 
   StartAckBody ack;
+  // The session cap is the lower of the two stations' max_mode: the
+  // responder's operator limit binds the initiator's AMC too.
+  ack.maxMode = std::min(start.maxMode, p.maxMode);
   const bool cssTier = (start.caps & p.caps & kCapCssTier) != 0;
   uint8_t ownView =
       initialModeFromQuality(Family(call.family), ownMeas.snrDb,
                              ownMeas.selectivity, p.maxMode, cssTier);
   if (p.chanMemMode) ownView = std::min(ownView, *p.chanMemMode);
-  ack.finalMode = std::min(start.initialMode, ownView);  // only lower
+  ack.finalMode = std::min({start.initialMode, ownView, ack.maxMode});
   return ack;
 }
 

@@ -673,7 +673,7 @@ int cmdScore(const ScoreArgs& a) {
     RxStage st = RxStage::NoDetect;
     auto res = receiveFrame(m.family, win, &st);
     const double rxSec = (dets[i].startSample - gd) / kFsBaseband;
-    if (std::getenv("SKW_SOUNDER_DEBUG")) {
+    if (envFlag("SKW_SOUNDER_DEBUG")) {
       std::fprintf(stderr, "det %.3f s sig=%d q=%.2f cfo=%.1f -> %s",
                    rxSec, int(dets[i].sig), double(dets[i].quality),
                    dets[i].cfoHz, res ? "header" : "no header");
@@ -961,7 +961,7 @@ int cmdScore(const ScoreArgs& a) {
               "miss", "FER%", "snr_dB", "evm_dB", "floor");
   for (const auto& [key, g] : agg) {
     const int mode = key.second;
-    const double fl = mode >= 4 ? floorDb(m.family, mode) : cssFloorDb(m.family, mode);
+    const double fl = floorDb(m.family, mode);
     if (sweep) std::printf("%5.1f  ", key.first);
     std::printf("M%-4d %5d %4d %6d %6d %6d %6.1f %8.1f %8.1f %7.1f\n", mode,
                 g.sent, g.ok, g.pay, g.hdr, g.miss,

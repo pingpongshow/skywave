@@ -21,7 +21,6 @@ class LdpcCode {
 
   int n() const { return n_; }
   int k() const { return k_; }
-  int z() const { return z_; }
 
   // info.size() == k(); one bit per byte (0/1). out receives n() bits.
   void encode(std::span<const uint8_t> info, std::vector<uint8_t>& out) const;
@@ -48,7 +47,6 @@ class LdpcCode {
   };
   int numChecks_ = 0;
   std::vector<int32_t> checkHead_;       // first edge index per check
-  std::vector<int32_t> varDegree_;
   std::vector<Edge> edges_;
   std::vector<std::vector<int32_t>> varEdges_;  // edge indices per variable
 };

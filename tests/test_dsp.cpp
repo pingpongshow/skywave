@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "core/constants.hpp"
-#include "dsp/agc.hpp"
 #include "dsp/fft.hpp"
 #include "dsp/updown.hpp"
 #include "dsp/window.hpp"
@@ -120,9 +119,6 @@ TEST_CASE(fft_rejects_bad_size) {
 }
 
 TEST_CASE(windows_sane) {
-  auto h = hannWindow(64);
-  CHECK_NEAR(h[0], 0.0, 1e-6);
-  CHECK_NEAR(h[32], 1.0, 1e-6);
   auto r = raisedCosineRamp(16);
   CHECK(r[0] > 0.0f && r[0] < 0.05f);
   CHECK(r[15] > 0.95f && r[15] < 1.0f);
@@ -161,48 +157,6 @@ TEST_CASE(down_up_roundtrip_snr) {
     double snr = toneSnrDb(out, off, kFsBaseband, 4000);
     CHECK(snr > 60.0);
   }
-}
-
-TEST_CASE(dc_blocker_removes_offset) {
-  DcBlocker dcb;
-  std::vector<float> buf(48000);
-  for (size_t i = 0; i < buf.size(); ++i) {
-    buf[i] = 0.5f + 0.25f * float(std::sin(2.0 * M_PI * 1000.0 * double(i) / 48000.0));
-  }
-  dcb.process(buf);
-  // Mean of the tail should be ~0 while the tone survives.
-  double mean = 0, power = 0;
-  for (size_t i = 24000; i < buf.size(); ++i) {
-    mean += buf[i];
-    power += double(buf[i]) * buf[i];
-  }
-  mean /= 24000.0;
-  power /= 24000.0;
-  CHECK(std::fabs(mean) < 1e-3);
-  CHECK_NEAR(power, 0.25 * 0.25 / 2.0, 0.002);  // tone power intact
-}
-
-TEST_CASE(agc_dynamics) {
-  Agc agc(48000.0);
-  // Strong constant tone at -6 dBFS: gain must pull it toward -18 dBFS.
-  std::vector<float> buf(48000);
-  for (size_t i = 0; i < buf.size(); ++i) {
-    buf[i] = 0.5f * float(std::sin(2.0 * M_PI * 1000.0 * double(i) / 48000.0));
-  }
-  agc.process(buf);
-  double rms = 0;
-  for (size_t i = 40000; i < buf.size(); ++i) rms += double(buf[i]) * buf[i];
-  rms = std::sqrt(rms / 8000.0);
-  double dbfs = 20.0 * std::log10(rms);
-  CHECK(dbfs > -22.0);
-  CHECK(dbfs < -14.0);
-
-  // Freeze: gain must not move while frozen.
-  agc.setFrozen(true);
-  float g0 = agc.gain();
-  std::vector<float> loud(4800, 0.9f);
-  agc.process(loud);
-  CHECK_NEAR(agc.gain(), g0, 1e-9);
 }
 
 SKYTEST_MAIN

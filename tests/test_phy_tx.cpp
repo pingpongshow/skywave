@@ -331,6 +331,78 @@ TEST_CASE(frame_geometry_matches_build) {
   CHECK_NEAR(std::sqrt(pow / double(frame.size())), 1.0, 1e-3);
 }
 
+// computeGeometry derives every length without building the preamble or
+// designing the band filter (it is called many times per frame by the
+// link layer). It must still equal the built frame for every family,
+// mode, signature and band, and the airtimes pinned below are the values
+// the frame-building implementation returned.
+TEST_CASE(frame_geometry_matches_build_everywhere) {
+  int checked = 0;
+  for (Band band : {Band::Hf, Band::VhfFm}) {
+    setActiveBand(band);
+    for (int f = 0; f < kNumFamilies; ++f) {
+      for (int m = 0; m < kNumModes; ++m) {
+        const bool css = kModes[size_t(m)].waveform == Waveform::Css;
+        if (css && band != Band::Hf) continue;  // CSS tier is HF-only
+        for (ChirpSig sig : {ChirpSig::Fast, ChirpSig::Robust,
+                             ChirpSig::Calling, ChirpSig::Css}) {
+          if (css != (sig == ChirpSig::Css)) continue;
+          for (size_t len : {size_t(0), size_t(31), size_t(200)}) {
+            if (css && len > 60) continue;  // keep the deep tier quick
+            auto payload = testPayload(len);
+            TxFrameParams p;
+            p.family = Family(f);
+            p.sig = sig;
+            p.mode = m;
+            p.cpMode = CpMode(len % 3);
+            p.cssHeaderCopies = uint8_t(len % 2 ? 1 : 2);
+            p.payload = payload;
+            const auto g = computeGeometry(p);
+            CHECK_EQ(int(buildFrameBaseband(p).size()), g.totalSamples);
+            CHECK_NEAR(frameAirtimeSec(p),
+                       double(g.totalSamples) / kFsBaseband, 1e-12);
+            ++checked;
+          }
+        }
+      }
+    }
+  }
+  setActiveBand(Band::Hf);
+  CHECK(checked > 100);
+  // Pinned: (family, mode, sig, bytes, cp, header copies) -> samples.
+  struct Pin {
+    Band band;
+    Family fam;
+    int mode;
+    ChirpSig sig;
+    size_t len;
+    CpMode cp;
+    int copies;
+    int samples;
+  };
+  const Pin pins[] = {
+      {Band::Hf, Family::Wide, 8, ChirpSig::Fast, 300, CpMode::Medium, 2, 24566},
+      {Band::Hf, Family::Mid, 4, ChirpSig::Robust, 20, CpMode::Medium, 2, 129238},
+      {Band::Hf, Family::Ultra, 13, ChirpSig::Fast, 4095, CpMode::Short, 2, 46262},
+      {Band::Hf, Family::Mid, 2, ChirpSig::Css, 120, CpMode::Medium, 1, 582262},
+      {Band::Hf, Family::Narrow, 0, ChirpSig::Css, 60, CpMode::Medium, 2, 1437558},
+      {Band::VhfFm, Family::Wide, 14, ChirpSig::Fast, 1500, CpMode::Short, 2, 7062},
+  };
+  for (const Pin& pin : pins) {
+    setActiveBand(pin.band);
+    std::vector<uint8_t> payload(pin.len, 0x5A);
+    TxFrameParams p;
+    p.family = pin.fam;
+    p.sig = pin.sig;
+    p.mode = pin.mode;
+    p.cpMode = pin.cp;
+    p.cssHeaderCopies = uint8_t(pin.copies);
+    p.payload = payload;
+    CHECK_EQ(computeGeometry(p).totalSamples, pin.samples);
+  }
+  setActiveBand(Band::Hf);
+}
+
 TEST_CASE(frame_papr_ceiling) {
   auto payload = testPayload(400);
   TxFrameParams p;

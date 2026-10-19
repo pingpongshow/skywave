@@ -6,17 +6,6 @@
 
 namespace skw {
 
-const char* toString(ChannelClass c) {
-  switch (c) {
-    case ChannelClass::Static: return "STATIC";
-    case ChannelClass::Fading: return "FADING";
-    case ChannelClass::Severe: return "SEVERE";
-    case ChannelClass::Moderate: return "MODERATE";
-    case ChannelClass::Unknown: break;
-  }
-  return "UNKNOWN";
-}
-
 namespace {
 // Decay applied to the SNR accumulators every window, so the verdict
 // tracks the CURRENT regime instead of averaging a whole session.
@@ -123,13 +112,12 @@ ChannelClass ChannelClassifier::classifyNow() const {
   const double var = snrVariance();
   const double fer = frameErrorRate();
 
-  // SEVERE first: it is the verdict with real consequences (a mode cap),
-  // and its evidence overlaps Fading's. Any TWO of the three signals.
+  // SEVERE first: it is the verdict with real consequences (the CCIR
+  // Poor floor table), and its evidence overlaps Fading's. Any TWO of the
+  // four signals (SNR variance, delay-spread median, FER, pilot excess).
   int severe = 0;
   if (var >= cfg_.severeSnrVarMin) ++severe;
-  static const bool spreadEmaSevere = getenv("SKW_CHANCLASS_SPREAD_EMA") != nullptr;
-  const double spreadSevere =
-      (spreadEmaSevere || spreadN_ == 0) ? spreadEma_ : spreadMedian();
+  const double spreadSevere = spreadN_ == 0 ? spreadEma_ : spreadMedian();
   if (spreadSevere >= cfg_.severeSpreadMsMin) ++severe;
   if (fer >= cfg_.severeFerMin) ++severe;
   const double pilot = pilotMedian();  // -1 with no samples yet

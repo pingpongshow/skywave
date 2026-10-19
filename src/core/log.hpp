@@ -10,7 +10,6 @@ enum class LogLevel : int { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 
 
 namespace log {
 void setLevel(LogLevel lvl);
-LogLevel level();
 // Empty path closes any open log file (stderr only).
 bool setFile(const std::string& path);
 void write(LogLevel lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));

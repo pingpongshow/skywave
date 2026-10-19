@@ -82,7 +82,7 @@ TEST_CASE(happy_path_negotiation) {
   CHECK_EQ(start.caps, uint16_t(A.caps & B.caps));  // zstd + resume
   CHECK_EQ(int(start.initialMode),
            int(initialModeFromQuality(Family::Wide, 12.5, 20, 13)));
-  CHECK_EQ(int(start.macProfile), int(macProfileForMode(start.initialMode)));
+  CHECK_EQ(int(start.maxMode), int(A.maxMode));
 
   // B accepts; final mode may only go DOWN from the proposal.
   auto res = evaluateStart(B, call, start, bMeas);
@@ -155,24 +155,37 @@ TEST_CASE(every_nak_reason) {
     Bu.ultraEnable = true;
     CHECK(!reason(Bu, call, start).has_value());
   }
-  // Busy.
-  {
-    auto Bb = stationB();
-    Bb.busy = true;
-    CHECK(reason(Bb, call, start) == StartNakReason::Busy);
-  }
-  // Policy refusal.
-  {
-    auto Bp = stationB();
-    Bp.policyRefuse = true;
-    CHECK(reason(Bp, call, start) == StartNakReason::PolicyRefusal);
-  }
   // Capability conflict: initiator commits something B never offered.
   {
     StartBody s2 = start;
     s2.caps = kCapVoice;  // B does not advertise voice
     CHECK(reason(B, call, s2) == StartNakReason::CapabilityConflict);
   }
+}
+
+// The responder's max_mode binds the session: START_ACK carries the lower
+// of the two caps (the initiator's AMC and both pins stay under it) and the
+// final mode never exceeds it.
+TEST_CASE(session_max_mode_is_the_lower_cap) {
+  auto A = stationA();
+  auto B = stationB();
+  A.maxMode = 13;
+  B.maxMode = 6;
+  QualityMeasurement q{30.0, 0, 0};  // rich enough for the M10 initial cap
+  CallBody call = makeCall(A, "K6XYZ");
+  CallAckBody ack = *respondToCall(B, call, q);
+  StartBody start = makeStart(A, ack, q);
+  CHECK_EQ(int(start.maxMode), 13);
+  auto r = evaluateStart(B, call, start, q);
+  CHECK(std::holds_alternative<StartAckBody>(r));
+  CHECK_EQ(int(std::get<StartAckBody>(r).maxMode), 6);
+  CHECK(std::get<StartAckBody>(r).finalMode <= 6);
+  // And the other way round: the initiator's cap is the lower one.
+  A.maxMode = 8;
+  B.maxMode = 13;
+  start = makeStart(A, ack, q);
+  r = evaluateStart(B, call, start, q);
+  CHECK_EQ(int(std::get<StartAckBody>(r).maxMode), 8);
 }
 
 TEST_CASE(ultra_fallback_schedule) {

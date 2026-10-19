@@ -39,8 +39,6 @@ enum class ChannelClass : uint8_t {
                 // are measured on Good), so the ladder is capped at M8
 };
 
-const char* toString(ChannelClass c);
-
 struct ChanClassConfig {
   // Evidence needed before leaving Unknown. Frames are seconds apart at
   // robust modes, so this is tens of seconds of observation.
@@ -56,7 +54,7 @@ struct ChanClassConfig {
   double staticPilotStabMax = 0.03;
   double staticFerMax = 0.02;
 
-  // SEVERE gates - any two of the three.
+  // SEVERE gates - any two of the four (with severePilotStabMin below).
   double severeSnrVarMin = 12.0;
   double severeSpreadMsMin = 1.6;
   double severeFerMin = 0.35;

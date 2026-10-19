@@ -69,17 +69,18 @@ std::vector<ChirpDetection> runOne(Family fam, ChirpSig sig, double snr3kDb,
 }  // namespace
 
 TEST_CASE(chirp_patterns_distinct_under_inversion) {
-  // All 6 observable slope sequences must be mutually distinct.
+  // All 8 observable slope sequences (4-rep CSS on WIDE) must be
+  // mutually distinct.
   auto seq = [](ChirpSig s, bool inv) {
-    auto p = chirpPattern(s);
+    auto p = chirpPattern(Family::Wide, s);
     if (inv) {
-      for (auto b : p) (void)b;
       for (size_t i = 0; i < p.size(); ++i) p[i] = !p[i];
     }
     return p;
   };
   std::vector<std::vector<bool>> all;
-  for (auto s : {ChirpSig::Fast, ChirpSig::Robust, ChirpSig::Calling}) {
+  for (auto s : {ChirpSig::Fast, ChirpSig::Robust, ChirpSig::Calling,
+                 ChirpSig::Css}) {
     for (bool inv : {false, true}) all.push_back(seq(s, inv));
   }
   for (size_t i = 0; i < all.size(); ++i) {

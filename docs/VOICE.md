@@ -57,7 +57,7 @@ Voice does not open where AUTO has no plan. Manual codec selection is
 clamped to what the mode's NET rate can carry.
 
 If AMC moves the session mid-talkspurt, the plan is redone at the new
-mode: the codec steps at the next frame boundary (`EVT:VOICE codec`); if
+mode: the codec steps at the next frame boundary (`EVT:VOICE CODEC <name>`); if
 no plan exists any more, voice closes cleanly.
 
 ## Framing
@@ -142,6 +142,11 @@ whether it keeps up with real time); `BCASTRX=ON` while a broadcast is
 playing out. INI: `voice.codec` (`auto`/`700c`/`1300`/`2400`/`3200`,
 the startup `VOICECODEC`; a runtime change is saved on exit) and
 `voice.broadcast_mode` (`auto` or `m8`...).
+
+With the placeholder callsign (`N0CALL`/empty) `VOICESTART` and
+`VOICEPTT ON` answer `ERROR:STATE`: voice transmits like any other
+traffic. A malformed record on the voice port is discarded and logged
+(`WARN voice port: N malformed record(s) discarded`).
 
 ## Testing
 

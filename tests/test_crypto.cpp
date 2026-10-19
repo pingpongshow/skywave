@@ -270,7 +270,6 @@ struct CryptoPair {
     c.policy.caps = kCapZstd | kCapResume;
     if (wants) c.policy.caps |= kCapEncryption;
     if (withPsk) c.psk = pskBytes();
-    c.encryptionRequested = wants;
     return c;
   }
 

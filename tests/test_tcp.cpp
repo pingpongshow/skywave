@@ -15,15 +15,17 @@
 #include <vector>
 
 #include "skytest.hpp"
+#include "st2_world.hpp"
 #include "tcp/control.hpp"
 #include "tcp/server.hpp"
+#include "worker.hpp"
 
 using namespace skw;
 
 namespace {
 
 struct StubBackend : ControlBackend {
-  std::string call = "N0CALL";
+  std::string call = "K1AAA";
   std::string state = "IDLE";
   bool listen = false, mon = false, isBusy = false;
   std::string fam = "WIDE";
@@ -49,11 +51,10 @@ struct StubBackend : ControlBackend {
     return true;
   }
   void abortSession() override { state = "IDLE"; }
-  bool setListen(bool on) override {
+  void setListen(bool on) override {
     listen = on;
     if (state == "IDLE" && on) state = "LISTENING";
     if (state == "LISTENING" && !on) state = "IDLE";
-    return true;
   }
   bool listening() override { return listen; }
   std::string fsmState() override { return state; }
@@ -73,13 +74,11 @@ struct StubBackend : ControlBackend {
   }
   int maxMode() override { return maxM; }
   bool setMaxMode(int m) override {
+    if (m < 4 || m > 13) return false;  // HF range, as the worker
     maxM = m;
     return true;
   }
-  bool setMonitor(bool on) override {
-    mon = on;
-    return true;
-  }
+  void setMonitor(bool on) override { mon = on; }
   bool monitoring() override { return mon; }
   bool txTest(double sec) override { return state == "IDLE" && sec <= 30; }
   void txTestStop() override { ++txTestStops; }
@@ -116,7 +115,7 @@ struct StubBackend : ControlBackend {
   }
   std::string harqStr() override { return harqS; }
   bool setHarq(const std::string& m) override {
-    if (m != "AUTO" && m != "CHASE" && m != "IR") return false;
+    if (m != "CHASE" && m != "IR") return false;
     harqS = m;
     return true;
   }
@@ -145,7 +144,7 @@ struct StubBackend : ControlBackend {
   bool cw = false;
   std::string modeS = "AUTO(M8)";
   std::string cpS = "AUTO";
-  std::string harqS = "AUTO";
+  std::string harqS = "IR";
   std::map<std::string, bool> features;
   std::map<std::string, std::string> ptt;
 };
@@ -184,7 +183,7 @@ TEST_CASE(control_protocol_scripted_session) {
   auto run = [&](const std::string& in) { return handleControlLine(in, be); };
 
   // Identity round.
-  CHECK(run("MYCALL") == "MYCALL N0CALL");
+  CHECK(run("MYCALL") == "MYCALL K1AAA");
   CHECK(run("mycall w1aw") == "MYCALL W1AW");  // case-insensitive verb+arg
   CHECK(run("MYCALL xx") == "ERROR:BADARG");
 
@@ -256,6 +255,26 @@ TEST_CASE(control_protocol_scripted_session) {
   // Unknown.
   CHECK(run("FLY ME") == "ERROR:UNKNOWN");
   CHECK(run("") == "ERROR:UNKNOWN");
+}
+
+// A2: with the placeholder callsign every transmitting command is refused
+// at the dispatcher, before the backend sees it; the rest still work.
+TEST_CASE(control_placeholder_call_blocks_tx) {
+  StubBackend be;
+  be.call = "N0CALL";
+  auto run = [&](const std::string& in) { return handleControlLine(in, be); };
+  for (const char* c : {"CONNECT K6XYZ", "CQ", "BEACON", "BCAST 00",
+                        "TXTEST 5"}) {
+    CHECK(run(c) == "ERROR:STATE");
+  }
+  CHECK(be.log.empty());  // CONNECT never reached the backend
+  CHECK(run("TXTEST OFF") == "TXTEST OFF");  // stopping is always allowed
+  CHECK(run("STATUS").rfind("STATUS ", 0) == 0);
+  be.call = "";
+  CHECK(run("CQ") == "ERROR:STATE");
+  CHECK(run("MYCALL K1AAA") == "MYCALL K1AAA");
+  CHECK(run("CQ") == "CQ");
+  CHECK(run("CONNECT K6XYZ") == "CONNECT K6XYZ");
 }
 
 TEST_CASE(command_surface_complete) {
@@ -556,6 +575,127 @@ TEST_CASE(client_generation_and_read_budget) {
   }
   CHECK(srv.clientGeneration() != g1);  // new client: parsers reset
   ::close(fd2);
+}
+
+// --- the real worker behind the dispatcher ---------------------------------
+// The stub above answers whatever it is told; these run the same lines
+// against ModemWorker, so the worker's own answers (case, ranges,
+// refusals) are pinned too.
+
+namespace {
+
+struct WorkerRig {
+  FakeClock clk{1000000};
+  SampleRing rx{size_t(kFsAudio)}, tx{size_t(kFsAudio) * 8};
+  std::optional<ModemWorker> w;
+  explicit WorkerRig(const Config& c) { w.emplace(c, clk, rx, tx); }
+  std::string run(const std::string& line) { return w->control(line); }
+  // Quiet input for `sec` seconds; returns TX samples produced.
+  uint64_t pump(double sec) {
+    std::vector<float> quiet(size_t(kFsAudio / 100), 0.0f);
+    std::vector<float> sink(static_cast<size_t>(kFsAudio));
+    for (int i = 0; i < int(sec * 100); ++i) {
+      rx.write(quiet);
+      w->runOnce();
+      tx.read(sink);
+      clk.advanceSec(0.01);
+    }
+    return w->telemetry().txSamplesTotal;
+  }
+};
+
+}  // namespace
+
+// A2: the placeholder callsign transmits nothing, by any path.
+TEST_CASE(worker_placeholder_call_never_transmits) {
+  Config c;  // callsign N0CALL
+  WorkerRig r(c);
+  for (const char* cmd : {"CQ", "BEACON", "BCAST 48454C4C4F", "CONNECT K6XYZ",
+                          "TXTEST 2"}) {
+    CHECK_EQ(r.run(cmd), std::string("ERROR:STATE"));
+  }
+  // Direct backend calls (no dispatcher) refuse too.
+  CHECK(!r.w->cq());
+  CHECK(!r.w->beacon());
+  CHECK(!r.w->bcast({1, 2, 3}));
+  CHECK(!r.w->connectTo("K6XYZ"));
+  CHECK(!r.w->txTest(2.0));
+  CHECK_EQ(r.pump(3.0), uint64_t(0));
+  // A real callsign unblocks it.
+  CHECK_EQ(r.run("MYCALL k1aaa"), std::string("MYCALL K1AAA"));
+  CHECK_EQ(r.run("TXTEST 1"), std::string("TXTEST 1"));
+  CHECK(r.pump(3.0) > 0);
+}
+
+// A9 / A10 / A4: the worker's answers - uppercase HARQ, the band's mode
+// range for MODE and MAXMODE alike, and CQ persisting LISTEN.
+TEST_CASE(worker_control_answers) {
+  Config c;
+  c.callsign = "K1AAA";
+  WorkerRig r(c);
+  CHECK_EQ(r.run("HARQ"), std::string("HARQ IR"));
+  CHECK_EQ(r.run("harq chase"), std::string("HARQ CHASE"));
+  CHECK_EQ(r.run("HARQ AUTO"), std::string("ERROR:BADARG"));
+  CHECK(r.w->config().harq == HarqMode::Chase);
+
+  // HF: M4..M13 for both.
+  CHECK_EQ(r.run("MAXMODE M13"), std::string("MAXMODE M13"));
+  CHECK_EQ(r.run("MAXMODE M14"), std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("MAXMODE M3"), std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("MAXMODE M4X"), std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("MAXMODE"), std::string("MAXMODE M13"));
+  CHECK_EQ(r.run("MODE M14"), std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("MODE M3"), std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("MODE M13"), std::string("MODE M13"));
+  CHECK_EQ(r.run("MODE AUTO").rfind("MODE AUTO(M", 0), size_t(0));
+
+  // CQ turns listening on through the same persisted switch as LISTEN.
+  CHECK_EQ(r.run("LISTEN OFF"), std::string("LISTEN OFF"));
+  CHECK(!r.w->config().listen);
+  CHECK_EQ(r.run("CQ"), std::string("CQ"));
+  CHECK_EQ(r.run("LISTEN"), std::string("LISTEN ON"));
+  CHECK(r.w->config().listen);
+#ifdef SKW_HAVE_CRYPTO
+  // A3: only 64 hex digits install a key.
+  CHECK_EQ(r.run("ENCRYPTKEY " + std::string(64, 'g')),
+           std::string("ERROR:BADARG"));
+  CHECK_EQ(r.run("ENCRYPTKEY " + std::string(64, 'A')),
+           std::string("ENCRYPTKEY"));
+#endif
+}
+
+TEST_CASE(worker_vhf_mode_range) {
+  Config c;
+  c.callsign = "K1AAA";
+  c.band = Band::VhfFm;
+  WorkerRig r(c);
+  CHECK_EQ(r.run("MAXMODE M14"), std::string("MAXMODE M14"));
+  CHECK_EQ(r.run("MODE M14"), std::string("MODE M14"));
+  CHECK_EQ(r.run("MODE M15"), std::string("ERROR:BADARG"));
+  setActiveBand(Band::Hf);  // process-global profile: restore for others
+}
+
+// A1: channel memory is written when a session ends - not only at exit,
+// which a crash never reaches.
+TEST_CASE(worker_chanmem_saved_when_session_ends) {
+  const std::string path = "skw_test_chanmem_session.bin";
+  std::remove(path.c_str());
+  ::setenv("SKW_CHANMEM_PATH", path.c_str(), 1);
+  {
+    st2w::World w(24.0, 42);
+    CHECK(w.cmd(w.a, "CONNECT K6XYZ") == "CONNECT K6XYZ");
+    CHECK(w.waitState(w.a, "CONNECTED", 3000));
+    CHECK(::access(path.c_str(), F_OK) != 0);  // nothing ended yet
+    CHECK(w.cmd(w.a, "DISCONNECT") == "DISCONNECT");
+    CHECK(w.waitState(w.a, "LISTENING", 3500));
+    for (int i = 0; i < 20; ++i) w.round();  // the save runs a pass later
+    // Written while both workers are still alive.
+    ChannelMemory m;
+    CHECK(m.load(path));
+    CHECK(m.entries() > 0);
+  }
+  ::setenv("SKW_CHANMEM_PATH", "-", 1);
+  std::remove(path.c_str());
 }
 
 SKYTEST_MAIN

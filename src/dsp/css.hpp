@@ -1,16 +1,19 @@
-// CSS deep tier (WAVEFORM.md "Reserved CSS Tier", ROADMAP 6.1): LoRa-style
-// chirp spread spectrum for modes M0-M3, restoring connectivity below the
-// OFDM pilot floor.
+// CSS deep tier (WAVEFORM.md "CSS Deep Tier (M0-M3)"): LoRa-style chirp
+// spread spectrum for modes M0-M3, restoring connectivity below the OFDM
+// pilot floor.
 //
 //   symbol   : cyclically-shifted up-chirp across the family CSS band,
 //              2^SF chips, carrying SF bits (gray-coded so an adjacent-bin
 //              demod error costs one bit)
-//   demod    : non-coherent - dechirp by the conjugate base chirp,
-//              integrate per chip, 2^SF-point FFT, magnitude argmax
-//   FEC      : Hamming(7,4) hard-decision + full-message row-column
-//              interleave spreading each codeword across the whole
-//              section, so a burst loss (lost symbol, second-long fade)
-//              costs each codeword ~1 correctable bit
+//   demod    : non-coherent matched-filter bank over all cyclic shifts
+//              (one FFT cross-correlation), RAKE-combined over the
+//              frame's resolved multipath taps; hard argmax or soft
+//              dual-max bit LLRs
+//   payload  : LDPC r1/2 (N=648) over soft-demodulated symbols
+//   header   : Hamming(7,4) + full-message row-column interleave (each
+//              codeword spread across the whole section, so a burst loss
+//              costs it ~1 correctable bit), soft ML-decoded; sent twice
+//              (or once on the connected-session short layout)
 //
 // SF by mode: M0=SF8 (deepest) ... M3=SF5 (kModes.spread holds the SF).
 // The CSS band per family is the family bandwidth rounded to an integer
@@ -40,17 +43,9 @@ inline int cssSf(int mode) {
   return (mode >= 0 && mode <= 3) ? int(kModes[size_t(mode)].spread) : 0;
 }
 
-// CSS tier design floors (dB SNR, 3 kHz noise reference, AWGN): lowest
-// SNR with one-shot FER <= ~15%, measured 2026-07-29 with the matched-
-// filter demod (40 trials/point; now FULL-FRAME, bertool --css-frames -
-// see kFloors). Floors track
-// the chip rate: a family's CSS band IS its noise bandwidth, so the
-// narrow families reach far below the WAVEFORM.md "-14 dB" tier target
-// while WIDE bottoms out near -13. Stored in kFloors alongside the OFDM
-// ladder (WAVEFORM.md "CSS Deep Tier" table).
-inline constexpr double cssFloorDb(Family f, int mode) {
-  return (mode >= 0 && mode <= 3) ? floorDb(f, mode) : -99.0;
-}
+// CSS design floors (full-frame, AWGN) are kFloors' M0-M3 entries - read
+// them with floorDb() like the OFDM ladder's. They track the chip rate: a
+// family's CSS band IS its noise bandwidth.
 
 // Samples in one CSS symbol at 12 kHz baseband.
 size_t cssSymbolSamples(Family f, int sf);
@@ -58,8 +53,8 @@ size_t cssSymbolSamples(Family f, int sf);
 // CSS frame-on-air layout (WAVEFORM.md "CSS Deep Tier"): chirp preamble
 // (sig Css) + kCssSyncSymbols known shift-0 SF8 symbols (fine timing +
 // multipath profile) + PHY header at fixed SF8 transport + payload at
-// the header mode's SF with a trailing CRC-16 (payload integrity - CSS
-// Hamming FEC can miscorrect silently, unlike LDPC).
+// the header mode's SF with a trailing CRC-16 (payload integrity: the
+// LDPC parity check alone can pass a miscorrected codeword).
 inline constexpr int kCssHeaderSf = 8;
 inline constexpr int kCssSyncSymbols = 2;
 inline constexpr int kCssPayloadCrcBytes = 2;
@@ -88,12 +83,10 @@ struct CssTap {
 std::vector<cfloat> cssModulate(Family f, int sf,
                                 std::span<const uint16_t> symbols);
 // Demodulate one aligned symbol; returns the raw shift value and fills
-// `peakRatio` (peak magnitude / mean magnitude - a decode-quality proxy).
-uint16_t cssDemodSymbol(Family f, int sf, std::span<const cfloat> sym,
-                        float* peakRatio = nullptr);
-// RAKE variant: score each shift as the tap-weighted sum of correlation
-// magnitudes at the taps' delays (non-coherent path combining; the tap
-// list comes from the frame's sync-symbol correlation profile).
+// `peakRatio` (peak score / mean score - a decode-quality proxy). RAKE:
+// each shift scores the tap-weighted sum of correlation magnitudes at the
+// taps' delays (non-coherent path combining; the tap list comes from the
+// frame's sync-symbol correlation profile); no taps = a single tap at 0.
 uint16_t cssDemodSymbolTaps(Family f, int sf, std::span<const cfloat> sym,
                             std::span<const CssTap> taps,
                             float* peakRatio = nullptr);
@@ -105,9 +98,8 @@ std::vector<cfloat> cssBaseChirp(Family f, int sf);
 // The frame payload rides LDPC r1/2 over CSS symbols with soft demod
 // (WAVEFORM.md "CSS Deep Tier"): hard-decision Hamming hits a sharp
 // 1-error-per-codeword cliff under second-long Rayleigh fades, several
-// dB short of what soft LDPC recovers. The Hamming bit layer below
-// remains the header transport (short, duplicated) and the aligned
-// modem-layer API.
+// dB short of what soft LDPC recovers. The Hamming bit layer below is
+// the header transport only (short, duplicated).
 std::vector<uint16_t> cssMapCodedBits(std::span<const uint8_t> bits, int sf);
 // Where the decided symbol's correlation peak actually sits: `offset` is
 // in baseband samples relative to the lag the demod read it at (on the
@@ -131,12 +123,13 @@ std::vector<uint16_t> cssEncode(std::span<const uint8_t> bytes, int sf);
 // Hamming corrects one bit per codeword.
 std::vector<uint8_t> cssDecode(std::span<const uint16_t> symbols, int sf,
                                size_t byteCount);
-// Soft-decision decode of the same bit layer: `llr` holds sf bit LLRs per
-// symbol in cssSoftDemodSymbol's convention (positive = bit 0), and each
-// Hamming(7,4) codeword is decoded by maximum likelihood over its 16
-// candidates. LLRs of identical sections (the duplicated CSS header) can
-// be summed before the call - soft combining.
-std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr, int sf,
+// Soft-decision decode of the same bit layer: `llr` holds the section's
+// bit LLRs in stream order (sf per symbol, as cssSoftDemodSymbol appends
+// them; positive = bit 0), and each Hamming(7,4) codeword is decoded by
+// maximum likelihood over its 16 candidates. LLRs of identical sections
+// (the duplicated CSS header) can be summed before the call - soft
+// combining.
+std::vector<uint8_t> cssDecodeSoft(std::span<const float> llr,
                                    size_t byteCount);
 // Symbols required to carry `byteCount` payload bytes at `sf`.
 size_t cssSymbolsForBytes(size_t byteCount, int sf);

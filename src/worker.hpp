@@ -50,10 +50,11 @@ inline constexpr int kSpectrumBins = 128;    // 0..6 kHz of the baseband
 inline constexpr int kConstellationPts = 96;  // most recent data carriers
 
 struct Telemetry {
-  int64_t clockUs = 0;
   uint64_t rxSamplesTotal = 0;
-  uint64_t rxCapturesOpened = 0;   // detections that opened a capture
-  uint64_t rxCapturesDropped = 0;  // captures evicted by the backlog cap
+  // Capture accounting (tests and the shutdown log line): detections
+  // that opened a capture, and captures evicted by the backlog cap.
+  uint64_t rxCapturesOpened = 0;
+  uint64_t rxCapturesDropped = 0;
   uint64_t rxDecodeCalls = 0;      // receive attempts (capture ladder)
   uint64_t rxDecodeUsTotal = 0;    // their summed wall time, us
   uint64_t rxDecodeUsMax = 0;      // slowest single attempt, us
@@ -63,7 +64,6 @@ struct Telemetry {
   float noiseFloorDbfs = -120.0f;
   bool busy = false;
   bool ptt = false;
-  uint8_t fsmState = 0;
   uint8_t mode = 4;
 
   // --- instrument taps -------------------------------------------------
@@ -95,10 +95,6 @@ struct WorkerStatus {
   double netBps = 0.0;
 };
 
-struct WorkerCommand {
-  std::string line;  // control-port command syntax; parsed by the worker
-};
-
 class ModemWorker : public ControlBackend {
  public:
   ModemWorker(const Config& cfg, Clock& clock, SampleRing& rxRing,
@@ -108,8 +104,6 @@ class ModemWorker : public ControlBackend {
   void start();
   void stop();
 
-  // Thread-safe: queue a command; the worker applies it between chunks.
-  void postCommand(WorkerCommand cmd);
   // Thread-safe synchronous control dispatch (the TCP owner calls this).
   std::string control(const std::string& line);
 
@@ -142,13 +136,12 @@ class ModemWorker : public ControlBackend {
   size_t runOnce();
 
   // --- ControlBackend (locks internally) ---------------------------------
-  double netBps();
   std::string myCall() override;
   bool setMyCall(const std::string& call) override;
   bool connectTo(const std::string& call) override;
   bool disconnect() override;
   void abortSession() override;
-  bool setListen(bool on) override;
+  void setListen(bool on) override;
   bool listening() override;
   std::string fsmState() override;
   std::string statusLine() override;
@@ -158,7 +151,7 @@ class ModemWorker : public ControlBackend {
   bool setFamily(const std::string& fam) override;
   int maxMode() override;
   bool setMaxMode(int mode) override;
-  bool setMonitor(bool on) override;
+  void setMonitor(bool on) override;
   bool monitoring() override;
   bool txTest(double seconds) override;
   void txTestStop() override;
@@ -204,13 +197,21 @@ class ModemWorker : public ControlBackend {
 
  private:
   void threadMain();
-  void applyPendingCommands();
   size_t processChunk();
   void publishTelemetry();
   double nowSec() { return double(clock_.nowUs()) * 1e-6; }
 
-  // Locked helpers (modemMutex_ held).
+  // Locked helpers (modemMutex_ held). Each status string is built in
+  // exactly one place: the control-port answers, STATUS and the status
+  // published for the GUI all come from these.
   static std::string fsmStateNameLocked(FsmState st);
+  std::string stateNameLocked() const;   // LISTENING when idle + listening
+  std::string familyNameLocked() const;  // FAMILY / STATUS FAMILY=
+  std::string modeNameLocked() const;    // MODE / STATUS MODE=
+  std::string freqInfoLocked() const;    // FREQINFO payload
+  std::string audioLevelLocked() const;  // AUDIOLEVEL payload
+  // Placeholder callsign (N0CALL/empty): every transmit path refuses.
+  bool txBlockedLocked() const { return isPlaceholderCall(cfg_.callsign); }
 #ifdef SKW_HAVE_VOICE
   const char* voiceModeNameLocked() const;
 #endif
@@ -232,9 +233,6 @@ class ModemWorker : public ControlBackend {
 
   std::thread thread_;
   std::atomic<bool> running_{false};
-
-  std::mutex cmdMutex_;
-  std::vector<WorkerCommand> pendingCmds_;
 
   // Seqlock: even version = stable; writer bumps to odd, writes, bumps even.
   mutable std::atomic<uint32_t> telemetryVersion_{0};
@@ -278,8 +276,8 @@ class ModemWorker : public ControlBackend {
   std::deque<PendingRx> pendingRx_;
   uint64_t rxDropsReported_ = 0;  // RX ring overrun samples already logged
   double rxDropWarnAt_ = -1e9;
-  // Captures dropped because the backlog hit its cap (see maxPendingRx()
-  // in worker.cpp). Nonzero means the receiver was offered more preambles
+  // Captures dropped because the backlog hit its cap (kMaxPendingRx in
+  // worker.cpp). Nonzero means the receiver was offered more preambles
   // than it could work through; sustained growth means it is shedding.
   uint64_t rxCapturesDropped_ = 0;
   uint64_t rxCapturesOpened_ = 0;
@@ -309,6 +307,11 @@ class ModemWorker : public ControlBackend {
   // makes `CHANMEM OFF` a real switch rather than a stored flag.
   ChannelMemory chanMem_;
   std::string chanMemPath_;
+  // A session ended (so the engine recorded into chanMem_) since the
+  // last save; saved at most every kChanMemSaveSec (worker.cpp).
+  bool chanMemDirty_ = false;
+  double chanMemSavedAt_ = -1e9;
+  void maybeSaveChanMemLocked(double now);
   int32_t freqBucketKhz_ = -1;   // from `FREQINFO <hz>`
 
   std::unique_ptr<PttDriver> ptt_;
@@ -353,6 +356,7 @@ class ModemWorker : public ControlBackend {
   double idleSince_ = -1.0;
   bool txTestBurst_ = false;       // txPending_ holds a TXTEST frame
   double ladderDbgAt_ = -1e9;  // SKW_RXLADDER_DEBUG rate limit
+  bool ladderDbg_ = false;     // SKW_RXLADDER_DEBUG, read once
   std::deque<float> floorBlocks_;  // 15 s of block levels (floor = min)
   uint64_t txImpairSeq_ = 0;   // SKW_TX_IMPAIR per-burst channel seed
   double lastTxDropAt_ = 0.0;  // SKW_TX_IMPAIR dropout scheduler

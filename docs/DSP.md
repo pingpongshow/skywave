@@ -3,8 +3,8 @@
 ## Scope
 
 The sample-domain design: RX and TX chains, synchronization algorithms,
-equalization, AGC, interference tools, TX levels, and clear-channel
-assessment. Waveform parameters are in [WAVEFORM.md](WAVEFORM.md).
+equalization, input levels, TX levels, and clear-channel assessment.
+Waveform parameters are in [WAVEFORM.md](WAVEFORM.md).
 
 ## Sample Domain Overview
 
@@ -26,28 +26,34 @@ assessment. Waveform parameters are in [WAVEFORM.md](WAVEFORM.md).
 
 ```text
 audio in (48k real)
-  -> DC block -> input gain trim
-  -> AGC (slow, headroom-targeting)
-  -> mix(-1500 Hz) + 2-stage decimate (x2,x2)  ->  12k complex baseband
-  -> impulse blanker            [optional, config]
-  -> adaptive multi-notch       [optional, config]
-  -> sync engine (chirp detector | tracking)
-  -> CFO rotator (from sync/tracking loop)
-  -> symbol windowed FFT (320)
-  -> pilot processor -> channel estimator -> MMSE equalizer
-  -> despreader (MRC over S copies)
-  -> soft demapper (LLRs, per-carrier noise weighting)
-  -> deinterleave -> LDPC decode -> dewhiten -> CRC check
-  -> link layer
+  -> level meter (telemetry only; the signal is not scaled)
+  -> mix(-centerHz) + 2-stage decimate (x2,x2)  ->  12k complex baseband
+  -> sync engine (chirp detector, per capture)
+  -> CFO rotator (from sync + in-frame FLL)
+  -> symbol FFT (320)
+  -> pilot processor -> Kalman channel tracker (+ RTS smoothing)
+  -> despreader (MRC over S copies, channel-weighted)
+  -> soft demapper (max-log LLRs)
+  -> deinterleave -> LDPC decode -> dewhiten
+  -> link layer (CRC-32 per link frame)
 ```
 
-### AGC
+### Input Level (no AGC, no DC block)
 
-- target: −18 dBFS RMS with 12 dB headroom
-- attack 10 ms / release 500 ms; freezes during detected frames so gain
-  pumping never modulates an equalized frame
-- reports input level to telemetry (drives the GUI level meter and the
-  `AUDIOLEVEL` control query)
+The RX chain has no AGC and no DC blocker, deliberately: every stage
+after the converters is level-independent. The chirp detector scores
+NORMALIZED correlation against a tracked noise floor, the ZC stage and
+the channel tracker estimate the complex channel gain (amplitude
+included) and the noise from the signal itself, and LLRs scale with
+their ratio - so the input level does not matter within the converters'
+range, and a gain loop could only add pumping inside a frame. A DC
+offset lands at −centerHz in baseband (−1500 Hz on HF), outside every
+family's carriers: the OFDM and CSS stages read only in-band bins, and
+the converter and detector band filters attenuate it (for the widest
+families it sits in their transition bands, so a gross DC offset still
+costs detection margin there). The worker measures the input level per
+chunk for telemetry only (the GUI meter and the `AUDIOLEVEL` control
+query); the operator sets the radio's audio level, not the modem.
 
 ### Sync Engine
 
@@ -108,8 +114,11 @@ States: `SEARCH → COARSE → FINE → TRACK → (FLYWHEEL) → SEARCH`
   rate - the slope of the first walk's FLL frequency - pre-derotated as a
   quadratic phase: long robust frames hold 2 Hz/s on every family. (Documentation before v1.2.0 described
   a 2nd-order PLL here; it was never implemented.)
-- `FLYWHEEL`: on lost pilots mid-frame, hold last CFO/timing for up to 8
-  symbols before declaring frame loss (rides through short fades/impulses)
+- `FLYWHEEL`: a symbol whose pilot innovation is far beyond what the
+  filter expects (> 10× its predicted innovation power: an impulse or a
+  collision) does not update the tracker - the state is held and the
+  next symbol runs on prediction. There is no frame-loss declaration
+  mid-frame; the LDPC decode decides
 
 ### Capture Window Ladder
 
@@ -156,7 +165,7 @@ Two bounds keep the ladder from consuming the receiver:
   Draining a capture's whole ladder in one pass held the worker mutex
   for 20+ s and stalled the control port.
 - **Backlog cap**: at most 8 open captures; a new detection evicts the
-  oldest (`SKW_MAX_PENDING_RX`). This bound is not an optimization. The
+  oldest (`kMaxPendingRx`, a fixed constant). This bound is not an optimization. The
   history buffer must retain every open capture's start, so an unbounded
   backlog pins the full 94 s of history, and since each capture ends in
   a 90 s-window HARQ decode the receiver falls **behind real time** and
@@ -169,20 +178,23 @@ Two bounds keep the ladder from consuming the receiver:
 
 ### Channel Estimation and Equalization
 
-- initial estimate: ZC symbol → per-carrier complex gain
-- update: scattered pilots (1/8 per symbol, full sweep every 8 symbols)
-  update the estimate with 2D interpolation — linear in frequency between
-  pilot carriers, 1st-order IIR in time. The IIR constant is
-  **mode-dependent**: α = 0.4 (≈ 120 ms memory, tracks ~1 Hz fading) for
-  unspread modes; α = 0.15 with full-sweep averaging for spread modes
-  (`M4–M7`), where per-pilot SNR is too low for fast tracking and the
-  longer integration trades fading agility for estimate quality — the right
-  trade at the robust floor
-- equalizer: per-carrier MMSE — `ŝ = conj(H)·y / (|H|² + 1/SNR)` — with the
-  noise term from the per-carrier noise tracker; MMSE (not zero-forcing)
-  matters in deep selective notches
-- outputs per-carrier SNR to: soft demapper weighting, selectivity index
-  (AMC), carrier-mask candidate weights
+- initial estimate: ZC block → per-carrier complex gain, least-squares
+  fitted onto the tap grid below
+- model: the channel is a set of taps on a delay grid (2× oversampled
+  against the family's natural resolution), each tap a Gauss–Markov
+  process; per-carrier H is the tap state's projection. A Kalman filter
+  updates the taps from each symbol's scattered pilots (1/8 per symbol,
+  full sweep every 8 symbols) - interpolation in frequency is implicit in
+  the tap model, so it holds across masked carriers. The Doppler design
+  is **class-dependent**: 1 Hz for robust headers and spread modes
+  (`M4–M7`, CCIR Poor), 0.5 Hz for the fast tier (AMC-gated to slower
+  channels)
+- equalization: the despreader's maximum-ratio combining with the
+  tracked H (below); LLR noise = measurement noise + the filter's
+  posterior variance, so an uncertain estimate (mid-fade, sparse pilots)
+  yields soft LLRs rather than confidently wrong ones
+- outputs per-carrier SNR (from per-carrier pilot residuals) to: the
+  selectivity index (AMC) and the carrier-mask detector
 - **delay-spread estimate**: the IFFT of the channel frequency response
   yields the power-delay profile; its 90%-energy span is the delay-spread
   estimate that drives `CPMODE AUTO` — CP steps up when the spread exceeds
@@ -199,31 +211,36 @@ Two bounds keep the ladder from consuming the receiver:
 
 ### Despreading
 
-For spread factor `S`: the `S` equalized copies are combined by maximum-ratio
-combining using per-copy post-equalization SNR weights, then passed to the
-demapper as one symbol with summed weight. Copy phases (known PRN) are
-derotated before combining.
+For spread factor `S`: the `S` copies (plus any leftover-cell copies,
+M5–M7) are combined by maximum-ratio combining against the tracked
+channel - `z = Σ conj(H_k p_k) y_k`, gain `a = Σ |H_k|²` - and passed to
+the demapper as one symbol. Copy phases (known PRN `p_k`) are derotated
+in the combining.
 
 ### Soft Demapper
 
-- Gray-mapped QPSK/16QAM/64QAM max-log-MAP LLRs
-- LLRs scaled by per-carrier equalizer confidence, quantized to 5-bit for
-  the LDPC decoder
-- constellation samples exported to telemetry ring for the GUI plot
+- Gray-mapped QPSK/16QAM/64QAM/256QAM max-log-MAP LLRs from `z/a`,
+  scaled by `a` over the tracker's LLR noise; float LLRs, clamped to ±30,
+  go straight to the LDPC decoder
+- equalized symbols feed the data-aided (EVM) SNR estimate and, on
+  request, the GUI constellation view
 
 ## TX Chain
 
 ```text
-link frame bytes
-  -> CRC-32 -> whiten -> LDPC encode -> interleave -> map -> spread
+link frame bytes (CRC-32 added by the link layer)
+  -> whiten -> LDPC encode -> interleave -> map -> spread
   -> pilot insert -> IFFT (320) -> CP prepend
-  -> raised-cosine edge window (2 ms overlap between symbols)
-  -> preamble/ZC prepend (frame builder)
-  -> soft clipper (PAPR ceiling 8 dB) -> occupied-band FIR
-  -> TX level normalizer
-  -> mix(+1500 Hz) + interpolate 1:4 -> real 48k
-  -> final headroom scale (0.5) -> audio out
+  -> preamble (2 ms raised-cosine edges per chirp rep) + ZC prepend
+  -> soft clipper (PAPR ceiling: band profile, HF 8 dB)
+  -> occupied-band FIR -> normalize to unit RMS     (frame builder)
+  -> interpolate 1:4 + mix(+centerHz) -> real 48k
+  -> fixed level scale (band txTargetRms, then output_gain_db)
+  -> hard limit at full scale (warned) -> audio out
 ```
+
+CSS frames (M0–M3) take the same path from the preamble on, minus the
+PAPR clip (constant envelope); their payload carries a CRC-16 in the PHY.
 
 ### TX Frequency Pre-Compensation
 
@@ -252,18 +269,22 @@ releases the key, discards the staged TX audio, and cancels any running
 
 ### TX Level Normalization
 
-Consistent loudness across frame types (chirps are near-constant-envelope,
-OFDM is not):
+Consistent loudness across frame types: the frame builder normalizes
+every burst to unit RMS at baseband (chirp, ZC and OFDM segments are all
+unit-RMS by construction), so one FIXED scale sets the output level - no
+per-burst measurement or gain loop:
 
-- target RMS: 0.22 (pre-headroom), measured over the whole burst
-- scale clamp: 0.3–1.15; peak clamp 1.9 pre-headroom (≈ 0.95 after final 0.5)
-- chirp/ZC segments are attenuated to the OFDM RMS budget rather than OFDM
-  being boosted
+- passband RMS at `output_gain_db = 0`: the band profile's `txTargetRms`
+  (HF 0.22 = −13.2 dBFS; peaks near −1 dBFS after the 8 dB PAPR ceiling.
+  VHF-FM 0.17: its 11 dB ceiling for 256QAM needs the extra headroom)
+- `output_gain_db` trims it; samples beyond full scale are hard-limited
+  and logged (lower the trim)
 
-## Interference Tools
+## Interference Tools (design only - NOT IMPLEMENTED)
 
-Config-gated, default off, both purely RX-side
-(see [CONFIGURATION.md](CONFIGURATION.md)):
+Neither tool below exists in the receiver; this section is the design
+should one be needed (their old `[modem]` config keys are retired - see
+CONFIGURATION.md). Carrier masking is the implemented in-band defense.
 
 ### Impulse Blanker
 
@@ -282,7 +303,7 @@ Config-gated, default off, both purely RX-side
 - update cadence 100 ms; notch changes are slewed to avoid clicks
 
 Carrier masking ([LINK_ADAPTATION.md](LINK_ADAPTATION.md)) is the preferred
-in-band defense; the notch bank mainly protects AGC and sync from strong
+in-band defense; the notch bank would mainly protect sync from strong
 out-of-band/in-passband carriers.
 
 ## Channel Activity and CCA

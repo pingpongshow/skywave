@@ -13,7 +13,8 @@ Skywave is a reliable, half-duplex, connection-oriented HF link with:
 
 - three-way capability-negotiated connection setup (`CALL` → `CALL_ACK` →
   `START` → `START_ACK`)
-- runtime adaptive mode control over the `M4–M13` ladder
+- runtime adaptive mode control over the `M4–M13` ladder (`M0–M3` when
+  both ends enable the CSS deep tier, `M14` on the VHF-FM profile)
 - selective-repeat ARQ with HARQ combining
 - optional zstd compression, optional encryption, optional resume
 - exactly **one** mode surface: ladder positions `M0–M13`
@@ -31,8 +32,10 @@ Every frame shares one link-layer envelope inside the PHY payload:
 
 ```text
 byte 0      frame_type (matches PHY header frame_type)
-byte 1      flags: [0] compressed  [1] encrypted  [2] more-fragments
-                   [3] resume-context  [4..7] reserved
+byte 1      flags: [1] encrypted  [2] more-fragments
+                   [0], [3..7] reserved: must be 0, a frame with one set
+                   is rejected (compression is stated by the proto
+                   marker byte, "Payload Pipeline")
 bytes 2-3   session_id (0 for pre-session frames; chosen non-zero by the
             initiator and carried in its START envelope, adopted by the
             responder, echoed in START_ACK/RESUME_ACK, kept by a resumed
@@ -115,28 +118,38 @@ CONNECTED                              CONNECTED
 
 ### `START` body
 
-- committed capability intersection
+- committed capability intersection (u16)
 - proposed initial mode (from both quality reports, clamped by config caps)
-- initial CP mode, max-mode cap, MAC profile
-- optional: resume token, crypto KEX public key ([SECURITY.md](SECURITY.md))
+- the initiator's max-mode cap (u8)
+- crypto KEX public key: u8 length (0 = absent) + bytes
+  ([SECURITY.md](SECURITY.md)). A `START` retry carries the same key as
+  the first `START` of that connect attempt: the responder answers a
+  duplicate `START` with its stored `START_ACK`, which answers that key
 
 ### `START_ACK` body
 
 - final initial mode (responder may only lower the proposal)
-- optional: crypto KEX response
+- **session max mode**: the lower of the two stations' max-mode caps. It
+  binds the whole session: the initiator's AMC climbs no higher, neither
+  end may pin above it, and the responder refuses (does not acknowledge)
+  a `MODE_CHANGE` above it
+- optional: crypto KEX response, resume token ("Session Resume")
 
 `START_NAK` reasons: family mismatch, version mismatch, capability conflict,
-busy, policy refusal, **resume-invalid**. The responder sends the reason it
-actually computed - it used to send `busy` for every refusal regardless,
-which made a refused connect undiagnosable from the calling end. Only
-`resume-invalid` is non-fatal: the caller falls back to a clean `START` on
-the same call (see "Reconnecting to a Peer That Lost Its Session").
+**auth failure** (encryption was negotiated but the key exchange could not
+complete: no PSK, missing or unauthenticated KEX material),
+**resume-invalid**. The responder sends the reason it actually computed.
+Only `resume-invalid` is non-fatal: the caller falls back to a clean
+`START` on the same call (see "Reconnecting to a Peer That Lost Its
+Session").
 
-**ULTRA fallback**: `ULTRA` is opt-in on both ends and uses its own chirp
-span, so a non-ULTRA station will not even detect an ULTRA call. When
-`family_fallback` is enabled (default on), an initiator whose ULTRA `CALL`
-attempts go unanswered automatically retries the remaining attempts at
-`WIDE` — one config knob, no protocol change.
+**Family fallback**: when `family_fallback` is enabled (default on), a
+caller sends the second half of its `CALL` attempts one family narrower
+(ULTRA → WIDE → MID → NARROW), and a listener with no session also tries
+to decode each capture one family narrower than its own, so a caller that
+stepped down is still heard. Each family has its own chirp span, so a
+station never detects a call wider than it listens for; `ULTRA` is
+opt-in on both ends. One config knob, no protocol change.
 
 ### Capability bitmap (u16)
 
@@ -147,11 +160,14 @@ attempts go unanswered automatically retries the remaining attempts at
 | 2 | session resume |
 | 3 | HARQ-IR |
 | 4 | carrier masking |
-| 5 | burst MAC aggregation |
+| 5 | reserved (was burst MAC aggregation, now unconditional) |
 | 6 | voice: required on both ends for `VOICE_OPEN` (an incoming one without it is ignored); advertised by every voice build since v1.2.7 - before that nobody set it and nothing read it |
 | 7 | `CAP_CSS_TIER` (deep tier: M0–M3 modes + handshake-on-CSS) |
-| 8 | `CAP_TURN_SCHED` (scheduled ISS/IRS turn-taking, below) |
-| 9–15 | reserved, must be 0 |
+| 8 | reserved (was `CAP_TURN_SCHED`; turn-taking is now unconditional) |
+| 9–15 | reserved |
+
+A frame carrying any reserved bit is rejected.
+
 
 ### Timers and Retries
 
@@ -217,7 +233,8 @@ no per-frame-type transport exceptions except:
   the only sender of `MODE_CHANGE`; the responder's channel view reaches
   the initiator through ACK/keepalive SNR reports. Two independent
   controllers would collide mid-air (crossing MODE_CHANGEs diverge the
-  committed mode). Responder-side `MODE` pinning is a v1 limitation.
+  committed mode). A responder-side `MODE` pin is a *request* riding its
+  ACKs (`rx_flags`, below) that the initiator executes.
 - **mode-change commit (2026-09-05)**: a **demotion** is applied by the
   initiator **at the announcement**, not on `MODE_ACK`; the responder
   applies on receiving `MODE_CHANGE` as before, so a lost `MODE_ACK` no
@@ -291,7 +308,7 @@ robust modes and 2× that in `M8+`.
 
 ### MAC Burst Profiles
 
-Negotiated at `START`; the AMC may clamp downward at runtime:
+Fixed per committed mode (not negotiated; every session aggregates):
 
 | Session mode | ARQ window | Frames per TX burst |
 |---|---:|---:|
@@ -327,27 +344,29 @@ timer fire early and snowballed retransmissions). On the **VHF-FM band
 profile** the top rungs
 (`M13+`) additionally use a deep-pipe MAC: window 16, data codeword
 targets that fill the 4095-byte PHY cap (per-burst preamble overhead
-dominates top-rung throughput), and BATCHED feedback — one cumulative
-ACK per 12 received data frames with an airtime-scaled tail flush when
-the sender goes quiet — at 25 kbps the reverse channel would otherwise
-consume ~25% of the airtime. Sender ACK timeouts scale to the batch.
-This profile is deliberately NOT applied to HF `M13`: HF traffic is
-interactive/small-transfer, the ARQ timeout budgets one container of
-airtime, and a lost tail-flush ACK would stall the sender for the
-batch-scaled timeout (observed as a 50 s data freeze in the real-device
-endurance soak).
+dominates top-rung throughput), a listen turn only once 12 frames are in
+flight, and an ACK timeout covering a 4-container batch. Feedback is once
+per window, as everywhere (the burst that polls, "Turn-Taking"): at
+25 kbps per-burst feedback would consume ~25% of the airtime. This
+profile is deliberately NOT applied to HF `M13`: HF traffic is
+interactive/small-transfer and a lost tail-flush ACK would stall the
+sender for the batch-scaled timeout (observed as a 50 s data freeze in
+the real-device endurance soak).
 
 ### Reconnecting to a Peer That Lost Its Session
 
-Session resume restores a dropped session in place: the token, the ARQ
-position and any file checkpoint all survive, and the byte stream
-continues exactly. That requires the peer to still hold the session.
+Session resume restores a dropped session in place: the token and the ARQ
+position survive, and the byte stream continues exactly. That requires the
+peer to still hold the session.
 
 A peer that **restarted** holds nothing. It cannot honour the token, so
 it refuses the `RESUME_REQ` with `START_NAK{ResumeInvalid}` and the
 caller falls back to a clean `START` on the same call. `ResumeInvalid`
 is never fatal — treating it as a hard refusal is what used to make
-reconnect-after-peer-death impossible.
+reconnect-after-peer-death impossible. The caller acts on it only when
+this connect attempt sent a `RESUME_REQ`, and only once (a stray or
+repeated one is ignored), and the fallback is a complete clean `START`:
+it carries the KEX whenever encryption is negotiated.
 
 What happens to the data already queued matters, and the guarantee
 changes:
@@ -364,22 +383,23 @@ changes:
   choice that cannot lose data, so those bytes go again.
 - **The uncertainty is published, not hidden.** The sender emits
   `EVT:STREAM_REPLAY <bytes>` naming exactly how many bytes it re-sent.
-  An application that cannot tolerate a repeat discards that many bytes
-  from the front of what follows; one that is idempotent ignores it.
+  That is an UPPER bound on the repeat: an unconfirmed message may or may
+  not have reached the dead peer, so at most that many of the bytes that
+  follow duplicate what the application already received. An application
+  that cannot tolerate a repeat de-duplicates within that span (by
+  content or by its own sequence numbers); blindly discarding all of it
+  can drop bytes the dead peer never delivered. One that is idempotent
+  ignores it.
 
 Exactly-once across a peer restart is not achievable by any protocol
 against a peer that keeps no state — it is the two-generals problem.
 The design choice here is to prefer a bounded, reported repeat over
 silent loss.
 
-File transfers are not covered by stream replay: they have their own
-checkpoint/resume keyed to a session the peer no longer has, so an
-active transfer aborts with `EVT:FILE_ERROR <name> peer-restart`.
-
 ### Turn-Taking
 
-Negotiated via `CAP_TURN_SCHED` (both peers must advertise it; a session
-without it falls back to the legacy occupancy-gate scheduler). This is the
+Every connected session runs turn-taking (until the legacy occupancy-gate
+scheduler was removed it was negotiated via `CAP_TURN_SCHED`). This is the
 arbitration model every proven HF ARQ system uses — PACTOR/VARA/ARDOP's
 ISS/IRS split — because occupancy sensing cannot arbitrate a half-duplex
 link: each end is deaf while keyed and deaf again inside a fade, so a
@@ -407,7 +427,7 @@ withdraws the request.
 
 **Session filter.** In-session frames (everything except CALL, CALL_ACK,
 START, START_ACK, START_NAK, RESUME_REQ, RESUME_ACK, CQ, BEACON,
-BCAST_DATA) are processed only while our session is up and only with its
+BCAST_DATA, BCAST_VOICE) are processed only while our session is up and only with its
 `session_id`; others are dropped before they can touch ARQ, timers or the
 TX frequency (every session used to run as id 0, so another pair's DISC
 or ACK on the channel was acted on). Handshake frames are state-gated:
@@ -463,7 +483,8 @@ so under continuous load every handover waited out the full backstop.
 Measured as the whole of turn-taking's throughput deficit against CCA on
 the two-station world.) On sending the grant the ISS becomes the IRS
 immediately; the peer's first `DATA` frame confirms the handover. An
-unanswered grant is retried at the ARQ-timeout cadence up to 3 times,
+unanswered grant is retried at the handoff cadence (1.5 measured round
+trips, at least 6 s) up to 3 times,
 after which the granting station **reclaims** the ISS role — a link must
 never be left with two listeners because one short control frame faded.
 The epoch makes retried grants idempotent at the receiver.
@@ -525,7 +546,7 @@ grid:
   the peer's frames ≥ 2 Hz off, with no `ACK` sent since that
   measurement, sends a standalone `ACK` (at most one per 15 s; `OFDM`
   modes only). It is the ordinary `ACK` format, so the peer's loop
-  converges as above and older peers interoperate unchanged.
+  converges as above.
   (Documentation before 2026-10 described this as a "split
   correction" capping each station's excursion at half the mistuning;
   the implementation never did that.)
@@ -539,9 +560,16 @@ grid:
 
 ### Keepalive
 
-- initiator-only, `M8+` sessions only (robust modes must not burn airtime)
-- 20 s idle interval; body: 1-byte remote-SNR report
-- sessions in `M4–M7` rely on the idle-disconnect timer alone
+- every session, every mode; interval and transport as in the timer table
+  above: the **initiator** probes a link quiet for `K` (nothing sent or
+  heard, no data moving), the **responder** answers if it has not
+  transmitted for `K / 2`; robust transport (CSS on a CSS session). Only
+  real transmissions count as "sent": a station whose own keepalive was
+  not due to go out (the responder never probes) still answers
+- body: the sender's SNR report (s8, 0.5 dB units, the figure an `ACK`
+  carries). The receiver takes it as the remote SNR report exactly as from
+  an `ACK`: on a quiet link (no `DATA`, so no `ACK`s) it is the only view
+  of the channel from the peer's end the AMC gets
 
 ## Payload Pipeline (`proto` layer)
 
@@ -557,12 +585,11 @@ reassemble whatever sizes arrive.
 
 A further **airtime** bound — cap a message at what the link carries in
 N seconds, so the bound follows the mode rather than the tier — was
-built and measured, and is off (`kDeliverTargetSec = 0`). Delivery gaps
-under turn-taking are floored by the turn cycle (~85 s: a station
-delivers only what arrived while the peer held the turn), so messages
-smaller than that buy nothing; measured, the bound never helped and cost
-up to 20% on a seed. `SKW_DELIVER_TARGET_SEC` re-enables it and
-`SKW_DELIV_DEBUG` reports the gaps it is meant to shrink.
+built, measured and removed. Delivery gaps under turn-taking are floored
+by the turn cycle (~85 s: a station delivers only what arrived while the
+peer held the turn), so messages smaller than that buy nothing; measured,
+the bound never helped and cost up to 20% on a seed. `SKW_DELIV_DEBUG`
+reports the delivery gaps.
 
 TX order, applied above the link layer:
 
@@ -573,23 +600,19 @@ app bytes -> coalesce window (250 ms or window-full)
           -> segment to DATA bodies sized to the current mode's codeword budget
 ```
 
-- compression marker: `0x00` stored, `0x5A` zstd; decompress cap 8 MiB
+- every message is `[marker][service tag][bytes]` (the tag inside the
+  compressed part): marker `0x00` stored, `0x5A` zstd - the marker alone
+  says whether a message is compressed; decompress cap 8 MiB. Service tag
+  `0x01` = the byte stream, the only service; other tags are dropped as
+  malformed
 - segment size targets exactly filling an integer number of LDPC codewords
   for the current mode (the link queries the PHY for the per-frame byte
   budget; no fixed segment constant)
 - fragmentation for messages larger than one frame uses the `more-fragments`
   flag; reassembly is sequence-ordered and survives retransmission reordering
 
-### File Transfer
-
-- `DATA` payloads carry an inner service tag: `0x01` stream, `0x02` file
-- file metadata record: name (UTF-8, ≤ 255 B), size (u64), mtime (u64),
-  CRC-32, chunk size
-- checkpoint every 32 KiB acknowledged: receiver persists (file_id, offset)
-  so resume ([below](#session-resume)) can continue a transfer across
-  reconnects
-- completion notification surfaces on the control port
-  ([INTERFACES.md](INTERFACES.md))
+File transfer is an application concern (the companion app runs its own
+over the byte stream); the modem has no file service.
 
 ## Session Resume
 
@@ -597,12 +620,11 @@ app bytes -> coalesce window (250 ms or window-full)
   family + callsign pair) and **carried in the `START_ACK` body** — both
   ends hold it, so either may initiate the resumed reconnect
 - on reconnect within the resume window (10 min, running from the drop),
-  initiator sends `RESUME_REQ(token, last_rx_seq[, file_ckpt])` in the
-  `START` slot after `CALL_ACK`; responder validates and answers
-  `RESUME_ACK(last_rx_seq[, file_ckpt])` — sequence spaces continue, and
-  each side's optional `file_ckpt` (file_id, contiguous offset) tells the
-  peer's paused file TX where to rewind (overlap with already-received
-  bytes is absorbed by the receiver)
+  initiator sends `RESUME_REQ(token, last_rx_seq)` in the `START` slot
+  after `CALL_ACK`; responder validates and answers
+  `RESUME_ACK(last_rx_seq)` — sequence spaces continue, with the session's
+  capability set and max mode; the mode restarts at the lower of the
+  stored one and what this exchange's quality supports
 - an invalid/expired token draws `START_NAK(reason=RESUME_INVALID)`; the
   initiator falls back to a clean `START` on the same call (never a
   protocol error)
@@ -611,15 +633,19 @@ app bytes -> coalesce window (250 ms or window-full)
   (ARQ retry exhaustion, idle timeout, a peer `DISC` with a for-cause
   reason) pause the pipeline for resume; an operator `DISC(normal)` ends
   the session for real, and the `DISC` reason field carries the
-  distinction to the peer
+  distinction to the peer: `0` normal (operator/application), `1` idle
+  timeout, `2` ARQ retry exhaustion. A disconnect whose `DISC` retries go
+  unanswered still ends as the operator disconnect it was
 
 ## Broadcast Traffic
 
 Connectionless frames use the calling chirp signature + robust header + `M4`:
 
-- `CQ`: full callsign, capability bitmap — invites any responder
-- `BEACON` body: full callsign, local SNR floor estimate (u8, `dB + 20`),
-  current family, software version
+- `CQ`: full callsign — invites any responder
+- `BEACON` body: full callsign, local SNR floor estimate (u8, `dB + 20`;
+  `0xFF` = unknown - the modem always sends `0xFF`, it has no calibrated
+  SNR outside a session) — telemetry for listeners (monitor `MON:` lines carry the whole frame); the
+  modem itself reads only the callsign
 - `BCAST_DATA`: inner format magic `0x5B 0x01`, u16 length, payload
   (≤ 256 B per frame; larger payloads fragment across frames with a 4-bit
   fragment index/count)
@@ -640,10 +666,8 @@ metadata only.
 
 - `version` (PHY header) gates parsing; mismatched majors `START_NAK`
 - unknown frame types are ignored (logged), never fatal
-- unknown capability bits must be advertised as 0 and ignored on receive
-- **known incompatibility**: builds up to v1.0.0 enforced "reserved caps
-  must be 0" by *rejecting* the frame, so they drop a `CALL` advertising
-  `CAP_TURN_SCHED` (bit 8) instead of negotiating it away. Calling such a
-  build requires suppressing the bit (`SKW_NO_TURNSCHED=1`)
-- reserved `M0–M3` mode indices in any control field are treated as invalid
-  in v1 and clamp to `M4`
+- reserved capability bits must be 0: a handshake frame carrying one is
+  rejected (both ends run the same build; there is no compatibility with
+  older ones)
+- mode indices in any control field must lie inside the mode table
+  (`M0–M14`; `M0–M3` only with the CSS tier); others are rejected

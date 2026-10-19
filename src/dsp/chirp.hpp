@@ -2,7 +2,7 @@
 // acquisition, DSP.md sync engine SEARCH/COARSE stages).
 //
 // Everything operates in the 12 kHz complex baseband. A family's chirp
-// sweeps its audio band shifted by -kCenterHz.
+// sweeps its audio band shifted by -centerHz().
 //
 // Detection strategy: per-slope normalized correlation (NCC) on a decimated
 // grid, then JOINT pattern scoring - for each candidate start, the score of
@@ -25,15 +25,13 @@ using cfloat = std::complex<float>;
 
 enum class ChirpSig : uint8_t { Fast = 0, Robust = 1, Calling = 2, Css = 3 };
 
-// Slope pattern for a signature (true = up). Index = rep number.
-// fast: U U   robust: U D U D   calling: U U D D   css: U D D U
-// (patterns and their spectrum-inverted mirrors are pairwise distinct).
-std::vector<bool> chirpPattern(ChirpSig sig);
-// The pattern a family actually transmits: chirpPattern(sig), except the
-// CSS signature on families with a LONG CSS preamble (deep-tier frames on
-// narrow bands, where the 4-rep signature limited acquisition - see
-// chirp.cpp). SKW_CSS_PREAMBLE_<FAMILY>=<U/D string> overrides (A/B).
-std::vector<bool> chirpPattern(Family family, ChirpSig sig);
+// Slope pattern a family transmits for a signature (true = up); index =
+// rep number. fast: U U   robust: U D U D   calling: U U D D   css: U D D U
+// (patterns and their spectrum-inverted mirrors are pairwise distinct),
+// except CSS on MID/NARROW: a 12-rep pattern containing U D D U (deep-tier
+// frames on narrow bands, where the 4-rep signature limited acquisition -
+// see chirp.cpp).
+const std::vector<bool>& chirpPattern(Family family, ChirpSig sig);
 
 inline int chirpRepSamples() {
   // Profile-dependent: 1920 (HF, 160 ms) or 480 (VHF-FM, 40 ms).
@@ -51,7 +49,6 @@ double chirpCfoCaptureMaxHz();
 // estimate from up/down peak timing, which a slope-less pattern (fast)
 // does not have and which two-path multipath can bias by several
 // branches (GAP_CLOSURE_PLAN.md R1) - receiveFrame resolves the branch.
-double chirpCfoAmbiguityHz(ChirpSig sig);
 double chirpCfoAmbiguityHz(Family family, ChirpSig sig);
 
 // Delay-Doppler bias of the detector's start estimate, in samples per Hz
@@ -64,6 +61,10 @@ double chirpStartCfoSensitivity(Family family, ChirpSig sig);
 // Baseband preamble for a family/signature: reps back-to-back, raised-cosine
 // edges (2 ms) per rep, unit RMS per rep.
 std::vector<cfloat> makeChirpPreamble(Family family, ChirpSig sig);
+// Its length in samples, without building it.
+inline int chirpPreambleSamples(Family family, ChirpSig sig) {
+  return int(chirpPattern(family, sig).size()) * chirpRepSamples();
+}
 
 struct ChirpDetection {
   Family family;
@@ -103,10 +104,6 @@ class ChirpDetector {
   // out the calling-continuation window, since U-U prefixes U-U-D-D).
   void process(std::span<const cfloat> in, std::vector<ChirpDetection>& out);
 
-  void reset();
-  uint64_t samplesConsumed() const { return consumed_; }
-  double noiseFloorNcc() const { return emaNoiseNcc_; }
-
   struct SlotHit {
     double gridF;   // interpolated peak position within the slot window
     float ncc;
@@ -118,9 +115,6 @@ class ChirpDetector {
     std::vector<SlotHit> slots;  // per-rep best hits
   };
 
-  // Diagnostics hook (test/tooling support).
-  void debugScore(int64_t g0) const;
-
  private:
   struct GridVal {
     float nccUp, nccDown;
@@ -128,7 +122,6 @@ class ChirpDetector {
   };
 
   void evaluateGridPoint(int64_t grid);
-  void finalizeStarts(std::vector<ChirpDetection>& out);
   PatternScore scorePattern(int64_t g0, ChirpSig sig, bool inverted) const;
   float nccAt(int64_t grid, bool up) const;
   const GridVal* gridAt(int64_t grid) const;
@@ -156,7 +149,6 @@ class ChirpDetector {
 
   std::vector<cfloat> buf_;      // rolling sample buffer
   int64_t bufStart_ = 0;         // absolute index of buf_[0]
-  uint64_t consumed_ = 0;
 
   std::vector<GridVal> grid_;    // rolling NCC history
   int64_t gridStartIdx_ = 0;     // grid index of grid_[0]

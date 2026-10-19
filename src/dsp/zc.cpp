@@ -1,11 +1,9 @@
 #include "dsp/zc.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cmath>
 
 #include "dsp/fft.hpp"
-#include "dsp/fir.hpp"
 
 namespace skw {
 namespace {
@@ -21,15 +19,15 @@ int zcRoot(Family f) {
   return 1;
 }
 
-// Map an active-carrier index (0-based within the family) to a baseband
-// FFT bin of the 320-point transform.
-int carrierToBin(Family f, int carrierIdx) {
-  int audioBin = plan(f).firstBin + carrierIdx;
-  int b = audioBin - centerBin();  // baseband bin, may be negative
-  return b >= 0 ? b : kFftBaseband + b;
-}
-
 }  // namespace
+
+void applyTimingShift(Family family, std::span<cfloat> h, double samples) {
+  for (size_t c = 0; c < h.size(); ++c) {
+    const int bin = carrierBinSigned(family, int(c));
+    const double ph = 2.0 * M_PI * double(bin) * samples / kFftBaseband;
+    h[c] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
+  }
+}
 
 std::vector<cfloat> zcFreqSequence(Family family) {
   const int n = plan(family).carriers();
@@ -50,7 +48,7 @@ std::vector<cfloat> makeZcSymbol(Family family) {
   Fft fft(kFftBaseband);
   std::vector<cfloat> freq(size_t(kFftBaseband), cfloat(0, 0));
   for (int i = 0; i < n; ++i) {
-    freq[size_t(carrierToBin(family, i))] = seq[size_t(i)];
+    freq[size_t(carrierToBasebandBin(family, i))] = seq[size_t(i)];
   }
   std::vector<cfloat> core(static_cast<size_t>(kFftBaseband));
   fft.inverse(freq.data(), core.data());
@@ -78,13 +76,6 @@ std::vector<cfloat> makeZcBlock(Family family, int nSymbols) {
   return block;
 }
 
-bool cfoBranchSearchEnabled() {
-  static const bool on = [] {
-    const char* e = std::getenv("SKW_CFO_BRANCH");
-    return !(e && std::atoi(e) == 0);
-  }();
-  return on;
-}
 
 ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                       double coarseStart, double priorCfoHz,
@@ -216,15 +207,13 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
   // A residual far outside the joint uncertainty means the prior sits on
   // a wrong ambiguity branch (two-path up/down dominance swap biasing the
   // chirp's coarse CFO): fusing would pull the estimate back toward it.
-  if (cfoBranchSearchEnabled() &&
-      std::abs(residual) >
+  if (std::abs(residual) >
       3.0 * std::sqrt(priorCfoSigmaHz * priorCfoSigmaHz +
                       measSigma * measSigma)) {
     wp = 0.0;
   }
   const double fusedResidual = residual * wm / (wm + wp);
   res.cfoHz = priorCfoHz + fusedResidual;
-  res.cfoSigmaHz = 1.0 / std::sqrt(wm + wp);
   const double q =
       totPow > 0 ? std::sqrt(std::max(bestM, 0.0) / (totPow * nSym)) : 0.0;
   res.quality = mCount > 0 ? float(std::min(q, 1.0)) : 0.0f;
@@ -252,7 +241,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
     std::vector<cfloat> est(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
       est[size_t(i)] =
-          bins[size_t(carrierToBin(family, i))] / seq[size_t(i)];
+          bins[size_t(carrierToBasebandBin(family, i))] / seq[size_t(i)];
       acc[size_t(i)] += est[size_t(i)];
     }
     perSym.push_back(std::move(est));
@@ -288,7 +277,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
     Fft ifft(kFftBaseband);
     std::vector<cfloat> spec(size_t(kFftBaseband), cfloat(0, 0));
     for (int i = 0; i < n; ++i) {
-      spec[size_t(carrierToBin(family, i))] = acc[size_t(i)];
+      spec[size_t(carrierToBasebandBin(family, i))] = acc[size_t(i)];
     }
     std::vector<cfloat> h(static_cast<size_t>(kFftBaseband));
     ifft.inverse(spec.data(), h.data());
@@ -339,11 +328,7 @@ ZcSyncResult zcRefine(Family family, std::span<const cfloat> rx,
                                    std::max(2, zcWindowBackoff()));
     const double tau = double(firstLag) - double(backoff);
     res.blockStart += tau;
-    for (int i = 0; i < n; ++i) {
-      int bin = plan(family).firstBin + i - centerBin();
-      double ph = 2.0 * M_PI * double(bin) * tau / kFftBaseband;
-      acc[size_t(i)] *= cfloat(float(std::cos(ph)), float(std::sin(ph)));
-    }
+    applyTimingShift(family, acc, tau);
   }
   res.channel = std::move(acc);
   res.ok = true;

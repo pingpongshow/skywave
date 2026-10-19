@@ -12,7 +12,8 @@ which may also host a TCP PTT server the modem keys through.
 | control | `9101` | line-oriented commands, responses, notifications |
 | voice | `9102` | framed PCM voice media |
 
-Bind address defaults to `127.0.0.1`. One client per port.
+The ports bind `127.0.0.1` only (there is no bind-address setting). One
+client per port.
 
 ## Data Port
 
@@ -56,10 +57,19 @@ responses. Responses start with the verb or `ERROR:<reason>`. Asynchronous
 notifications start with `EVT:` or `MON:` and may interleave between
 command/response pairs (clients must dispatch on prefix).
 
-Commands whose feature is compiled out or not yet active in this build
-(crypto without `ENABLE_CRYPTO`, voice before Phase 5) answer
-`ERROR:UNSUPPORTED` — distinct from `ERROR:UNKNOWN` so clients can tell a
-gated feature from a typo.
+Commands whose feature is compiled out of this build (crypto without
+`ENABLE_CRYPTO`, voice without Codec2) answer `ERROR:UNSUPPORTED` —
+distinct from `ERROR:UNKNOWN` so clients can tell a gated feature from a
+typo.
+
+With the placeholder callsign (`N0CALL` or empty — see
+[CONFIGURATION.md](CONFIGURATION.md)) every command that would transmit
+— `CONNECT`, `CQ`, `BEACON`, `BCAST`, `TXTEST <s>`, `VOICESTART`,
+`VOICEPTT ON` — answers `ERROR:STATE` and nothing is keyed. Set `MYCALL`
+first.
+
+A setting command without its argument is a query and answers in the
+same form (`LISTEN` → `LISTEN ON`).
 
 ### Command Index
 
@@ -71,21 +81,21 @@ gated feature from a typo.
 | `CONNECT <call>` | initiate connection |
 | `DISCONNECT` | orderly teardown |
 | `ABORT` | immediate teardown, no `DISC` exchange |
-| `LISTEN ON\|OFF` | accept incoming calls |
-| `CQ` | transmit CQ, enter listening |
-| `BEACON` | transmit telemetry beacon |
+| `LISTEN [ON\|OFF]` | accept incoming calls (saved on exit) |
+| `CQ` | transmit CQ and turn listening on — the same saved switch as `LISTEN ON` |
+| `BEACON` | transmit a beacon (callsign and family; its SNR-floor byte is sent as `0xFF`, unknown: the modem has no calibrated SNR floor to report) |
 | `BCAST <hex>` | transmit broadcast data frame |
-| `CWID ON\|OFF` | post-disconnect CW ID |
+| `CWID [ON\|OFF]` | post-disconnect CW ID |
 
 #### Mode and Link
 
 | Command | Meaning |
 |---|---|
 | `FAMILY [WIDE\|MID\|NARROW\|ULTRA]` | set/query bandwidth family (IDLE/LISTENING only; `ULTRA` requires `ultra_enable` in config) |
-| `MODE [M4-M14\|AUTO]` | pin or free the runtime mode (`M14` on VHF-FM only) |
-| `MAXMODE [M4-M13]` | cap AMC promotion |
+| `MODE [M4-M13\|AUTO]` | pin or free the runtime mode. The range is the band's OFDM modes: `M4`–`M13` on HF, `M4`–`M14` on VHF-FM; anything else is `ERROR:BADARG` |
+| `MAXMODE [M4-M13]` | cap AMC promotion; the same range as `MODE` (`M14` on VHF-FM) |
 | `CPMODE [AUTO\|SHORT\|MEDIUM\|LONG]` | cyclic prefix policy |
-| `HARQ [AUTO\|CHASE\|IR]` | HARQ mode |
+| `HARQ [CHASE\|IR]` | HARQ offered to the next session: `IR` (default; incremental redundancy, chase combining with a peer that lacks it) or `CHASE` (IDLE only) |
 | `CHANMEM ON\|OFF` | channel memory |
 | `PROBE [ON]` | probe-before-promote: always on (query answers `PROBE ON`; `PROBE OFF` is refused with `ERROR:STATE`) |
 | `MASKING ON\|OFF` | carrier masking |
@@ -103,7 +113,7 @@ gated feature from a typo.
 | `NOISEFLOOR` | latest noise/CCA measurement |
 | `BUFFER` | queued TX byte count |
 | `AUDIOLEVEL` | input/output level meters (dBFS) |
-| `MONITOR ON\|OFF` | passive frame monitoring |
+| `MONITOR [ON\|OFF]` | passive frame monitoring |
 | `TXTEST [seconds\|OFF]` | transmit a representative OFDM calibration signal (IDLE only, max 30 s) |
 | `FREQINFO [hz]` | query, or report the rig's dial frequency; answers `CENTER=<hz> SHIFT=<hz> CFO=<hz>` either way |
 | `VERSION` | version string |
@@ -122,7 +132,7 @@ gated feature from a typo.
 
 | Command | Meaning |
 |---|---|
-| `ENCRYPTION ON\|OFF` | request encryption for future connects |
+| `ENCRYPTION [ON\|OFF]` | request encryption for future connects; without an argument it answers the `SECURITY` line |
 | `ENCRYPTKEY <hex>` | load PSK material |
 | `KEYROTATE` | rotate epoch on live encrypted session |
 | `SECURITY` | auth/encrypt/epoch summary |
@@ -174,11 +184,9 @@ EVT:DISCONNECTED <reason>   # see the reason table below
 EVT:MODE <Mx> <net_bps>
 EVT:SNR <local_db> <remote_db|->
 EVT:BUSY <0|1>
-EVT:TXCOMPLETE
 EVT:STREAM_REPLAY <bytes>    # re-sent after a peer restart; see below
-EVT:FILE_RX <name> <size> <crc32ok>
-EVT:FILE_ERROR <name> <reason>
-EVT:VOICE <state>             # OPEN, TALKING, STOPPED, CLOSED, codec
+EVT:VOICE <state>             # OPEN, TALKING, STOPPED, CLOSED
+EVT:VOICE CODEC <700C|1300|2400|3200>  # the voice codec stepped mid-talkspurt
 EVT:VOICE BCAST <tag>        # a broadcast started playing out (sender tag, hex)
 EVT:VOICE BCAST END          # ...and went quiet for 3 s
 MON:<src>:<dst|*>:<frame_type>:<family>:<Mx>:<hex_payload>
@@ -194,23 +202,25 @@ that its call had failed and with no way to tell "nobody answered" from
 | Reason | Meaning |
 |---|---|
 | `NORMAL` | either end asked to disconnect |
-| `LINK` | an established session dropped (timeout, retries, fault) |
+| `LINK` | an established session dropped: ARQ retries exhausted, idle timeout, the peer disconnected for a fault, or the peer called afresh (it lost the session) |
 | `NO_ANSWER` | called, the CALL retry budget ran out unanswered |
 | `NO_START_ACK` | the peer answered the CALL but never acknowledged the START |
-| `REFUSED` | the peer rejected the START (version, family, busy, policy) |
+| `REFUSED` | the peer rejected the START (version, family, capability conflict, failed key exchange) |
 | `TIMEOUT` | answered a CALL, the peer's START never arrived |
 
 `EVT:STREAM_REPLAY <bytes>` is emitted when the peer restarted and could
 not honour a session-resume token. The sender re-sent that many bytes
-from the last message boundary the dead peer had acknowledged, so
-delivery for those bytes is AT-LEAST-ONCE: discard them from the front
-of what follows if repeats matter to you, or ignore the event if your
-consumer is idempotent. See PROTOCOL.md, "Reconnecting to a Peer That
+from the last message boundary the dead peer had acknowledged. That is an
+UPPER bound on the repeat: at most that many of the following bytes
+duplicate what the application already received (an unconfirmed message
+may or may not have reached the dead peer). An application that cannot
+tolerate a repeat de-duplicates within that span by content or its own
+sequence numbers - blindly discarding all of it can drop bytes the dead
+peer never delivered; an idempotent consumer ignores the event. See PROTOCOL.md, "Reconnecting to a Peer That
 Lost Its Session".
 
 ```text
 EVT:BROADCAST <src> <hex_payload>
-EVT:SNR <local_db> <remote_db|->
 EVT:CFO_WARN <tx_align_hz>
 EVT:TX_WATCHDOG <seconds_keyed>
 ```
@@ -286,16 +296,15 @@ failure in the field. The supported calibration procedure:
 1. `TXTEST 10` transmits a representative full-drive OFDM signal (same
    PAPR statistics as data frames) while the operator adjusts audio-out
    gain / rig drive for zero-to-minimal ALC action
-2. `AUDIOLEVEL` and the GUI meters show output level; the GUI settings
-   page documents the target ("raise drive until ALC just moves, back off
-   ~10%")
-3. `TXTEST` is refused unless `IDLE`, is hard-capped at 30 s, and honors
-   the TX watchdog
+2. `AUDIOLEVEL` and the GUI meters show output level; the GUI's Audio
+   settings page has the test-burst buttons and states the target
+   (adjust the rig so ALC just stays quiet)
+3. `TXTEST` is refused unless `IDLE` (and with the placeholder callsign),
+   is hard-capped at 30 s, and honors the TX watchdog
 
-The peer-side check: `RSNR` in `STATUS` reading far below `SNR` symmetry
-expectations, or the peer's rx-quality `DEGRADED` flag while local SNR
-looks fine, are the classic signatures of TX overdrive — noted in the
-troubleshooting section of the GUI help.
+The peer-side check: `RSNR` in `STATUS` reading far below what `SNR`
+symmetry would suggest while local SNR looks fine is the classic
+signature of TX overdrive.
 
 ## Companion App Split
 
@@ -319,17 +328,30 @@ modem: `tools/companion.py --data 9200 --ctrl 9201 --title W1AW`.
 
 ## Built-in GUI
 
-SDL2 + Dear ImGui application in the same process (`--gui`), rendering from
-the telemetry snapshot (never touching modem internals):
+SDL2 + Dear ImGui window in the same process (`--gui`). It reads only
+what the worker publishes (status strings, the telemetry snapshot) and a
+copy of the input audio, so it never waits on the modem:
 
-- waterfall (RX spectrum, family band overlay, mask overlay)
-- constellation / despread-symbol view
-- ladder panel: current mode, AMC inputs (SNR, retry, selectivity), floor
-  markers
-- session panel: state, peer, rates, ARQ window occupancy
-- settings pages mirroring the INI schema ([CONFIGURATION.md](CONFIGURATION.md)),
-  including a Security page on crypto builds (PSK entry is masked and the
-  buffer is wiped once installed; a non-crypto build shows the modem's own
+- top bar: state (with `TX` / `BUSY`), a `SET CALLSIGN` button while the
+  callsign is the placeholder, `ENCRYPTED` during an encrypted session,
+  the last action's outcome, and callsign, remote, family, mode, net rate
+  and SNR
+- session card: remote callsign, Connect / Disconnect, CQ / Beacon / Abort
+- link card: mode and cyclic-prefix selectors (the mode list is the
+  band's, as `MODE` accepts), local and remote SNR, CFO alignment, retry
+  ratio, and a mode history plot
+- audio card: RX, TX and noise-floor level bars (dBFS) and an RX level
+  history with the noise floor drawn over it
+- waterfall: input spectrum from 0 Hz to twice the band centre, with the
+  active family's band edges and its masked carriers marked
+- constellation: equalized data symbols of the last decoded frame
+- activity log: every command the window sent and the modem's answer
+  (the PSK argument is masked)
+- Settings window: Station (callsign, family, highest mode, listen,
+  monitor, CW ID, allow ULTRA, the TCP ports), Audio (devices by name,
+  test burst, levels), PTT (method, port, lead/tail) and Security (the
+  `SECURITY` line, masked PSK entry wiped once installed, request
+  encryption, rotate keys; a non-crypto build shows the modem's own
   `ERROR:UNSUPPORTED` answer rather than a dead control)
 
 Everything the GUI can change routes through the same command dispatcher as
